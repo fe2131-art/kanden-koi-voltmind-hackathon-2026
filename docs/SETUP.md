@@ -1,0 +1,141 @@
+# Safety View Agent - セットアップガイド
+
+チームメンバがプロジェクトを正しくセットアップするための完全ガイドです。
+
+## 前提条件
+
+- **Python 3.11 以上** がシステムにインストール済み
+- **uv** パッケージマネージャー（最新版推奨）
+  ```bash
+  curl -LsSf https://astral.sh/uv/install.sh | sh
+  ```
+- **OpenAI API キー** （Vision API を使用する場合）
+
+## ステップ 1: リポジトリをクローン
+
+```bash
+git clone <repository-url>
+cd kanden-koi-voltmind-hackathon-2026
+```
+
+## ステップ 2: 仮想環境をセットアップ
+
+```bash
+# uv で仮想環境を構築・有効化
+uv sync --extra dev
+```
+
+このコマンドで以下が自動実行されます：
+- Python 仮想環境の作成
+- `pyproject.toml` の依存関係をインストール
+- dev グループの追加依存関係をインストール（テスト、リント等）
+
+## ステップ 3: 環境変数を設定
+
+### Option A: .env ファイルを使用（推奨）
+
+```bash
+# .env.example をコピー
+cp .env.example .env
+
+# .env を編集（テキストエディタで開く）
+# OPENAI_API_KEY="sk-proj-YOUR-KEY-HERE" を設定
+```
+
+**例：**
+```bash
+OPENAI_API_KEY="sk-proj-your-api-key-here"
+```
+
+### Option B: 環境変数を直接設定
+
+```bash
+export OPENAI_API_KEY="sk-proj-YOUR-KEY-HERE"
+```
+
+## ステップ 4: 設定を確認
+
+```bash
+# configs/default.yaml を確認
+cat configs/default.yaml
+```
+
+**重要:** 以下が確定していることを確認：
+```yaml
+agent:
+  max_steps: 1
+
+llm:
+  provider: "openai"
+  openai:
+    model: "gpt-5-nano-2025-08-07"  # ← 絶対に変更しない
+```
+
+## ステップ 5: テストで動作確認
+
+```bash
+# LLM 不要のテストを実行（1-2分）
+pytest tests/ -v
+
+# 成功時の出力例：
+# tests/test_schema.py::test_observation_creation PASSED
+# tests/test_e2e.py::test_e2e_agent_no_llm PASSED
+```
+
+## ステップ 6: 入力画像を準備（オプション）
+
+```bash
+# input フォルダに画像を配置
+cp /path/to/your/image.jpg input/
+```
+
+## ステップ 7: エージェントを実行
+
+```bash
+# .env を読み込んで実行
+set -a && source .env && set +a && python src/run.py
+
+# または
+python src/run.py
+```
+
+**実行後、以下のファイルが `output/` に生成されます：**
+- `perception_results.json` - 構造化データ（Vision 分析結果含む）
+- `agent_execution_summary.txt` - 人間向けレポート
+- `flow.md` - LangGraph 実行フロー図
+
+## 一般的な問題
+
+### ImportError: No module named 'safety_agent'
+
+```bash
+# 仮想環境を再構築
+uv sync --force
+```
+
+### OPENAI_API_KEY is not set
+
+```bash
+# 環境変数を確認
+echo $OPENAI_API_KEY
+
+# .env が正しく読み込まれているか確認
+set -a && source .env && set +a && echo $OPENAI_API_KEY
+```
+
+### Vision API が空の応答を返す
+
+- モデルが利用可能か確認：https://platform.openai.com/account/api-keys
+- API キーの権限確認（Vision API にアクセス可能か）
+
+## 次のステップ
+
+- [クイックスタートガイド](QUICK_START.md) - 5分でプロジェクトを理解
+- [アーキテクチャ](ARCHITECTURE.md) - システム設計の詳細
+- [トラブルシューティング](TROUBLESHOOTING.md) - よくある問題と解決策
+- [CLAUDE.md](../CLAUDE.md) - Claude Code 向け詳細情報
+
+## ヘルプが必要な場合
+
+- Issues: プロジェクトの GitHub Issues を確認
+- Team Lead: チームリーダーに連絡

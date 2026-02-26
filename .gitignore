@@ -1,0 +1,98 @@
+# ==========================================
+# Python & Package Management
+# ==========================================
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# uv lock file (ローカル環境固有)
+uv.lock
+
+# ==========================================
+# Virtual Environments
+# ==========================================
+.venv/
+venv/
+env/
+ENV/
+.venv3/
+
+# ==========================================
+# Testing & Coverage
+# ==========================================
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+.pyright/
+
+# ==========================================
+# IDE & Editor
+# ==========================================
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+*.sublime-project
+*.sublime-workspace
+
+# ==========================================
+# Environment & Secrets
+# ==========================================
+.env
+.env.local
+.env.*.local
+
+# ==========================================
+# Project Output & Temporary
+# ==========================================
+# エージェント実行結果ファイルを除外（output/.gitkeep は git 管理）
+output/*
+!output/.gitkeep
+
+# 入力画像ファイル（input/.gitkeep は git 管理）
+input/*.jpg
+input/*.png
+input/*.wav
+input/*.mp4
+input/*.jpeg
+input/*.webp
+
+# ==========================================
+# Model & Dataset Files (LLM/Finetuning)
+# ==========================================
+*.model
+*.bin
+*.pt
+*.pth
+*.ckpt
+*.safetensors
+finetuning/data/processed/
+finetuning/models/
+finetuning/outputs/
+
+# ==========================================
+# macOS
+# ==========================================
+.DS_Store
+.AppleDouble
+.LSOverride
