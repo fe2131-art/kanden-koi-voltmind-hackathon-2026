@@ -15,9 +15,10 @@ echo "=========================================="
 hostname
 nvidia-smi
 
-# ワーキングディレクトリに移動（作業者名をカレントディレクトリから動的に取得）
+# ワーキングディレクトリに移動（作業者名とブランチをカレントディレクトリから動的に取得）
 WORK_USER=$(basename $(dirname $(pwd)))
-WORK_DIR="/home/team-005/work/${WORK_USER}/dev"
+CURRENT_BRANCH=$(git branch --show-current)
+WORK_DIR="/home/team-005/work/${WORK_USER}/${CURRENT_BRANCH}"
 
 echo "Working directory: $WORK_DIR"
 cd "$WORK_DIR" || exit 1
