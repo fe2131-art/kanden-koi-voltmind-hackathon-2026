@@ -53,6 +53,11 @@ kanden-koi-voltmind-hackathon-2026/
 uv sync --extra dev
 ```
 
+### 環境をアクティベート
+```
+source .venv/bin/activate
+```
+
 ### テスト実行（LLM 不要）
 ```bash
 pytest tests/ -v
