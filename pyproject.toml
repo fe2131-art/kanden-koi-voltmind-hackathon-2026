@@ -51,6 +51,9 @@ finetune = [
     "datasets>=2.0",
     "safetensors>=0.3",
 ]
+demo = [
+    "websockets>=11.0",
+]
 dev = [
     "pytest>=7.0",
     "pytest-cov>=4.0",
@@ -59,7 +62,7 @@ dev = [
 ]
 
 [tool.hatch.build.targets.wheel]
-packages = ["src"]
+packages = ["src/safety_agent"]
 
 [tool.pytest.ini_options]
 minversion = "7.0"

@@ -98,6 +98,13 @@ finetuning/models/
 finetuning/outputs/
 
 # ==========================================
+# React / Node.js / Vite
+# ==========================================
+src/apps/node_modules/
+src/apps/dist/
+src/apps/.vite/
+
+# ==========================================
 # macOS
 # ==========================================
 .DS_Store

@@ -135,6 +135,57 @@ set -a && source .env && set +a && echo $OPENAI_API_KEY
 - [トラブルシューティング](TROUBLESHOOTING.md) - よくある問題と解決策
 - [CLAUDE.md](../CLAUDE.md) - Claude Code 向け詳細情報
 
+## オプション: React デモアプリのセットアップ
+
+ブラウザで動画とリアルタイム検出結果を確認したい場合：
+
+### 前提条件
+- Node.js 18+ と npm
+
+### セットアップ手順
+
+#### 1. デモ依存をインストール
+```bash
+uv sync --extra demo
+```
+
+#### 2. WebSocket サーバーを起動（ターミナル 1）
+```bash
+python src/apps/server.py
+# 出力例：
+# ws server: ws://localhost:8001
+# monitoring: /path/to/output/perception_results.json
+```
+
+#### 3. React アプリをセットアップ・起動（ターミナル 2）
+```bash
+cd src/apps
+npm install
+npm run dev
+# 出力例：
+#   VITE v5.0.8  ready in 123 ms
+#   ➜  Local:   http://localhost:5173/
+```
+
+#### 4. ブラウザで開く
+```
+http://localhost:5173
+```
+
+#### 5. エージェントを実行（ターミナル 3）
+```bash
+set -a && source .env && set +a && python src/run.py
+```
+
+### 動作確認チェックリスト
+
+- [ ] React アプリが `http://localhost:5173` で起動している
+- [ ] WebSocket が接続状態（Status パネルで `ws: 1 (OPEN)` が表示）
+- [ ] 動画 `/video.mp4` が表示され再生可能
+- [ ] エージェント実行後、検出結果が Canvas に BBox として描画される
+
+詳細は [DEMO_APP.md](DEMO_APP.md) を参照。
+
 ## ヘルプが必要な場合
 
 - Issues: プロジェクトの GitHub Issues を確認
