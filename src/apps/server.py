@@ -24,40 +24,44 @@ def normalize_detection(obj: dict) -> dict:
 async def monitor_and_stream(websocket):
     """Monitor output/perception_results.json and stream changes to client."""
     print("client connected")
-    last_mtime = None
-    start_time = time.monotonic()
+    last_count = 0  # 前回送信した perception_results 数をトラッキング
+    server_start_time = time.time()  # サーバー起動時刻（基準点）
 
     try:
         while True:
             # Check if perception_results.json has changed
             if PERCEPTION_RESULTS.exists():
-                current_mtime = PERCEPTION_RESULTS.stat().st_mtime
+                try:
+                    with open(PERCEPTION_RESULTS, 'r', encoding='utf-8') as f:
+                        data = json.load(f)
 
-                if last_mtime is None or current_mtime > last_mtime:
-                    try:
-                        with open(PERCEPTION_RESULTS, 'r', encoding='utf-8') as f:
-                            data = json.load(f)
+                    # Extract perception results
+                    perception_results = data.get('perception_results', [])
+                    current_count = len(perception_results)
 
-                        # Extract perception results
-                        perception_results = data.get('perception_results', [])
-
-                        # Stream each result with normalized detections
-                        for result in perception_results:
+                    # 新しいフレームのみを送信（増分ストリーミング）
+                    if current_count > last_count:
+                        for result in perception_results[last_count:]:
                             objects = result.get('objects', [])
                             normalized_dets = [normalize_detection(obj) for obj in objects]
 
+                            # タイムスタンプを使用（Unix timestamp）
+                            frame_timestamp = result.get('timestamp', time.time())
+
                             msg = {
-                                't': round(time.monotonic() - start_time, 3),
+                                't': frame_timestamp,  # 実際のフレーム記録時刻
                                 'text': result.get('vision_analysis', 'Analysis complete'),
-                                'detections': normalized_dets
+                                'detections': normalized_dets,
+                                'obs_id': result.get('obs_id', 'unknown')
                             }
 
                             await websocket.send(json.dumps(msg, ensure_ascii=False))
+                            print(f"  → Frame {result.get('obs_id')} sent (t={frame_timestamp:.2f})")
 
-                        last_mtime = current_mtime
+                        last_count = current_count
 
-                    except (json.JSONDecodeError, IOError) as e:
-                        print(f"Error reading perception_results.json: {e}")
+                except (json.JSONDecodeError, IOError) as e:
+                    print(f"Error reading perception_results.json: {e}")
 
             # Poll every 0.5 seconds
             await asyncio.sleep(0.5)

@@ -1,5 +1,6 @@
 import json
 import os
+import time
 from pathlib import Path
 from typing import Optional
 
@@ -157,13 +158,31 @@ def load_images_from_input(input_dir: str = "input") -> list:
 
 
 def save_analysis_results(output_dir: str, analysis_results: dict):
-    """Save analysis results to output directory."""
+    """Save analysis results to output directory (append mode for history)."""
     os.makedirs(output_dir, exist_ok=True)
 
     results_file = Path(output_dir) / "perception_results.json"
+
+    # 既存データを読み込む（追記式）
+    if results_file.exists():
+        try:
+            with open(results_file, "r", encoding="utf-8") as f:
+                existing_data = json.load(f)
+        except (json.JSONDecodeError, IOError):
+            existing_data = {"perception_results": []}
+    else:
+        existing_data = {"perception_results": []}
+
+    # タイムスタンプを付与して新しいフレームを追加
+    current_timestamp = time.time()
+    for result in analysis_results.get("perception_results", []):
+        result["timestamp"] = current_timestamp  # Unix timestamp（秒単位）
+        existing_data["perception_results"].append(result)
+
+    # ファイルに保存
     with open(results_file, "w", encoding="utf-8") as f:
-        json.dump(analysis_results, f, ensure_ascii=False, indent=2)
-    print(f"✅ Analysis results saved to {results_file}")
+        json.dump(existing_data, f, ensure_ascii=False, indent=2)
+    print(f"✅ Analysis results appended to {results_file} ({len(analysis_results['perception_results'])} frames)")
 
 
 def main():

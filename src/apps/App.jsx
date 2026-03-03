@@ -113,6 +113,7 @@ function App() {
   const tOffsetRef = useRef(null)
   const haveVideoPlayedRef = useRef(false)
   const animIdRef = useRef(null)
+  const lastVideoTimeRef = useRef(0)
 
   useEffect(() => {
     const ctx = canvasRef.current?.getContext('2d')
@@ -143,7 +144,10 @@ function App() {
 
     const appendLogLine = (msg) => {
       const lat = typeof msg.t_sent === 'number' ? (msg.t_sent - msg.t) : 0
-      const line = `${msg.t.toFixed(2)}s (+${lat.toFixed(2)}s): ${msg.text ?? '(no text)'}\n`
+      // msg.t が Unix timestamp（絶対値）なので、表示用に相対時刻に変換
+      // または obs_id を表示
+      const timeDisplay = msg.obs_id ? `[${msg.obs_id}]` : `${msg.t.toFixed(2)}s`
+      const line = `${timeDisplay} (+${lat.toFixed(2)}s): ${msg.text ?? '(no text)'}\n`
       setLog((prev) => {
         const combined = prev + line
         if (combined.length > 25000) {
@@ -214,10 +218,13 @@ function App() {
         const msg = JSON.parse(ev.data)
         recvCountRef.current++
 
+        // 絶対時刻ベースの同期：tOffset = videoTime - frameTimestamp
+        // msg.t は Unix timestamp（秒単位）
         if (haveVideoPlayedRef.current && tOffsetRef.current === null && typeof msg.t === 'number') {
           tOffsetRef.current = videoRef.current.currentTime - msg.t
         }
 
+        // msg.t が絶対時刻の場合、tOffset で補正して動画タイムラインにマッピング
         const t_adj = tOffsetRef.current === null ? msg.t : msg.t + tOffsetRef.current
         resultsRef.current.push({ ...msg, t_adj })
 
@@ -238,6 +245,13 @@ function App() {
         const w = rect.width
         const h = rect.height
 
+        // 動画が巻き戻されたら tOffset をリセット（自動同期リセット）
+        if (video.currentTime < lastVideoTimeRef.current - 0.5) {
+          tOffsetRef.current = null
+          setStatus('⚠️ 動画が巻き戻されたため、同期をリセットしました')
+        }
+        lastVideoTimeRef.current = video.currentTime
+
         const D = Math.max(0, Number(delay || 0))
         let cur = null
 
@@ -251,7 +265,7 @@ function App() {
         if (cur) {
           const lat = typeof cur.t_sent === 'number' ? cur.t_sent - cur.t : 0
           setHud(
-            `text: ${cur.text ?? ''}\nt(raw): ${cur.t?.toFixed?.(2) ?? cur.t}\nt(adj): ${cur.t_adj?.toFixed?.(2) ?? cur.t_adj}\nlatency: ${lat.toFixed(2)}s\nmode: ${mode}  D=${D.toFixed(2)}s`
+            `text: ${cur.text ?? ''}\nframe: ${cur.obs_id ?? 'unknown'}\nt(abs): ${cur.t?.toFixed?.(2) ?? cur.t}\nt(video): ${cur.t_adj?.toFixed?.(2) ?? cur.t_adj}\nlatency: ${lat.toFixed(2)}s\nmode: ${mode}  D=${D.toFixed(2)}s`
           )
           drawDetections(cur.detections, w, h)
         } else {
