@@ -8,8 +8,15 @@ import httpx
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.message import add_messages
 from langgraph.runtime import Runtime
+from langgraph.types import Command, Send
 from typing_extensions import Annotated, TypedDict
 
+from .modality_nodes import (
+    AudioAnalyzer,
+    ModalityResult,
+    VisionAnalyzer,
+    YOLODetector,
+)
 from .perceiver import Perceiver
 from .schema import (
     NextViewPlan,
@@ -140,6 +147,9 @@ class AgentState(TypedDict):
     observation: Optional[Observation]
     ir: Optional[PerceptionIR]
 
+    # fan-out/fan-in: modality_results が vision_node, audio_node から蓄積される
+    modality_results: Annotated[List[ModalityResult], _add_list]
+
     # 世界モデル、計画、選択
     world: WorldModel
     plan: Optional[NextViewPlan]
@@ -153,10 +163,20 @@ class ContextSchema(TypedDict):
     provider: ObservationProvider
     perceiver: Perceiver
     llm: Optional[OpenAICompatLLM]
+    vision_analyzer: Optional[VisionAnalyzer]
+    yolo_detector: Optional[YOLODetector]
+    audio_analyzer: AudioAnalyzer
+    chat_max_tokens: int
 
     # 閾値設定
     risk_stop_threshold: float
     hazard_focus_threshold: float
+
+    # ビュー選択戦略のパラメータ
+    max_outstanding_regions: int
+    safety_priority_weight: float
+    info_gain_weight: float
+    safety_priority_base: float
 
 
 # =========================
@@ -166,57 +186,158 @@ class ContextSchema(TypedDict):
 
 def ingest_observation(
     state: AgentState, runtime: Runtime[ContextSchema]
-) -> Dict[str, Any]:
+) -> Command:
     """
-    step==0で state["observation"] が既に設定されている場合はそれを保持。
-    それ以外の場合はプロバイダーから次の観測を取得。
+    観測を取得して、vision_node と audio_node へ fan-out で送信。
+    Command + Send API により真の並列実行を実現。
     """
     step = state["step"]
     obs = state.get("observation")
+
+    # step==0 で初期観測がある場合はそのまま使う
     if step == 0 and obs is not None:
+        pass
+    else:
+        nxt = runtime.context["provider"].next()
+        if nxt is None:
+            return Command(
+                update={"done": True},
+                goto=END,
+            )
+        obs = nxt
+
+    # fan-out: vision と audio を並列ノードへ送信
+    sends: list[Send] = [
+        Send("vision_node", {"observation": obs}),
+        Send("audio_node", {"observation": obs}),
+    ]
+
+    return Command(
+        update={
+            "observation": obs,
+            "modality_results": [],  # fan-in バッファをリセット
+            "messages": [{"role": "assistant", "content": f"[ingest] fan-out -> {obs.obs_id}"}],
+        },
+        goto=sends,
+    )
+
+
+def vision_node(
+    state: AgentState, runtime: Runtime[ContextSchema]
+) -> Dict[str, Any]:
+    """Vision ノード：VLM + YOLO を並列実行。"""
+    obs = state.get("observation")
+    if obs is None:
         return {
-            "messages": [
-                {
-                    "role": "assistant",
-                    "content": f"[ingest] using initial observation {obs.obs_id}",
-                }
+            "modality_results": [
+                ModalityResult(
+                    modality_name="vision",
+                    error="No observation provided",
+                )
             ]
         }
-    nxt = runtime.context["provider"].next()
-    if nxt is None:
-        return {
-            "done": True,
-            "messages": [
-                {
-                    "role": "assistant",
-                    "content": "[ingest] no more observations -> done",
-                }
-            ],
-        }
+
+    ctx = runtime.context
+    objects = []
+    description = None
+    error = None
+
+    try:
+        # YOLO 検出（CPU/GPU）
+        if ctx.get("yolo_detector") and obs.image_path:
+            objects = ctx["yolo_detector"].detect(obs.image_path)
+        elif obs.image_path:
+            # フォールバック：簡易画像分析
+            objects = []
+
+        # VLM 分析（HTTP I/O）
+        if ctx.get("vision_analyzer") and obs.image_path:
+            description = ctx["vision_analyzer"].analyze(obs.image_path)
+    except Exception as e:
+        error = f"vision_node error: {e}"
+
+    result = ModalityResult(
+        modality_name="vision",
+        objects=objects,
+        description=description,
+        error=error,
+    )
     return {
-        "observation": nxt,
+        "modality_results": [result],
         "messages": [
             {
                 "role": "assistant",
-                "content": f"[ingest] loaded observation {nxt.obs_id}",
+                "content": f"[vision] objects={len(objects)} vlm={'ok' if description else 'none'}",
             }
         ],
     }
 
 
-def perceive_and_extract_ir(
+def audio_node(
     state: AgentState, runtime: Runtime[ContextSchema]
 ) -> Dict[str, Any]:
+    """Audio ノード：音声解析を実行。"""
+    obs = state.get("observation")
+    if obs is None:
+        return {
+            "modality_results": [
+                ModalityResult(
+                    modality_name="audio",
+                    error="No observation provided",
+                )
+            ]
+        }
+
+    try:
+        audio_cues = runtime.context["audio_analyzer"].analyze(obs.audio_text)
+        error = None
+    except Exception as e:
+        audio_cues = []
+        error = f"audio_node error: {e}"
+
+    result = ModalityResult(
+        modality_name="audio",
+        audio_cues=audio_cues,
+        error=error,
+    )
+    return {
+        "modality_results": [result],
+        "messages": [{"role": "assistant", "content": f"[audio] cues={len(audio_cues)}"}],
+    }
+
+
+def fuse_modalities(
+    state: AgentState, runtime: Runtime[ContextSchema]
+) -> Dict[str, Any]:
+    """
+    全モダリティの ModalityResult を PerceptionIR に統合する。
+    fan-in ポイント：vision_node と audio_node の完了後に実行。
+    """
     obs = state.get("observation")
     if obs is None:
         return {"errors": ["No observation in state"], "done": True}
-    ir = runtime.context["perceiver"].run(obs)
+
+    # modality_results を辞書化して検索しやすく
+    results = {r.modality_name: r for r in state.get("modality_results", [])}
+
+    vision = results.get("vision")
+    audio = results.get("audio")
+
+    objects = vision.objects if vision else []
+    audio_cues = audio.audio_cues if audio else []
+    description = vision.description if vision else None
+    modality_errors = [r.error for r in results.values() if r.error]
+
+    # Perceiver（ハザード推定専用）を呼び出す
+    ir = runtime.context["perceiver"].estimate(obs, objects, audio_cues, description)
+    ir = ir.model_copy(update={"modality_errors": modality_errors})
+
     return {
         "ir": ir,
         "messages": [
             {
                 "role": "assistant",
-                "content": f"[perceive] hazards={len(ir.hazards)} unobserved={len(ir.unobserved)} audio={len(ir.audio)}",
+                "content": f"[fuse] hazards={len(ir.hazards)} unobserved={len(ir.unobserved)} errors={len(modality_errors)}",
             }
         ],
     }
@@ -238,7 +359,8 @@ def update_world_model(
             fused[h.hazard_type] = h
 
     # Outstanding unobserved: take top risks; in a real system: track coverage over time
-    outstanding = sorted(ir.unobserved, key=lambda r: r.risk, reverse=True)[:6]
+    max_regions = runtime.context.get("max_outstanding_regions", 6)
+    outstanding = sorted(ir.unobserved, key=lambda r: r.risk, reverse=True)[:max_regions]
 
     new_world = WorldModel(
         fused_hazards=sorted(fused.values(), key=lambda x: x.confidence, reverse=True),
@@ -315,6 +437,7 @@ def propose_next_view_llm(
         {"type": h.hazard_type, "conf": h.confidence, "evidence": h.evidence}
         for h in world.fused_hazards[:5]
     ]
+    max_regions = runtime.context.get("max_outstanding_regions", 6)
     top_unobs = [
         {
             "id": r.region_id,
@@ -323,7 +446,7 @@ def propose_next_view_llm(
             "pan": r.suggested_pan_deg,
             "tilt": r.suggested_tilt_deg,
         }
-        for r in world.outstanding_unobserved[:6]
+        for r in world.outstanding_unobserved[:max_regions]
     ]
     audio = [{"cue": a.cue, "conf": a.confidence, "dir": a.direction} for a in ir.audio]
 
@@ -371,6 +494,13 @@ def propose_next_view_llm(
         chat_max_tokens = runtime.context.get("chat_max_tokens", 2000)
         raw = llm.chat_json(system=system, user=user, max_tokens=chat_max_tokens)
         plan = NextViewPlan.model_validate(raw)
+
+        # LLM 応答の詳細ログ
+        llm_log = f"[LLM-RESPONSE] Candidates: {len(plan.candidates)}, Stop: {plan.stop}"
+        for i, cand in enumerate(plan.candidates[:3]):
+            llm_log += f"\n  {i+1}. {cand.view_id}: safety={cand.safety_priority:.2f}, info={cand.expected_info_gain:.2f}"
+            llm_log += f"\n     Reason: {cand.rationale[:60]}..."
+
     except Exception as e:
         import traceback
 
@@ -393,7 +523,11 @@ def propose_next_view_llm(
         "messages": [
             {
                 "role": "assistant",
-                "content": f"[plan] candidates={len(plan.candidates)} stop={plan.stop}",
+                "content": f"[plan] LLM: {len(plan.candidates)} candidates, stop={plan.stop}",
+            },
+            {
+                "role": "assistant",
+                "content": llm_log,
             }
         ],
     }
@@ -423,7 +557,7 @@ def validate_and_guardrails(
                 zoom=1.0,
                 target_region_id=top.region_id,
                 expected_info_gain=min(1.0, 0.6 + top.risk),
-                safety_priority=min(1.0, 0.7 + top.risk),
+                safety_priority=min(1.0, runtime.context.get("safety_priority_base", 0.7) + top.risk),
                 rationale=f"高リスク未確認領域({top.region_id})が未カバーのため強制追加",
             )
             plan = NextViewPlan(
@@ -451,8 +585,11 @@ def select_view(state: AgentState, runtime: Runtime[ContextSchema]) -> Dict[str,
         plan = _heuristic_plan(state)
 
     # score: prioritize safety first, then info gain
+    safety_weight = runtime.context.get("safety_priority_weight", 0.7)
+    info_weight = runtime.context.get("info_gain_weight", 0.3)
+
     def score(c: ViewCandidate) -> float:
-        return 0.7 * c.safety_priority + 0.3 * c.expected_info_gain
+        return safety_weight * c.safety_priority + info_weight * c.expected_info_gain
 
     best = sorted(plan.candidates, key=score, reverse=True)[0]
     cmd = ViewCommand(
@@ -508,17 +645,24 @@ def should_continue(state: AgentState) -> Literal["ingest_observation", END]:
 def build_agent():
     builder = StateGraph(AgentState, context_schema=ContextSchema)
 
+    # ノード登録（fan-out/fan-in 対応）
     builder.add_node("ingest_observation", ingest_observation)
-    builder.add_node("perceive_and_extract_ir", perceive_and_extract_ir)
+    builder.add_node("vision_node", vision_node)
+    builder.add_node("audio_node", audio_node)
+    builder.add_node("fuse_modalities", fuse_modalities)
     builder.add_node("update_world_model", update_world_model)
     builder.add_node("propose_next_view_llm", propose_next_view_llm)
     builder.add_node("validate_and_guardrails", validate_and_guardrails)
     builder.add_node("select_view", select_view)
     builder.add_node("bump_step", bump_step)
 
+    # エッジ設定
     builder.add_edge(START, "ingest_observation")
-    builder.add_edge("ingest_observation", "perceive_and_extract_ir")
-    builder.add_edge("perceive_and_extract_ir", "update_world_model")
+    # fan-out は ingest_observation が Command で goto=[Send(...), Send(...)] するため
+    # ここには条件付きエッジは不要（Command が直接ルーティング）
+    builder.add_edge("vision_node", "fuse_modalities")
+    builder.add_edge("audio_node", "fuse_modalities")
+    builder.add_edge("fuse_modalities", "update_world_model")
     builder.add_edge("update_world_model", "propose_next_view_llm")
     builder.add_edge("propose_next_view_llm", "validate_and_guardrails")
     builder.add_edge("validate_and_guardrails", "select_view")

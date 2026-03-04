@@ -22,9 +22,15 @@ kanden-koi-voltmind-hackathon-2026/
 │   ├── safety_agent/          # メインパッケージ
 │   │   ├── __init__.py
 │   │   ├── schema.py          # Pydantic モデル定義
-│   │   ├── perceiver.py       # Perceiver クラス（知覚処理 + VLM）
-│   │   └── agent.py           # LLM・グラフノード・ビルダー
+│   │   ├── modality_nodes.py  # モダリティ処理クラス（VisionAnalyzer, YOLODetector, AudioAnalyzer）
+│   │   ├── perceiver.py       # Perceiver クラス（ハザード推定）
+│   │   └── agent.py           # LLM・グラフノード・ビルダー（fan-out/fan-in 実装）
 │   └── apps/                  # React + Vite デモアプリ
+│       ├── server.py             # WebSocket サーバー
+│       ├── App.jsx               # React メインコンポーネント
+│       ├── vite.config.js        # Vite 設定
+│       ├── package.json          # npm 依存
+│       └── index.html            # エントリーポイント
 │
 ├── tests/
 │   ├── test_schema.py         # スキーマ検証テスト
@@ -124,20 +130,29 @@ python finetuning/train_dummy.py --epochs 3
 - **Pydantic モデル**: `BoundingBox`, `Hazard`, `PerceptionIR`, `ViewCandidate` など
 - **Observation / ObservationProvider**: データソース抽象化
 
+### モダリティ処理ノード（`src/safety_agent/modality_nodes.py`）
+- **`VisionAnalyzer`**: OpenAI互換 Vision API による画像テキスト分析
+- **`YOLODetector`**: ultralytics YOLO 物体検出（threading.Lock で並列実行対応）
+- **`AudioAnalyzer`**: 音声テキストからヒューリスティックで AudioCue を抽出
+- **`ModalityResult`**: 各モダリティの統一結果型（objects, audio_cues, description, error フィールド）
+
 ### エージェント実装（`src/safety_agent/agent.py`）
 - **`OpenAICompatLLM`**: OpenAI互換 LLM クライアント（httpx 使用）
-- **グラフノード関数**:
-  - `ingest_observation`: 観測データ取得
-  - `perceive_and_extract_ir`: 知覚処理
+- **グラフノード関数（fan-out/fan-in パイプライン）**:
+  - `ingest_observation`: 観測データ取得 + fan-out 並列送信（Command + Send）
+  - `vision_node`: VLM + YOLO 物体検出（並列実行）
+  - `audio_node`: 音声キュー抽出（並列実行）
+  - `fuse_modalities`: モダリティ結果の統合（fan-in）
   - `update_world_model`: 世界モデル更新
   - `propose_next_view_llm`: 次ビュー提案（**LLM がない場合は `_heuristic_plan` にフォールバック**）
   - `validate_and_guardrails`: ガードレール適用
   - `select_view`: 最適ビュー選択
   - `bump_step`: ステップカウント
-- **`build_agent()`**: LangGraph コンパイル
+- **`build_agent()`**: LangGraph グラフ構築（fan-out/fan-in 実装、状態拡張）
 
 ### 知覚処理（`src/safety_agent/perceiver.py`）
-- **`Perceiver.run()`**: YOLO (オプション) + 音声キュー抽出 + 未確認領域推定
+- **`Perceiver.estimate()`**: オブジェクト・音声キューからハザード推定 + 未確認領域推定
+- **`Perceiver.run()`**: 後方互換ラッパー（テスト用）
 
 ## LLM フォールバック設計
 

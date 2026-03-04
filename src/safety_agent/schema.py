@@ -62,6 +62,7 @@ class PerceptionIR(BaseModel):
     unobserved: List[UnobservedRegion] = Field(default_factory=list)
     audio: List[AudioCue] = Field(default_factory=list)
     vision_description: Optional[str] = None  # VLM による画像分析結果
+    modality_errors: List[str] = Field(default_factory=list)  # モダリティ処理エラー（vision/audio など）
 
 
 class WorldModel(BaseModel):

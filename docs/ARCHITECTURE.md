@@ -1,385 +1,249 @@
 # アーキテクチャドキュメント
 
-Safety View Agent のシステム設計と実装パターン
+Safety View Agent の LangGraph fan-out/fan-in 並列マルチモーダルアーキテクチャ
 
-## システム概要
+## グラフ構造図
+
+```mermaid
+graph TD
+    START([START]) --> ingest_observation
+
+    ingest_observation -->|"Send('vision_node', ...)"| vision_node
+    ingest_observation -->|"Send('audio_node', ...)"| audio_node
+
+    vision_node --> fuse_modalities
+    audio_node --> fuse_modalities
+
+    fuse_modalities --> update_world_model
+    update_world_model --> propose_next_view_llm
+    propose_next_view_llm --> validate_and_guardrails
+    validate_and_guardrails --> select_view
+    select_view --> bump_step
+
+    bump_step -->|"step < max_steps & !done"| ingest_observation
+    bump_step -->|"step >= max_steps or done"| END_NODE([END])
+
+    subgraph "fan-out (並列実行)"
+        vision_node["vision_node\n(VLM + YOLO)"]
+        audio_node["audio_node\n(音声解析)"]
+    end
+
+    subgraph "fan-in (統合)"
+        fuse_modalities["fuse_modalities\n(ModalityResult -> PerceptionIR)"]
+    end
+```
+
+### fan-out/fan-in の仕組み
+
+`ingest_observation` ノードは `Command` + `Send` API を使って複数のモダリティノードへ同時にデータを送信します。各モダリティノードの結果は `AgentState.modality_results` に `Annotated[List[ModalityResult], _add_list]` リデューサで蓄積され、全ノードの完了後に `fuse_modalities` で統合されます。
+
+```python
+# ingest_observation が返す Command
+sends = [
+    Send("vision_node", {"observation": obs}),
+    Send("audio_node", {"observation": obs}),
+]
+return Command(update={...}, goto=sends)
+```
+
+LangGraph の `Send` は各ターゲットノードを**並列スレッド**で実行します。`vision_node` と `audio_node` の両方が `fuse_modalities` へエッジを持つため、両方が完了するまで `fuse_modalities` は実行されません（暗黙の fan-in バリア）。
+
+## モダリティ責務分担表
+
+| ノード | ファイル | 入力 | 出力 | 責務 |
+|--------|----------|------|------|------|
+| **vision_node** | `agent.py` | `Observation` | `ModalityResult(modality_name="vision")` | VLM 画像分析 + YOLO 物体検出 |
+| **audio_node** | `agent.py` | `Observation` | `ModalityResult(modality_name="audio")` | 音声テキスト解析 → `AudioCue` リスト抽出 |
+| **fuse_modalities** | `agent.py` | `List[ModalityResult]` | `PerceptionIR` | 全モダリティ結果を統合、`Perceiver.estimate()` でハザード推定 |
+
+### モダリティ処理クラス（`modality_nodes.py`）
+
+| クラス | 役割 | スレッドセーフ |
+|--------|------|--------------|
+| `VisionAnalyzer` | OpenAI互換 Vision API を呼び出して画像分析テキストを返す | httpx Client 内で完結 |
+| `YOLODetector` | ultralytics YOLO モデルで物体検出 | `threading.Lock` で保護 |
+| `AudioAnalyzer` | 音声テキストからヒューリスティックで `AudioCue` を抽出 | ステートレス（安全） |
+| `ModalityResult` | 各モダリティノードの統一結果型（dataclass） | - |
+
+### 統一結果型 `ModalityResult`
+
+```python
+@dataclass
+class ModalityResult:
+    modality_name: str                    # "vision" | "audio" | "lidar" etc.
+    objects: list[DetectedObject] = []    # YOLO 検出結果
+    audio_cues: list[AudioCue] = []       # 音声キュー
+    description: Optional[str] = None     # VLM テキスト出力
+    extra: dict[str, Any] = {}            # 将来の拡張用
+    error: Optional[str] = None           # エラーメッセージ
+```
+
+## 並列化による利益
+
+### 従来（逐次実行）
 
 ```
-┌─────────────┐
-│   入力画像   │
-│ (input/)   │
-└──────┬──────┘
-       │
-       ▼
-┌─────────────────────────────────┐
-│  Vision Analysis                 │
-│  (src/safety_agent/perceiver.py)│
-│  - YOLO検出（オプション）        │
-│  - Vision API分析               │
-│  - 未確認領域推定               │
-└──────┬──────────────────────────┘
-       │
-       ▼
-┌─────────────────────────────────┐
-│  エージェントループ              │
-│  (src/safety_agent/agent.py)    │
-│  - LangGraph 状態機械           │
-│  - 7段階の処理ノード            │
-│  - LLM計画 + ヒューリスティック  │
-└──────┬──────────────────────────┘
-       │
-       ▼
-┌─────────────────┐
-│  出力ファイル    │
-│ (output/)      │
-│ - JSON         │
-│ - テキスト     │
-│ - 図表         │
-└─────────────────┘
+ingest → perceive_and_extract_ir → update_world_model → ...
+              |
+              ├── VLM API 呼び出し (60s)
+              ├── YOLO 検出 (1s)
+              └── 音声解析 (0.1s)
+              合計: 61.1s
 ```
+
+### 新方式（fan-out 並列実行）
+
+```
+ingest ─┬── vision_node ──┐
+        │   ├── VLM (60s) │
+        │   └── YOLO (1s) │── fuse_modalities → update_world_model → ...
+        └── audio_node ───┘
+            └── 音声 (0.1s)
+
+合計: max(60s + 1s, 0.1s) = 61s
+```
+
+VLM I/O（HTTP リクエスト）と音声解析が並列実行されるため、モダリティ数が増えても最も遅いモダリティの実行時間がボトルネックになるだけで済みます。将来 LiDAR や深度センサーなどを追加しても、理論的な遅延は `max(各モダリティの処理時間)` に収まります。
+
+## スレッドセーフティ
+
+LangGraph の `Send` は各ノードを別スレッドで並列実行するため、共有リソースへのアクセスにはスレッドセーフティが必要です。
+
+### YOLODetector の Lock 設計
+
+```python
+class YOLODetector:
+    def __init__(self, model_path: str = "yolov8n.pt") -> None:
+        self._model = YOLO(model_path)
+        self._lock = threading.Lock()  # ultralytics はスレッドセーフでない
+
+    def detect(self, image_path: str) -> list[DetectedObject]:
+        with self._lock:  # 排他制御
+            res = self._model(image_path, verbose=False)[0]
+        # Lock 外で後処理（並列性を維持）
+        ...
+```
+
+ultralytics の YOLO モデルは内部状態を持つためスレッドセーフではありません。`threading.Lock` で推論部分のみを排他制御し、後処理は Lock 外で実行することで並列性を維持しています。
+
+### 各コンポーネントのスレッドセーフティ
+
+| コンポーネント | 方式 | 理由 |
+|--------------|------|------|
+| `VisionAnalyzer` | 安全（Lock 不要） | 各呼び出しで新しい `httpx.Client` を生成 |
+| `YOLODetector` | `threading.Lock` | ultralytics モデルが非スレッドセーフ |
+| `AudioAnalyzer` | 安全（Lock 不要） | ステートレスなヒューリスティック処理 |
+| `AgentState.modality_results` | `Annotated[List, _add_list]` | LangGraph のリデューサが排他管理 |
 
 ## ファイル構成
 
 ```
-src/
-├── run.py                      # エントリーポイント
-│                                # - 設定読み込み
-│                                # - 画像処理
-│                                # - エージェント実行
-│                                # - 結果出力
+src/safety_agent/
+├── schema.py            # Pydantic モデル定義
+│   ├── BoundingBox, DetectedObject, AudioCue
+│   ├── Hazard, UnobservedRegion, CameraPose
+│   ├── PerceptionIR     # modality_errors フィールド含む
+│   ├── WorldModel, ViewCandidate, NextViewPlan, ViewCommand
+│   └── Observation, ObservationProvider
 │
-└── safety_agent/
-    ├── __init__.py            # パッケージ初期化
-    │
-    ├── schema.py              # Pydantic モデル定義
-    │   ├── BoundingBox        # 物体検出の矩形
-    │   ├── DetectedObject     # 検出物体
-    │   ├── Hazard             # ハザード情報
-    │   ├── Observation        # 観測データ
-    │   ├── PerceptionIR       # 知覚結果
-    │   ├── WorldModel         # 世界モデル
-    │   ├── ViewCandidate      # 次ビュー候補
-    │   └── ViewCommand        # 実行ビュー
-    │
-    ├── perceiver.py           # 知覚処理
-    │   ├── Perceiver          # メインクラス
-    │   │   ├── run()          # 観測→知覚結果
-    │   │   ├── _yolo_detect() # YOLO物体検出
-    │   │   ├── _infer_hazards()      # ハザード推定
-    │   │   ├── _infer_unobserved()   # 未確認領域推定
-    │   │   └── _audio_to_cues()      # 音声処理
-    │   │
-    │   └── ObservationProvider # 観測ソース管理
-    │       ├── next()         # 次の観測を取得
-    │       └── reset()        # リセット
-    │
-    └── agent.py               # エージェント実装
-        ├── OpenAICompatLLM    # LLM クライアント
-        │   ├── chat_json()    # JSON生成
-        │   └── chat_text()    # テキスト生成
-        │
-        ├── LangGraph ノード関数（7つ）
-        │   ├── ingest_observation()
-        │   ├── perceive_and_extract_ir()
-        │   ├── update_world_model()
-        │   ├── propose_next_view_llm()
-        │   ├── validate_and_guardrails()
-        │   ├── select_view()
-        │   └── bump_step()
-        │
-        ├── _heuristic_plan()  # フォールバック計画
-        ├── _robust_json_loads()       # JSON解析
-        └── build_agent()      # グラフ構築
-```
-
-## 実行フロー
-
-### 1. セットアップフェーズ（run.py）
-
-```
-┌─ 設定読み込み (load_config)
-│  └─ configs/default.yaml を解析
-│     ├─ agent.max_steps = 3
-│     ├─ llm.provider = "openai"
-│     └─ llm.openai.model = "gpt-5-nano-2025-08-07"
+├── modality_nodes.py    # モダリティ処理クラス (NEW)
+│   ├── ModalityResult   # 統一結果型
+│   ├── VisionAnalyzer   # VLM 画像分析
+│   ├── YOLODetector     # YOLO 物体検出（Lock付き）
+│   └── AudioAnalyzer    # 音声解析
 │
-├─ 画像読み込み (load_images_from_input)
-│  └─ input/ フォルダをスキャン
+├── perceiver.py         # ハザード推定専門エンジン (REFACTORED)
+│   └── Perceiver
+│       ├── estimate()          # fuse_modalities から呼ばれる
+│       ├── _infer_hazards()    # 検出結果 → ハザード推定
+│       ├── _infer_unobserved() # 未確認領域推定
+│       └── run()               # 後方互換ラッパー
 │
-├─ LLM 初期化 (get_llm)
-│  └─ OpenAI API キーを設定
-│
-└─ エージェント構築 (build_agent)
-   └─ LangGraph ステートマシン
+└── agent.py             # LangGraph グラフ + ノード
+    ├── OpenAICompatLLM          # LLM クライアント
+    ├── AgentState               # modality_results 含む
+    ├── ContextSchema            # vision_analyzer, yolo_detector, audio_analyzer 含む
+    ├── ingest_observation()     # fan-out (Command + Send)
+    ├── vision_node()            # VLM + YOLO
+    ├── audio_node()             # 音声解析
+    ├── fuse_modalities()        # fan-in (ModalityResult → PerceptionIR)
+    ├── update_world_model()     # 世界モデル更新
+    ├── propose_next_view_llm()  # LLM 計画 or ヒューリスティック
+    ├── validate_and_guardrails()# ガードレール
+    ├── select_view()            # 最適ビュー選択
+    ├── bump_step()              # ステップカウント
+    └── build_agent()            # グラフ構築
 ```
 
-### 2. 知覚フェーズ（perceiver.py）
-
-```
-観測 (Observation)
- │
- ├─ YOLO 検出（オプション）
- │  └─ 物体検出
- │
- ├─ Vision API 分析
- │  └─ テキスト結果
- │
- ├─ ハザード推定
- │  ├─ 危険物体を特定
- │  └─ 信度スコア計算
- │
- ├─ 未確認領域推定
- │  ├─ blind_left (40% risk)
- │  ├─ blind_right (40% risk)
- │  └─ blind_back (30% risk)
- │
- └─ PerceptionIR （知覚結果）
-    ├─ objects: [...]
-    ├─ hazards: [...]
-    ├─ unobserved: [...]
-    └─ audio: [...]
-```
-
-### 3. エージェントループ（agent.py）
-
-```
-ステップ 1: ingest_observation
- │ 次の観測を取得
- │
- ├─ 観測ある？ YES → ステップ 2 へ
- │                 NO → [ingest] done
- │
- ▼
-ステップ 2: perceive_and_extract_ir
- │ Perceiver で知覚処理
- │
- ▼
-ステップ 3: update_world_model
- │ 検出結果を世界モデルに統合
- │
- ▼
-ステップ 4: propose_next_view_llm ⭐ 重要
- │ 次のビュー（視点）を決定
- │
- ├─ LLM で計画生成？
- │  ├─ JSON 正常 → NextViewPlan 生成
- │  └─ JSON 失敗 → heuristic フォールバック
- │
- ▼
-ステップ 5: validate_and_guardrails
- │ リスク閾値チェック
- │
- ├─ max_unobserved_risk < threshold？
- │  ├─ YES → done=True で終了
- │  └─ NO  → 次ステップ へ
- │
- ▼
-ステップ 6: select_view
- │ 候補から最適ビューを選択
- │
- ▼
-ステップ 7: bump_step
- │ ステップカウント++
- │
- ├─ step < max_steps？
- │  ├─ YES → ステップ 1 へ（ループ）
- │  └─ NO  → 終了
-```
-
-## LLM 互換性設計
-
-### パラメータ自動判別
+## AgentState（状態管理）
 
 ```python
-# gpt-5-nano-2025-08-07 の場合
-if "gpt-5" in model.lower():
-    use_max_completion_tokens = True
-    skip_temperature = True
-else:
-    use_max_completion_tokens = False
-    skip_temperature = False
+class AgentState(TypedDict):
+    messages: Annotated[List[Dict[str, str]], add_messages]
+    step: int
+    max_steps: int
+    observation: Optional[Observation]
+    ir: Optional[PerceptionIR]
+    modality_results: Annotated[List[ModalityResult], _add_list]  # fan-in バッファ
+    world: WorldModel
+    plan: Optional[NextViewPlan]
+    selected: Optional[ViewCommand]
+    done: bool
+    errors: Annotated[List[str], _add_list]
 ```
 
-### Vision API 対応
+`modality_results` は `_add_list` リデューサによってリスト結合されます。各モダリティノードが `{"modality_results": [result]}` を返すと、自動的にリストに追加されます。`ingest_observation` の冒頭で `[]` にリセットし、次の fan-out サイクルに備えます。
+
+## ContextSchema（ランタイムコンテキスト）
 
 ```python
-payload = {
-    "model": "gpt-5-nano-2025-08-07",
-    "messages": [
-        {
-            "role": "user",
-            "content": [
-                {
-                    "type": "image_url",
-                    "image_url": {"url": f"data:image/jpeg;base64,{encoded}"}
-                },
-                {
-                    "type": "text",
-                    "text": "Please analyze this image..."
-                }
-            ]
-        }
-    ],
-    # gpt-5-nano の場合のみ：
-    "max_completion_tokens": 500
-}
+class ContextSchema(TypedDict):
+    provider: ObservationProvider
+    perceiver: Perceiver
+    llm: Optional[OpenAICompatLLM]
+    vision_analyzer: Optional[VisionAnalyzer]   # NEW
+    yolo_detector: Optional[YOLODetector]        # NEW
+    audio_analyzer: AudioAnalyzer                # NEW
+    risk_stop_threshold: float
+    hazard_focus_threshold: float
 ```
 
-## 状態管理（AgentState）
-
-```python
-@dataclass
-class AgentState:
-    messages: List[BaseMessage]      # メッセージログ
-    step: int                         # ステップカウンタ
-    max_steps: int                    # 最大ステップ数
-    observation: Optional[Observation]# 現在の観測
-    ir: Optional[PerceptionIR]       # 知覚結果
-    world: WorldModel                # 世界モデル
-    plan: Optional[NextViewPlan]     # 計画
-    selected: Optional[ViewCommand]  # 選択ビュー
-    done: bool                        # 終了フラグ
-    errors: List[str]                # エラーログ
-```
-
-## グレースフルデグラデーション
-
-### LLM が失敗した場合
+## LLM フォールバック設計
 
 ```
-LLM.chat_json() → Error (400, JSON parse fail, etc)
-    │
-    ├─ Exception catch
-    │  └─ errors.append() でエラー記録
-    │
-    └─ _heuristic_plan() へフォールバック
-       │
-       └─ 未確認領域のリスク順で次ビュー候補を生成
-          ├─ blind_left: 40% → pan=-30°
-          ├─ blind_right: 40° → pan=30°
-          └─ blind_back: 30% → pan=180°
+propose_next_view_llm()
+  ├── llm が None → _heuristic_plan() で即フォールバック
+  └── llm が有効
+       ├── chat_json() 成功 → NextViewPlan を生成
+       └── chat_json() 失敗 → _heuristic_plan() + errors に記録
 ```
 
-### ヒューリスティック計画ロジック
+ヒューリスティック計画は `WorldModel.outstanding_unobserved` をリスク順にソートし、最高リスクの未確認領域を次のビュー候補として提案します。
 
-```python
-def _heuristic_plan(state: AgentState) -> NextViewPlan:
-    # 未確認領域をリスク順にソート
-    sorted_unobserved = sorted(
-        state.world.outstanding_unobserved,
-        key=lambda x: x.risk,
-        reverse=True
-    )
+## 拡張ポイント
 
-    # 最高リスク領域を次ビュー候補に
-    return NextViewPlan(
-        candidates=[
-            ViewCandidate(
-                view_id=f"heur_{u.region_id}",
-                pan_deg=u.suggested_pan_deg,
-                tilt_deg=u.suggested_tilt_deg or 0,
-                zoom=1.0,
-                why=f"未確認領域({u.region_id})のリスク({u.risk:.1%})が高い"
-            )
-            for u in sorted_unobserved
-        ]
-    )
+新しいセンサー（例：LiDAR、深度カメラ）を追加する手順は最小限です。
+
+1. `modality_nodes.py` に新しいアナライザークラスを追加
+2. `agent.py` に新しいノード関数を追加
+3. `ingest_observation` の `sends` リストに `Send("new_node", ...)` を追加
+4. `build_agent()` に `add_node` と `add_edge("new_node", "fuse_modalities")` を追加
+5. `fuse_modalities` で新モダリティの結果を処理
+
+詳細な手順とコード例は [EXTENDING.md](EXTENDING.md) を参照してください。
+
+## 依存関係の方向
+
+```
+run.py
+  ↓
+agent.py ─── modality_nodes.py
+  ↓              ↓
+perceiver.py ←──┘
+  ↓
+schema.py
 ```
 
-## 出力形式
-
-### 1. perception_results.json
-
-```json
-{
-  "input_images": ["input/image.jpg"],
-  "perception_results": [{
-    "obs_id": "img_0",
-    "objects": [{...}],
-    "hazards": [{...}],
-    "unobserved": [{...}],
-    "audio": [],
-    "vision_analysis": "Vision APIの応答"
-  }]
-}
-```
-
-### 2. agent_execution_summary.txt
-
-人間向け形式：
-```
-SELECTED VIEW COMMAND:
-  View ID: heur_blind_left
-  Pan: -30.0°, Tilt: 0.0°, Zoom: 1.0x
-
-DETECTED HAZARDS:
-  • unidentified_foreground_object (50.00%)
-
-OUTSTANDING UNOBSERVED REGIONS:
-  • blind_left: 左側の死角（40.0%）
-```
-
-### 3. flow.md
-
-LangGraph 実行フロー（Mermaid 図）
-
-## パフォーマンス
-
-| 処理段階 | 時間 | 説明 |
-|---------|------|------|
-| **Vision API 呼び出し** | 10-20秒 | 画像エンコード + API リクエスト |
-| **LLM テキスト生成** | 3-10秒 | JSON パース失敗時は短い |
-| **エージェントループ** | 5-20秒 | max_steps=3 の場合 |
-| **出力生成** | 1-2秒 | ファイル書き込み |
-| **合計** | 30-40秒 | |
-
-## 拡張可能性
-
-### 新しいハザード検出ロジックを追加
-
-`perceiver.py` の `_infer_hazards()` を拡張：
-
-```python
-def _infer_hazards(self, objects: List[DetectedObject]) -> List[Hazard]:
-    hazards = []
-
-    # 既存: unidentified_foreground_object
-    for obj in objects:
-        if obj.label == "foreground_object":
-            hazards.append(Hazard(...))
-
-    # 新規: カスタムロジックを追加
-    for obj in objects:
-        if obj.label == "person" and obj.confidence > 0.8:
-            hazards.append(Hazard(...))  # 人物検出
-
-    return hazards
-```
-
-### 新しいビュー選択戦略
-
-`agent.py` の `select_view()` をカスタマイズ：
-
-```python
-def select_view(state):
-    if not state.plan or not state.plan.candidates:
-        return {...}
-
-    # デフォルト: 最初の候補を選択
-    selected = state.plan.candidates[0]
-
-    # カスタム: 最適化アルゴリズムを適用
-    # selected = optimize_view_selection(state.plan.candidates)
-
-    return {...}
-```
-
-## 依存関係
-
-- **LangGraph**: 状態機械フレームワーク
-- **Pydantic**: データモデル定義
-- **OpenAI SDK**: Vision API 呼び出し
-- **httpx**: HTTP クライアント
-- **PyYAML**: 設定ファイル解析
-- **Pillow**: 画像処理（フォールバック用）
-
+- `modality_nodes.py` は `schema.py` のみに依存（`agent.py` への逆依存なし）
+- `perceiver.py` は `schema.py` のみに依存（VLM/音声処理は `modality_nodes.py` に移管済み）
+- `agent.py` が全モジュールをオーケストレーション
