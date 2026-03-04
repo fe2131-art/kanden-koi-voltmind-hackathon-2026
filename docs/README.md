@@ -30,7 +30,16 @@ Safety View Agent のチームメンバ向け完全ガイド
 
 **所要時間:** 30-45分
 
-### 4. **[トラブルシューティング](TROUBLESHOOTING.md)** - 問題解決
+### 4. **[デモアプリ](DEMO_APP.md)** - React UI で動画確認
+ブラウザで視覚的にデモを実行
+- セットアップ手順
+- 使い方（Sync/Latest モード）
+- WebSocket フロー
+- トラブルシューティング
+
+**所要時間:** 10-15分
+
+### 5. **[トラブルシューティング](TROUBLESHOOTING.md)** - 問題解決
 エラーが出た場合に参照
 - セットアップエラー
 - 実行エラー
@@ -78,6 +87,9 @@ Safety View Agent のチームメンバ向け完全ガイド
 ### 「LLM の仕組みを知りたい」
 → **ARCHITECTURE.md** の「LLM 互換性設計」セクション
 
+### 「ブラウザ UI でデモを見たい」
+→ **DEMO_APP.md** 全体
+
 ---
 
 ## 📋 チェックリスト
@@ -123,8 +135,8 @@ cp .env.example .env
 # テスト実行
 pytest tests/ -v
 
-# エージェント実行
-set -a && source .env && set +a && python src/run.py
+# エージェント実行（.env から自動読み込み）
+python src/run.py
 
 # ダミー学習
 python finetuning/train_dummy.py

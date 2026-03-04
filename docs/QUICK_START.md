@@ -1,183 +1,261 @@
-# クイックスタートガイド
+# Safety View Agent - クイックスタート
 
-**5分でプロジェクトを動かすガイド**
+5分で Safety View Agent を始められます。
 
-## TL;DR - コマンドのみ
+## 前提条件
 
-```bash
-# 1. セットアップ（初回のみ）
-uv sync --extra dev
-cp .env.example .env
-# .env を編集して OPENAI_API_KEY を設定
+- Python 3.12+
+- `uv` パッケージマネージャー
+- 動画ファイル（optional）
 
-# 2. テスト（LLM不要、1-2分）
-pytest tests/ -v
-
-# 3. 実行（Vision API 使用、30-40秒）
-set -a && source .env && set +a && python src/run.py
-
-# 4. 結果確認
-cat output/perception_results.json
-cat output/agent_execution_summary.txt
-```
-
-## 詳細版（初心者向け）
-
-### 1. リポジトリをクローン
+## セットアップ（1分）
 
 ```bash
+# リポジトリをクローン
 git clone <repository-url>
 cd kanden-koi-voltmind-hackathon-2026
-```
 
-### 2. 環境をセットアップ
-
-```bash
-# uv で仮想環境を構築
+# 依存関係をインストール
 uv sync --extra dev
+
+# 仮想環境を有効化
+source .venv/bin/activate
 ```
 
-**何が起こる？**
-- Python 仮想環境が `.venv` に作成される
-- 依存パッケージ（LangGraph, OpenAI, Pydantic等）がインストールされる
+## 最初の実行（2分）
 
-### 3. API キーを設定
+### オプション A: LLM なし（推奨・テスト用）
 
 ```bash
-# テンプレートをコピー
-cp .env.example .env
-
-# エディタで開いて OPENAI_API_KEY を設定
-# vi .env または nano .env
+# ヒューリスティックスで実行（LLM API不要）
+python src/run.py
 ```
 
-**例:**
-```env
-OPENAI_API_KEY="sk-proj-your-api-key-here"
+**出力例**:
+```
+2026-03-04 22:30:45 - safety_view_agent - INFO - Found 30 frame(s)
+2026-03-04 22:30:45 - safety_view_agent - INFO - Running Safety View Agent
+2026-03-04 22:30:45 - safety_view_agent - INFO - Selected view: view_blind_left (pan=-30.0°)
+2026-03-04 22:30:45 - safety_view_agent - INFO - Results appended to data/perception_results.json
 ```
 
-### 4. テストして動作確認
+✅ **完了！** `data/perception_results.json` に結果が保存されました。
+
+### オプション B: OpenAI API で実行
 
 ```bash
-# LLM 不要のテストを実行
-pytest tests/ -v
+# 1. APIキーを設定
+export OPENAI_API_KEY="sk-your-api-key-here"
+
+# 2. 実行
+python src/run.py
 ```
 
-**期待される出力:**
-```
-test_schema.py::test_observation_creation PASSED
-test_e2e.py::test_e2e_agent_no_llm PASSED
-```
-
-### 5. 本体を実行
+### オプション C: ローカル LLM（vLLM）で実行
 
 ```bash
-# 環境変数を読み込んで実行
-set -a && source .env && set +a && python src/run.py
+# 1. 別ターミナルで vLLM サーバーを起動
+python -m vllm.entrypoints.openai.api_server \
+  --model meta-llama/Llama-2-7b-hf \
+  --port 8000
+
+# 2. メインターミナルで実行
+export LLM_BASE_URL="http://localhost:8000"
+export LLM_MODEL="meta-llama/Llama-2-7b-hf"
+python src/run.py
 ```
 
-**実行中のログ:**
-```
-✅ Found 1 image(s) in input/
-🔍 Processing: bit202411141623482465.jpg
-   - Objects detected: 2
-   - Hazards identified: 1
-   - Unobserved regions: 3
-🎨 Running Vision Analysis (model: gpt-5-nano-2025-08-07)...
-✅ Vision Analysis Complete
-=== Running Safety View Agent ===
-✅ Agent execution summary saved to output/agent_execution_summary.txt
-✅ Graph diagram saved to output/flow.md
-```
+## `.env` ファイルで環境変数を管理（推奨）
 
-### 6. 結果を確認
+毎回 export する代わりに、`.env` ファイルを作成：
 
 ```bash
-# 構造化データ
-cat output/perception_results.json
+# .env ファイルを作成
+cat > .env << EOF
+OPENAI_API_KEY=sk-your-api-key-here
+OPENAI_MODEL=gpt-5-nano-2025-08-07
+EOF
 
-# 人間向けレポート
-cat output/agent_execution_summary.txt
-
-# グラフ図（Markdown）
-cat output/flow.md
+# これで python src/run.py が自動的に .env を読み込みます
+python src/run.py
 ```
 
-## 主要なコマンド
+## テスト実行（1分）
 
-| コマンド | 説明 |
-|---------|------|
-| `uv sync --extra dev` | 仮想環境をセットアップ |
-| `pytest tests/ -v` | テストを実行 |
-| `python src/run.py` | エージェントを実行 |
-| `python finetuning/train_dummy.py` | ダミー学習を実行 |
+```bash
+# E2E テスト実行（LLM 不要）
+pytest tests/test_e2e.py -v
+```
 
-## ファイルの役割
+**期待される結果**:
+```
+tests/test_e2e.py::test_e2e_agent_no_llm PASSED [100%]
+```
+
+## 出力ファイル
+
+実行後、以下のファイルが生成されます：
 
 ```
-src/
-├── run.py                    # ← エージェント実行スクリプト
-├── safety_agent/
-│   ├── agent.py             # LLM・グラフノード
-│   ├── perceiver.py         # Vision処理
-│   └── schema.py            # データモデル
-│
-configs/
-└── default.yaml             # ← モデル設定（gpt-5-nano 固定）
-
-input/                        # ← 画像入力フォルダ
-output/                       # ← 実行結果出力フォルダ
+data/
+├── frames/
+│   ├── frame_0s.jpg
+│   ├── frame_1s.jpg
+│   └── ...
+├── audio.wav
+├── perception_results.json          ← 分析結果（JSON）
+├── agent_execution_summary.txt      ← ログ
+└── flow.md                          ← グラフ図（Mermaid）
 ```
+
+### perception_results.json の例
+
+```json
+{
+  "perception_results": [
+    {
+      "obs_id": "img_0",
+      "video_timestamp": 0.0,
+      "ir": {
+        "objects": [],
+        "hazards": [],
+        "unobserved": [
+          {
+            "region_id": "blind_left",
+            "risk": 0.4,
+            "suggested_pan_deg": -30.0
+          }
+        ],
+        "vision_description": "田園風景。道路沿いに..."
+      },
+      "selected_view": {
+        "view_id": "view_blind_left",
+        "pan_deg": -30.0,
+        "tilt_deg": 0.0
+      }
+    }
+  ],
+  "agent_execution": [...]
+}
+```
+
+## 設定のカスタマイズ
+
+`configs/default.yaml` で動作をカスタマイズ：
+
+```yaml
+# フレーム処理数
+agent:
+  max_steps: 1          # 1フレーム、-1で全フレーム
+
+# LLM プロバイダー
+llm:
+  provider: "openai"    # or "vllm"
+
+# ビュー選択戦略
+view_planning:
+  safety_priority_weight: 0.7  # 安全性の重み（0.7推奨）
+  info_gain_weight: 0.3        # 情報利得の重み
+```
+
+## 複数フレーム処理
+
+```bash
+# 設定を編集
+sed -i 's/max_steps: 1/max_steps: 3/' configs/default.yaml
+
+# 実行
+python src/run.py
+
+# 結果確認
+python -c "import json; d=json.load(open('data/perception_results.json')); print(f'Frames: {len(d[\"perception_results\"])}')"
+```
+
+**出力**: `Frames: 3`
 
 ## トラブルシューティング
 
-### 「ModuleNotFoundError: No module named 'safety_agent'」
+### エラー: `OPENAI_API_KEY not set`
 
 ```bash
-# 仮想環境を再構築
+# APIキーを設定して再実行
+export OPENAI_API_KEY="sk-..."
+python src/run.py
+
+# または .env ファイルを作成
+echo "OPENAI_API_KEY=sk-..." > .env
+```
+
+### エラー: `No frames found in data/frames`
+
+```bash
+# 動画ファイルを data/videos/ に配置
+cp your_video.mp4 data/videos/
+
+# 実行（フレームが自動抽出されます）
+python src/run.py
+```
+
+### テスト失敗
+
+```bash
+# 環境を再構築
 uv sync --force
-```
-
-### 「OPENAI_API_KEY is not set」
-
-```bash
-# 環境変数を確認
-echo $OPENAI_API_KEY
-
-# .env が正しく読み込まれているか確認
-set -a && source .env && set +a && echo $OPENAI_API_KEY
-```
-
-### テストが失敗する
-
-```bash
-# 詳細ログを表示
-pytest tests/ -vv -s
-
-# 特定テストのみ実行
-pytest tests/test_schema.py -v
+pytest tests/test_e2e.py -v
 ```
 
 ## 次のステップ
 
-- [詳細セットアップガイド](SETUP.md) - より詳しい説明
-- [アーキテクチャ](ARCHITECTURE.md) - システム設計
-- [トラブルシューティング](TROUBLESHOOTING.md) - よくある問題
-- [CLAUDE.md](../CLAUDE.md) - Claude Code 向け情報
+- 📖 [システムアーキテクチャ](./ARCHITECTURE.md) - 詳細な設計を学ぶ
+- 🔧 [拡張ガイド](./EXTENDING.md) - 新しいセンサーやロジックを追加する
+- 💡 [CLAUDE.md](../CLAUDE.md) - プロジェクト全体の仕様書
 
-## よくある質問（FAQ）
+## よくある使用例
 
-**Q: Vision API は何をしているの？**
-A: 入力画像を分析して、安全上の危険物や注意が必要な領域を自動検出しています。
+### 例 1: 単一画像の安全性分析
 
-**Q: なぜ `gpt-5-nano-2025-08-07` なの？**
-A: Vision 対応モデルの中でコスト効率が最適だからです。変更しないでください。
+```bash
+# data/frames/ に画像を配置
+cp image.jpg data/frames/frame_0s.jpg
 
-**Q: オフラインで実行できる？**
-A: はい、LLM を使わずヒューリスティックフォールバックで動作可能です。
+# 実行
+python src/run.py
+```
 
-**Q: 実行時間はどのくらい？**
-A: 30-40秒（Vision API + エージェントループ）
+### 例 2: 動画から30フレームを分析
 
-**Q: 画像を複数処理できる？**
-A: はい、`input/` フォルダに複数画像を置くと順番に処理します。
+```bash
+# 設定変更
+echo "
+agent:
+  max_steps: 30
+" > configs/default.yaml
+
+# 動画を data/videos/ に配置
+cp video.mp4 data/videos/
+
+# 実行
+python src/run.py
+
+# 結果確認
+python -c "import json; d=json.load(open('data/perception_results.json')); print(len(d['perception_results']))"
+```
+
+### 例 3: OpenAI API で高品質な提案を得る
+
+```bash
+# APIキー設定
+export OPENAI_API_KEY="sk-..."
+
+# 実行（LLM による次ビュー提案を得られます）
+python src/run.py
+
+# JSON で提案内容を確認
+python -c "import json; d=json.load(open('data/perception_results.json')); print(d['agent_execution'][0]['selected_view'])"
+```
+
+## 支援が必要な場合
+
+- 📚 [アーキテクチャドキュメント](./ARCHITECTURE.md)
+- 🛠️ [拡張ガイド](./EXTENDING.md)
+- 🐛 バグ報告: GitHub Issues

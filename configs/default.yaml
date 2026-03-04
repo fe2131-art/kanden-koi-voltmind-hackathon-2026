@@ -2,7 +2,7 @@
 
 # Agent parameters
 agent:
-  max_steps: 1    # 実行時間短縮：3ステップで判定
+  max_steps: 1    # デフォルト：1フレーム実行
   enable_yolo: false
 
 # LLM configuration
@@ -33,6 +33,31 @@ vlm:
     model: null    # null → llm.openai.model を流用（gpt-5-nano-2025-08-07）
     timeout_s: 60.0
 
+# Modalities configuration (LangGraph fan-out)
+modalities:
+  vision:
+    enabled: true          # VLM による画像分析
+    yolo_enabled: false    # YOLO 物体検出（ultralytics が必要）
+  audio:
+    enabled: true          # 音声テキスト解析
+  # lidar:                 # 将来の拡張例
+  #   enabled: false
+
+# Video and Audio processing
+video:
+  fps: 1.0            # フレーム抽出レート (0.5-2.0 推奨)
+  max_frames: 30      # 最大フレーム数 (0 = 無制限)
+  clear_frames: false # true = 実行前に data/frames/ を削除して再実行
+  formats:
+    extensions: [".mp4", ".avi", ".mov", ".mkv", ".webm"]
+    frame_output: "frame_{timestamp}s.jpg"
+
+audio:
+  output_filename: "audio.wav"
+  sample_rate: 16000
+  channels: 1
+  codec: "pcm_s16le"
+
 # LLM トークン設定
 tokens:
   vision_max_completion_tokens: 5000  # Vision API: 推論 + 応答用（gpt-5-nano は推論に 4000+ 使用）
@@ -42,6 +67,25 @@ tokens:
 thresholds:
   risk_stop_threshold: 0.2      # Stop if max unobserved risk <= this
   hazard_focus_threshold: 0.6   # Enforce high-risk unobserved coverage
+
+# View Planning (ビュー選択戦略のパラメータ)
+view_planning:
+  # 次に観測すべき候補領域の検討数上限
+  # より多くの領域を検討するほど計算負荷が増加します
+  max_outstanding_regions: 6
+
+  # ビュー選択スコア: スコア = (安全性優先度の重み × 安全性) + (情報利得の重み × 情報利得)
+  # 安全性を重視する場合は 0.7 以上、バランス重視は 0.5、情報重視は 0.3 以下に設定
+  safety_priority_weight: 0.7
+
+  # 情報利得（新しい視点から見える未確認領域の多さ）の重み
+  # 安全性との合計は 1.0 になります
+  info_gain_weight: 0.3
+
+  # ハザード検出時の安全性優先度の基本値
+  # リスクを加算: safety_priority = min(1.0, base + detected_risk)
+  # 値が大きいほど積極的にハザード領域を観測します
+  safety_priority_base: 0.7
 
 # Dataset/adapter
 dataset:

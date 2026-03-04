@@ -80,11 +80,13 @@ export OPENAI_API_KEY="sk-proj-YOUR-KEY-HERE"
 python src/run.py
 ```
 
-**方法 3: .env を確認する**
+**方法 3: .env ファイルを確認する**
 ```bash
-# .env が読み込まれているか確認
-set -a && source .env && set +a
-echo $OPENAI_API_KEY  # 出力がある？
+# .env ファイルが存在するか確認
+ls -la .env
+
+# .env に OPENAI_API_KEY が設定されているか確認
+grep OPENAI_API_KEY .env
 ```
 
 ### 「OPENAI_API_KEY が含まれた形式が間違っている」

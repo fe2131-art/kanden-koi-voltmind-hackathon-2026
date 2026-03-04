@@ -7,39 +7,63 @@ name = "safety-agent"
 version = "0.1.0"
 description = "Safety View Agent: LangGraph-based agent for safety assessment"
 readme = "CLAUDE.md"
-requires-python = ">=3.11"
+requires-python = ">=3.12,<3.13"
 authors = [
     {name = "Safety Team"}
 ]
 
 dependencies = [
-    "pydantic>=2.0",
-    "langgraph>=1.0.9",
-    "langchain-core>=0.1.0",
+    "pydantic>=2.12.5",
+    "langgraph>=1.0.10",
+    "langchain-core>=1.2.16",
     "httpx>=0.24.0",
     "typer>=0.9.0",
     "pyyaml>=6.0",
-    "pillow>=10.0",
+    "opencv-python",
+    "huggingface_hub>=0.34.0,<1.0",
+    "torch==2.10.0",
+    "vllm>=0.11.0",
+    "qwen-vl-utils>=0.0.14"
+
 ]
 
+[tool.uv.sources]
+torch = [{ index = "torch-cu129" }]
+vllm  = [{ index = "vllm-nightly" }]
+
+[[tool.uv.index]]
+name = "torch-cu129"
+url = "https://download.pytorch.org/whl/cu129"
+explicit = true
+
+[[tool.uv.index]]
+name = "vllm-nightly"
+url = "https://wheels.vllm.ai/nightly"
+explicit = true
+
 [project.optional-dependencies]
-yolo = ["ultralytics>=8.0"]
+yolo = [
+    "ultralytics>=8.0"
+]
 finetune = [
-    "torch>=2.0",
     "transformers>=4.30",
     "peft>=0.4",
     "datasets>=2.0",
     "safetensors>=0.3",
+]
+demo = [
+    "websockets>=11.0",
 ]
 dev = [
     "pytest>=7.0",
     "pytest-cov>=4.0",
     "ruff>=0.1.0",
     "pyright>=1.1.0",
+    "python-dotenv>=1.0",
 ]
 
 [tool.hatch.build.targets.wheel]
-packages = ["src"]
+packages = ["src/safety_agent"]
 
 [tool.pytest.ini_options]
 minversion = "7.0"
@@ -52,7 +76,7 @@ omit = ["*/tests/*"]
 
 [tool.ruff]
 line-length = 88
-target-version = "py311"
+target-version = "py312"
 
 [tool.ruff.lint]
 select = [
@@ -67,7 +91,7 @@ ignore = ["E501"]  # line-too-long
 known-first-party = ["safety_agent"]
 
 [tool.pyright]
-pythonVersion = "3.11"
+pythonVersion = "3.12"
 typeCheckingMode = "standard"
 reportOptionalMemberAccess = "information"
 reportOptionalSubscript = "information"

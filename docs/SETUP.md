@@ -4,7 +4,7 @@
 
 ## 前提条件
 
-- **Python 3.11 以上** がシステムにインストール済み
+- **Python 3.12 以上** がシステムにインストール済み
 - **uv** パッケージマネージャー（最新版推奨）
   ```bash
   curl -LsSf https://astral.sh/uv/install.sh | sh
@@ -82,27 +82,39 @@ pytest tests/ -v
 # tests/test_e2e.py::test_e2e_agent_no_llm PASSED
 ```
 
-## ステップ 6: 入力画像を準備（オプション）
+## ステップ 6: 入力データを準備（オプション）
 
+### 静止画を使う場合：
 ```bash
-# input フォルダに画像を配置
-cp /path/to/your/image.jpg input/
+# data/images/ フォルダに画像を配置
+cp /path/to/your/image.jpg data/images/
+```
+
+### 動画を使う場合（推奨）：
+```bash
+# data/videos/ フォルダに動画ファイルを配置
+cp /path/to/your/video.mp4 data/videos/
+
+# エージェントが自動的に以下を実行します：
+# - フレーム分割 (data/frames/ に保存)
+# - 音声抽出 (data/audio/ に保存)
 ```
 
 ## ステップ 7: エージェントを実行
 
 ```bash
-# .env を読み込んで実行
-set -a && source .env && set +a && python src/run.py
-
-# または
+# .env ファイルから自動的に環境変数を読み込んで実行
 python src/run.py
 ```
 
-**実行後、以下のファイルが `output/` に生成されます：**
-- `perception_results.json` - 構造化データ（Vision 分析結果含む）
+**注**: `.env` ファイルは自動的に読み込まれます（`python-dotenv` ライブラリにより）
+
+**実行後、以下のファイルが `data/` に生成されます：**
+- `perception_results.json` - 構造化データ（Vision 分析結果 + video_timestamp 含む）
 - `agent_execution_summary.txt` - 人間向けレポート
 - `flow.md` - LangGraph 実行フロー図
+- `frames/` - 抽出されたフレーム画像
+- `audio/audio.wav` - 抽出された音声
 
 ## 一般的な問題
 
@@ -116,11 +128,14 @@ uv sync --force
 ### OPENAI_API_KEY is not set
 
 ```bash
-# 環境変数を確認
-echo $OPENAI_API_KEY
+# .env ファイルが存在するか確認
+ls -la .env
 
-# .env が正しく読み込まれているか確認
-set -a && source .env && set +a && echo $OPENAI_API_KEY
+# .env の内容を確認
+grep OPENAI_API_KEY .env
+
+# .env を編集してAPIキーを設定
+nano .env
 ```
 
 ### Vision API が空の応答を返す
@@ -134,6 +149,58 @@ set -a && source .env && set +a && echo $OPENAI_API_KEY
 - [アーキテクチャ](ARCHITECTURE.md) - システム設計の詳細
 - [トラブルシューティング](TROUBLESHOOTING.md) - よくある問題と解決策
 - [CLAUDE.md](../CLAUDE.md) - Claude Code 向け詳細情報
+
+## オプション: React デモアプリのセットアップ
+
+ブラウザで動画とリアルタイム検出結果を確認したい場合：
+
+### 前提条件
+- Node.js 18+ と npm
+
+### セットアップ手順
+
+#### 1. デモ依存をインストール
+```bash
+uv sync --extra demo
+```
+
+#### 2. WebSocket サーバーを起動（ターミナル 1）
+```bash
+python src/apps/server.py
+# 出力例：
+# ws server: ws://localhost:8001
+# monitoring: /path/to/output/perception_results.json
+```
+
+#### 3. React アプリをセットアップ・起動（ターミナル 2）
+```bash
+cd src/apps
+npm install
+npm run dev
+# 出力例：
+#   VITE v5.0.8  ready in 123 ms
+#   ➜  Local:   http://localhost:5173/
+```
+
+#### 4. ブラウザで開く
+```
+http://localhost:5173
+```
+
+#### 5. エージェントを実行（ターミナル 3）
+```bash
+# .env から自動的に環境変数を読み込んで実行
+python src/run.py
+```
+
+### 動作確認チェックリスト
+
+- [ ] React アプリが `http://localhost:5173` で起動している
+- [ ] WebSocket が接続状態（Status パネルで `ws: 1 (OPEN)` が表示）
+- [ ] 動画 `/video.mp4` が表示され再生可能
+- [ ] エージェント実行後、検出結果が Canvas に BBox として描画される
+
+詳細は [DEMO_APP.md](DEMO_APP.md) を参照。
 
 ## ヘルプが必要な場合
 

@@ -1,27 +1,51 @@
 import json
 import os
+import subprocess
+import time
 from pathlib import Path
 from typing import Optional
 
+import cv2
 import yaml
+from dotenv import load_dotenv
+
+# .env ファイルから環境変数を読み込む
+load_dotenv()
 
 from safety_agent.agent import AgentState, OpenAICompatLLM, build_agent
-from safety_agent.perceiver import Perceiver, VisionAnalyzer
+from safety_agent.modality_nodes import AudioAnalyzer, VisionAnalyzer, YOLODetector
+from safety_agent.perceiver import Perceiver
 from safety_agent.schema import CameraPose, Observation, ObservationProvider, WorldModel
+from util.logger import setup_logger
+from util.serializers import serialize_pydantic_or_dict
+
+# ロガーを設定
+logger = setup_logger("safety_view_agent")
+
+# ==========================================
+# 注: ビデオ・音声定数は configs/default.yaml から読み込まれます
+# ==========================================
 
 
 def load_config(config_path: str = "configs/default.yaml") -> dict:
-    """Load YAML configuration."""
+    """YAML設定を読み込む。"""
     if not os.path.exists(config_path):
-        print(f"⚠️  Config file not found: {config_path}, using defaults")
+        logger.warning(f"Config file not found: {config_path}, using defaults")
         return {}
 
-    with open(config_path, "r", encoding="utf-8") as f:
-        return yaml.safe_load(f) or {}
+    try:
+        with open(config_path, "r", encoding="utf-8") as f:
+            return yaml.safe_load(f) or {}
+    except yaml.YAMLError as e:
+        logger.warning(f"Failed to parse YAML config: {e}, using defaults")
+        return {}
+    except (IOError, OSError) as e:
+        logger.warning(f"Failed to read config file: {e}, using defaults")
+        return {}
 
 
 def get_llm(config: dict) -> Optional[OpenAICompatLLM]:
-    """Initialize LLM based on configuration and environment variables."""
+    """設定と環境変数に基づいて LLM を初期化。"""
     llm_config = config.get("llm", {})
     provider = llm_config.get("provider", "openai")
 
@@ -29,14 +53,14 @@ def get_llm(config: dict) -> Optional[OpenAICompatLLM]:
         # OpenAI API
         api_key = os.getenv("OPENAI_API_KEY")
         if not api_key:
-            print("⚠️  OPENAI_API_KEY not set, using heuristic fallback")
+            logger.warning("OPENAI_API_KEY not set, using heuristic fallback")
             return None
 
         openai_cfg = llm_config.get("openai", {})
         model = os.getenv("OPENAI_MODEL", openai_cfg.get("model", "gpt-4o"))
         base_url = openai_cfg.get("base_url", "https://api.openai.com/v1")
 
-        print(f"✅ Using OpenAI API (model={model})")
+        logger.info(f"Using OpenAI API (model={model})")
         return OpenAICompatLLM(
             base_url=base_url,
             model=model,
@@ -51,11 +75,11 @@ def get_llm(config: dict) -> Optional[OpenAICompatLLM]:
         model = os.getenv("LLM_MODEL", vllm_cfg.get("model"))
 
         if not base_url:
-            print("⚠️  LLM_BASE_URL not set, using heuristic fallback")
+            logger.warning("LLM_BASE_URL not set, using heuristic fallback")
             return None
 
         api_key = vllm_cfg.get("api_key", "EMPTY")
-        print(f"✅ Using vLLM server at {base_url} (model={model})")
+        logger.info(f"Using vLLM server at {base_url} (model={model})")
         return OpenAICompatLLM(
             base_url=base_url,
             model=model,
@@ -64,12 +88,12 @@ def get_llm(config: dict) -> Optional[OpenAICompatLLM]:
         )
 
     else:
-        print(f"⚠️  Unknown LLM provider: {provider}")
+        logger.warning(f"Unknown LLM provider: {provider}")
         return None
 
 
 def get_vlm(config: dict) -> Optional[VisionAnalyzer]:
-    """Initialize VLM (Vision Language Model) based on configuration and environment variables."""
+    """VLM（Vision Language Model）を設定と環境変数に基づいて初期化。"""
     vlm_config = config.get("vlm", {})
     llm_config = config.get("llm", {})
     provider = vlm_config.get("provider", "openai")
@@ -78,7 +102,7 @@ def get_vlm(config: dict) -> Optional[VisionAnalyzer]:
         # OpenAI API
         api_key = os.getenv("OPENAI_API_KEY")
         if not api_key:
-            print("⚠️  OPENAI_API_KEY not set, VLM disabled")
+            logger.warning("OPENAI_API_KEY not set, VLM disabled")
             return None
 
         vlm_openai = vlm_config.get("openai", {})
@@ -98,7 +122,7 @@ def get_vlm(config: dict) -> Optional[VisionAnalyzer]:
         # タイムアウト: VLM設定 > LLM設定
         timeout_s = vlm_openai.get("timeout_s") or llm_openai.get("timeout_s", 60.0)
 
-        print(f"✅ Using VisionAnalyzer (model={model})")
+        logger.info(f"Using VisionAnalyzer (model={model})")
         return VisionAnalyzer(
             base_url=base_url,
             model=model,
@@ -116,12 +140,12 @@ def get_vlm(config: dict) -> Optional[VisionAnalyzer]:
         model = os.getenv("VLM_MODEL", vlm_vllm.get("model") or llm_vllm.get("model"))
 
         if not base_url:
-            print("⚠️  LLM_BASE_URL not set, VLM disabled")
+            logger.warning("LLM_BASE_URL not set, VLM disabled")
             return None
 
         api_key = vlm_vllm.get("api_key") or llm_vllm.get("api_key", "EMPTY")
         timeout_s = vlm_vllm.get("timeout_s") or llm_vllm.get("timeout_s", 60.0)
-        print(f"✅ Using VisionAnalyzer with vLLM at {base_url} (model={model})")
+        logger.info(f"Using VisionAnalyzer with vLLM at {base_url} (model={model})")
         return VisionAnalyzer(
             base_url=base_url,
             model=model,
@@ -130,116 +154,346 @@ def get_vlm(config: dict) -> Optional[VisionAnalyzer]:
         )
 
     else:
-        print(f"⚠️  Unknown VLM provider: {provider}")
+        logger.warning(f"Unknown VLM provider: {provider}")
         return None
 
 
-def load_images_from_input(input_dir: str = "input") -> list:
-    """Load images from input directory."""
-    input_path = Path(input_dir)
-    if not input_path.exists():
-        print(f"⚠️  Input directory not found: {input_dir}")
+def find_video(search_dirs: list[str], video_extensions: set[str]) -> Optional[Path]:
+    """検索ディレクトリからビデオファイルを探す。
+
+    Args:
+        search_dirs: 検索対象ディレクトリパスのリスト
+        video_extensions: 有効なビデオファイル拡張子のセット（例: {".mp4", ".avi"}）
+
+    Returns:
+        見つかった最初のビデオファイルのパス、または None
+    """
+    for d in search_dirs:
+        dir_path = Path(d)
+        try:
+            for f in sorted(dir_path.iterdir()):
+                if f.is_file() and f.suffix.lower() in video_extensions:
+                    logger.info(f"Found video: {f.name}")
+                    return f
+        except (FileNotFoundError, OSError, PermissionError):
+            continue
+    return None
+
+
+def split_video_to_frames(
+    video_path: str,
+    frames_dir: str,
+    frame_output_format: str = "frame_{timestamp}s.jpg",
+    target_fps: float = 1.0,
+    max_frames: int = 0,
+    clear_frames: bool = False,
+) -> tuple[list[Path], list[float]]:
+    """ビデオから指定 FPS でフレームを抽出。
+
+    Args:
+        video_path: ビデオファイルのパス
+        frames_dir: フレーム出力ディレクトリ
+        frame_output_format: フレームファイル名形式テンプレート（例: "frame_{timestamp}s.jpg"）
+        target_fps: 目標フレームレート（例: 1.0 = 1フレーム/秒）
+        max_frames: 抽出最大フレーム数（0 = 無制限）
+        clear_frames: True の場合、抽出前に既存フレームを削除
+
+    Returns:
+        (フレームパスリスト, ビデオタイムスタンプリスト（秒単位）) のタプル
+    """
+    frames_dir = Path(frames_dir)
+    frames_dir.mkdir(parents=True, exist_ok=True)
+
+    # Clear existing frames if requested
+    if clear_frames:
+        for f in frames_dir.glob("frame_*.jpg"):
+            try:
+                f.unlink()
+            except OSError:
+                pass
+
+    # Open video
+    cap = cv2.VideoCapture(str(video_path))
+    if not cap.isOpened():
+        logger.warning(f"Could not open video: {video_path}")
+        return [], []
+
+    source_fps = cap.get(cv2.CAP_PROP_FPS)
+
+    if target_fps <= 0 or source_fps <= 0:
+        logger.warning(f"Invalid FPS: source={source_fps}, target={target_fps}")
+        cap.release()
+        return [], []
+
+    frame_interval = max(1, int(round(source_fps / target_fps)))
+
+    frame_paths = []
+    video_timestamps = []
+    frame_count = 0
+    idx = 0
+
+    while True:
+        ret, frame = cap.read()
+        if not ret:
+            break
+
+        # Extract frame at specified interval
+        if idx % frame_interval == 0:
+            if max_frames > 0 and frame_count >= max_frames:
+                break
+
+            # Calculate timestamp in seconds
+            timestamp = idx / source_fps
+            timestamp_str = f"{timestamp:.3f}".rstrip('0').rstrip('.')
+
+            # Save frame
+            frame_filename = frame_output_format.format(timestamp=timestamp_str)
+            frame_path = frames_dir / frame_filename
+            cv2.imwrite(str(frame_path), frame)
+
+            frame_paths.append(frame_path)
+            video_timestamps.append(timestamp)
+            frame_count += 1
+
+        idx += 1
+
+    cap.release()
+
+    logger.info(f"Extracted {len(frame_paths)} frames from {Path(video_path).name} at {target_fps} FPS")
+    return frame_paths, video_timestamps
+
+
+def extract_audio(
+    video_path: str,
+    audio_dir: str,
+    audio_output_filename: str = "audio.wav",
+    audio_codec: str = "pcm_s16le",
+    audio_sample_rate: int = 16000,
+    audio_channels: int = 1,
+) -> Optional[Path]:
+    """ffmpeg を使用してビデオから音声を抽出。
+
+    Args:
+        video_path: ビデオファイルのパス
+        audio_dir: 音声出力ディレクトリ
+        audio_output_filename: 出力音声ファイル名
+        audio_codec: 音声コーデック（例: "pcm_s16le"）
+        audio_sample_rate: 音声サンプリングレート（Hz、例: 16000）
+        audio_channels: 音声チャンネル数（例: 1 はモノラル）
+
+    Returns:
+        抽出した音声ファイルのパス、またはなし（音声がないか ffmpeg が利用不可の場合）
+    """
+    audio_dir = Path(audio_dir)
+    audio_dir.mkdir(parents=True, exist_ok=True)
+
+    # Check if ffprobe is available and if video has audio
+    try:
+        result = subprocess.run(
+            ["ffprobe", "-v", "error", "-select_streams", "a:0",
+             "-show_entries", "stream=codec_type", "-of", "csv=p=0", str(video_path)],
+            capture_output=True, text=True, timeout=5
+        )
+        if not result.stdout.strip():
+            logger.warning(f"Video has no audio track: {Path(video_path).name}")
+            return None
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        logger.warning("ffprobe not available (ffmpeg not installed)")
+        return None
+
+    # Extract audio using ffmpeg
+    audio_path = audio_dir / audio_output_filename
+    try:
+        subprocess.run(
+            ["ffmpeg", "-y", "-i", str(video_path),
+             "-vn", "-acodec", audio_codec, "-ar", str(audio_sample_rate),
+             "-ac", str(audio_channels), str(audio_path)],
+            capture_output=True, timeout=30, check=True
+        )
+        logger.info(f"Extracted audio to {audio_path.name}")
+        return audio_path
+    except (FileNotFoundError, subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
+        logger.warning(f"Could not extract audio: {e}")
+        return None
+
+
+def load_frames(frames_dir: str = "data/frames") -> list[Path]:
+    """フレームディレクトリから画像を読み込む。
+
+    Args:
+        frames_dir: フレーム画像を検索するディレクトリパス
+
+    Returns:
+        見つかったフレーム画像ファイルのパスオブジェクトのリスト（ソート済み）
+    """
+    frames_path = Path(frames_dir)
+    if not frames_path.exists():
         return []
 
-    image_extensions = {".jpg", ".jpeg", ".png", ".bmp", ".gif"}
-    image_files = [
+    image_extensions = {".jpg", ".jpeg", ".png", ".bmp"}
+    frame_files = sorted([
         f
-        for f in input_path.iterdir()
+        for f in frames_path.iterdir()
         if f.is_file() and f.suffix.lower() in image_extensions
-    ]
+    ])
 
-    if image_files:
-        print(f"✅ Found {len(image_files)} image(s) in {input_dir}/")
-        return sorted(image_files)
-    else:
-        print(f"⚠️  No images found in {input_dir}/")
-        return []
+    if frame_files:
+        logger.info(f"Found {len(frame_files)} frame(s) in {frames_dir}/")
+
+    return frame_files
 
 
-def save_analysis_results(output_dir: str, analysis_results: dict):
-    """Save analysis results to output directory."""
+def save_analysis_results(
+    output_dir: str,
+    analysis_results: dict,
+    video_timestamps: Optional[dict[str, float]] = None,
+    agent_output: Optional[dict] = None,
+) -> None:
+    """分析結果を出力ディレクトリに保存（追記モードで履歴を保持）。
+
+    Args:
+        output_dir: 出力ディレクトリパス
+        analysis_results: 結果リストを含む 'perception_results' キーの辞書
+        video_timestamps: obs_id をビデオタイムスタンプ（秒単位）にマッピングする辞書（オプション）
+        agent_output: エージェント実行結果の辞書（selected、world、plan、messages）（オプション）
+    """
     os.makedirs(output_dir, exist_ok=True)
 
     results_file = Path(output_dir) / "perception_results.json"
+    default_data = {"perception_results": [], "agent_execution": []}
+
+    # 既存データを読み込む（追記式）
+    if results_file.exists():
+        try:
+            with open(results_file, "r", encoding="utf-8") as f:
+                existing_data = json.load(f)
+        except (json.JSONDecodeError, IOError):
+            existing_data = default_data
+    else:
+        existing_data = default_data
+
+    # Initialize agent_execution if it doesn't exist
+    if "agent_execution" not in existing_data:
+        existing_data["agent_execution"] = []
+
+    # タイムスタンプを付与して新しいフレームを追加
+    current_timestamp = time.time()
+    for result in analysis_results.get("perception_results", []):
+        result["timestamp"] = current_timestamp  # Unix timestamp（秒単位）
+
+        # Add video_timestamp if available
+        if video_timestamps:
+            obs_id = result.get("obs_id")
+            if obs_id and obs_id in video_timestamps:
+                result["video_timestamp"] = video_timestamps[obs_id]
+
+        existing_data["perception_results"].append(result)
+
+    # Agent 実行結果を保存（提供されている場合）
+    if agent_output:
+        # Serialize messages (handle both dict and LangChain message objects)
+        messages_list = []
+        for msg in agent_output.get("messages", []):
+            if isinstance(msg, dict):
+                messages_list.append(msg)
+            elif hasattr(msg, "content"):
+                # LangChain message object
+                messages_list.append({
+                    "role": msg.__class__.__name__,
+                    "content": getattr(msg, "content", str(msg))
+                })
+            else:
+                messages_list.append({"content": str(msg)})
+
+        agent_record = {
+            "timestamp": current_timestamp,
+            "step": agent_output.get("step", 0),
+            "selected_view": None,
+            "world_model": None,
+            "plan": None,
+            "messages": messages_list,
+            "errors": agent_output.get("errors", []),
+        }
+
+        # Serialize agent output objects (using unified serializer)
+        agent_record["selected_view"] = serialize_pydantic_or_dict(agent_output.get("selected"))
+        agent_record["world_model"] = serialize_pydantic_or_dict(agent_output.get("world"))
+        agent_record["plan"] = serialize_pydantic_or_dict(agent_output.get("plan"))
+
+        existing_data["agent_execution"].append(agent_record)
+
+    # ファイルに保存
     with open(results_file, "w", encoding="utf-8") as f:
-        json.dump(analysis_results, f, ensure_ascii=False, indent=2)
-    print(f"✅ Analysis results saved to {results_file}")
+        json.dump(existing_data, f, ensure_ascii=False, indent=2)
+    frame_count = len(analysis_results.get('perception_results', []))
+    agent_count = 1 if agent_output else 0
+    logger.info(f"Results appended to {results_file} ({frame_count} frames, {agent_count} agent execution)")
 
 
-def main():
-    """Main entry point for Safety View Agent."""
-    # Load configuration
-    config = load_config()
-    agent_cfg = config.get("agent", {})
-    thresholds_cfg = config.get("thresholds", {})
-    tokens_cfg = config.get("tokens", {})
+def prepare_observations(
+    config: dict,
+    video_extensions: set,
+    frame_output_format: str,
+    audio_config: dict,
+) -> tuple[list[Observation], dict]:
+    """ビデオとフレームから観測データを準備。
 
-    # Load images from input directory
-    image_files = load_images_from_input("input")
+    Args:
+        config: 設定辞書
+        video_extensions: 有効なビデオ拡張子のセット
+        frame_output_format: フレームファイル名形式
+        audio_config: 音声設定
 
-    # Build observations from input images or use example observations
-    if image_files:
-        print("\n=== Processing Input Images ===\n")
+    Returns:
+        (観測リスト、ビデオタイムスタンプマップ) のタプル
+    """
+    video_cfg = config.get("video", {})
+    audio_output_filename = audio_config.get("output_filename", "audio.wav")
+    audio_codec = audio_config.get("codec", "pcm_s16le")
+    audio_sample_rate = audio_config.get("sample_rate", 16000)
+    audio_channels = audio_config.get("channels", 1)
+
+    video_timestamps_map = {}
+
+    # Process video
+    video_path = find_video(["data/videos", "data"], video_extensions)
+    if video_path:
+        extract_audio(
+            str(video_path),
+            "data/audio",
+            audio_output_filename=audio_output_filename,
+            audio_codec=audio_codec,
+            audio_sample_rate=audio_sample_rate,
+            audio_channels=audio_channels,
+        )
+        frame_paths, video_timestamps = split_video_to_frames(
+            str(video_path),
+            "data/frames",
+            frame_output_format=frame_output_format,
+            target_fps=video_cfg.get("fps", 1.0),
+            max_frames=video_cfg.get("max_frames", 30),
+            clear_frames=video_cfg.get("clear_frames", False),
+        )
+        if frame_paths:
+            video_timestamps_map = {f"img_{i}": ts for i, ts in enumerate(video_timestamps)}
+
+    # Load frame images from data/frames
+    frame_files = load_frames("data/frames")
+    if frame_files:
+        logger.info(f"Processing {len(frame_files)} frame image(s)")
         obs_list = [
             Observation(
                 obs_id=f"img_{i}",
-                image_path=str(img_path.absolute()),
+                image_path=str(frame_path.absolute()),
                 audio_text=None,
                 camera_pose=CameraPose(pan_deg=0, tilt_deg=0, zoom=1),
             )
-            for i, img_path in enumerate(image_files)
+            for i, frame_path in enumerate(frame_files)
         ]
-        # Get VLM for vision analysis
-        vlm = get_vlm(config)
-
-        # Process images with Perceiver and save results
-        perceiver = Perceiver(enable_yolo=agent_cfg.get("enable_yolo", True), vlm=vlm)
-        analysis_results = {
-            "input_images": [str(p) for p in image_files],
-            "perception_results": [],
-        }
-
-        for obs in obs_list:
-            print(f"\n🔍 Processing: {Path(obs.image_path).name}")
-            ir = perceiver.run(obs)
-
-            print(f"   - Objects detected: {len(ir.objects)}")
-            for obj in ir.objects:
-                print(f"     • {obj.label} ({obj.confidence:.2%})")
-
-            print(f"   - Hazards identified: {len(ir.hazards)}")
-            for haz in ir.hazards:
-                print(f"     • {haz.hazard_type} ({haz.confidence:.2%})")
-
-            print(f"   - Unobserved regions: {len(ir.unobserved)}")
-
-            # Vision analysis result from Perceiver (if VLM is available)
-            vision_text = ir.vision_description or ""
-            if ir.vision_description:
-                print(
-                    f"   ✅ Vision Analysis Complete ({len(ir.vision_description)} chars)"
-                )
-
-            analysis_results["perception_results"].append(
-                {
-                    "obs_id": ir.obs_id,
-                    "objects": [obj.model_dump() for obj in ir.objects],
-                    "hazards": [h.model_dump() for h in ir.hazards],
-                    "unobserved": [u.model_dump() for u in ir.unobserved],
-                    "audio": [a.model_dump() for a in ir.audio],
-                    "vision_analysis": vision_text,
-                }
-            )
-
-        # Save results to output
-        save_analysis_results("output", analysis_results)
-
-        # Continue with agent processing
-        provider = ObservationProvider(obs_list)
-        perceiver = Perceiver(enable_yolo=agent_cfg.get("enable_yolo", True), vlm=vlm)
+        return obs_list, video_timestamps_map
     else:
-        # Use example observations if no images found
-        print("⚠️  Using example observations (no images in input/)\n")
+        # Use example observations if no frames found (test fallback)
+        logger.warning("No frames found in data/frames, using example observations")
         obs_list = [
             Observation(
                 obs_id="t0",
@@ -254,23 +508,126 @@ def main():
                 camera_pose=CameraPose(pan_deg=30, tilt_deg=0, zoom=1),
             ),
         ]
-        provider = ObservationProvider(obs_list)
-        vlm = get_vlm(config)
-        perceiver = Perceiver(enable_yolo=agent_cfg.get("enable_yolo", False), vlm=vlm)
+        return obs_list, video_timestamps_map
 
-    # Initialize LLM based on config & environment variables
+
+def run_and_log_agent(
+    agent: object,
+    initial_state: AgentState,
+    context: dict,
+) -> tuple[dict, list[dict]]:
+    """ストリーミングでエージェントを実行して全フレーム出力を収集。
+
+    Args:
+        agent: LangGraph エージェントインスタンス
+        initial_state: 初期エージェント状態
+        context: エージェント実行時コンテキスト
+
+    Returns:
+        (最終状態、全フレーム出力) のタプル
+    """
+    logger.info("Running Safety View Agent")
+
+    all_frame_outputs: list[dict] = []
+    final_state: dict = {}
+    prev_latest_obs_id: str | None = None
+
+    for state in agent.stream(initial_state, context=context, stream_mode="values"):
+        latest = state.get("latest_output")
+        if "latest_output" in state and latest:
+            obs_id = latest.get("obs_id")
+            # フレームが更新されたときのみ追加（重複回避）
+            if obs_id != prev_latest_obs_id:
+                all_frame_outputs.append(latest)
+                prev_latest_obs_id = obs_id
+        final_state = state
+
+    # Log agent results
+    if final_state.get("selected"):
+        logger.info(
+            f"Selected view: {final_state['selected'].view_id} "
+            f"(pan={final_state['selected'].pan_deg}°, tilt={final_state['selected'].tilt_deg}°)"
+        )
+
+    hazard_count = len(final_state["world"].fused_hazards) if final_state.get("world") and final_state["world"].fused_hazards else 0
+    logger.info(f"Hazards detected: {hazard_count}")
+
+    unobs_count = len(final_state["world"].outstanding_unobserved) if final_state.get("world") and final_state["world"].outstanding_unobserved else 0
+    logger.info(f"Outstanding unobserved regions: {unobs_count}")
+
+    if final_state.get("errors"):
+        logger.warning(f"Errors: {len(final_state['errors'])}")
+
+    return final_state, all_frame_outputs
+
+
+def main():
+    """Safety View Agent のメインエントリーポイント。"""
+    # Load configuration
+    config = load_config()
+    agent_cfg = config.get("agent", {})
+    thresholds_cfg = config.get("thresholds", {})
+    tokens_cfg = config.get("tokens", {})
+    video_cfg = config.get("video", {})
+    audio_cfg = config.get("audio", {})
+    view_planning_cfg = config.get("view_planning", {})
+
+    # Setup data directory
+    os.makedirs("data", exist_ok=True)
+
+    # Load video/audio formats from config
+    video_formats_cfg = video_cfg.get("formats", {})
+    video_extensions = set(video_formats_cfg.get("extensions", [".mp4", ".avi", ".mov", ".mkv", ".webm"]))
+    frame_output_format = video_formats_cfg.get("frame_output", "frame_{timestamp}s.jpg")
+
+    # Prepare observations from video and frames
+    obs_list, video_timestamps_map = prepare_observations(
+        config, video_extensions, frame_output_format, audio_cfg
+    )
+
+    # Apply max_steps filter to obs_list
+    max_steps_cfg = agent_cfg.get("max_steps", 1)
+    if max_steps_cfg == -1:
+        actual_max_steps = len(obs_list)
+    else:
+        # N フレームだけ実行（obs_list を先頭から max_steps_cfg 件に制限）
+        obs_list = obs_list[:max_steps_cfg]
+        actual_max_steps = len(obs_list)
+
+    if actual_max_steps > 0:
+        logger.info(f"Configured to process {actual_max_steps} observation(s)")
+    else:
+        logger.warning("No observations to process")
+
+    # Initialize agent components
+    provider = ObservationProvider(obs_list)
+    perceiver = Perceiver()
     llm = get_llm(config)
+    vision_analyzer = get_vlm(config)
 
     # Build agent
     agent = build_agent()
 
-    # Initial state
+    # Initialize modality analyzers for fan-out nodes
+    audio_analyzer = AudioAnalyzer()
+    yolo_detector = None
+    if agent_cfg.get("enable_yolo", False):
+        try:
+            yolo_detector = YOLODetector("yolov8n.pt")
+        except Exception as e:
+            logger.warning(f"Failed to initialize YOLO: {e}, using fallback")
+
+    # Initial state (with modality_results for fan-in)
     initial_state: AgentState = {
         "messages": [],
         "step": 0,
-        "max_steps": agent_cfg.get("max_steps", 3),
-        "observation": provider.next(),
+        "max_steps": actual_max_steps,
+        "observation": None,
         "ir": None,
+        "modality_results": {},
+        "received_modalities": [],
+        "barrier_obs_id": None,
+        "latest_output": None,
         "world": WorldModel(),
         "plan": None,
         "selected": None,
@@ -278,109 +635,44 @@ def main():
         "errors": [],
     }
 
-    # Context
+    # Context (with modality analyzers for fan-out nodes)
     context = {
         "provider": provider,
         "perceiver": perceiver,
         "llm": llm,
+        "vision_analyzer": vision_analyzer,
+        "yolo_detector": yolo_detector,
+        "audio_analyzer": audio_analyzer,
         "risk_stop_threshold": thresholds_cfg.get("risk_stop_threshold", 0.2),
         "hazard_focus_threshold": thresholds_cfg.get("hazard_focus_threshold", 0.6),
-        "chat_max_tokens": tokens_cfg.get(
-            "chat_max_tokens", 2000
-        ),  # LLM text generation
+        "chat_max_tokens": tokens_cfg.get("chat_max_tokens", 2000),
+        "max_outstanding_regions": view_planning_cfg.get("max_outstanding_regions", 6),
+        "safety_priority_weight": view_planning_cfg.get("safety_priority_weight", 0.7),
+        "info_gain_weight": view_planning_cfg.get("info_gain_weight", 0.3),
+        "safety_priority_base": view_planning_cfg.get("safety_priority_base", 0.7),
+        "expected_modalities": ["yolo", "vlm", "audio"],  # yolo/vlm に分割
+        "run_mode": "until_provider_ends",  # provider が None を返すまで継続
     }
 
-    # Run agent
-    print("\n=== Running Safety View Agent ===\n")
-    out = agent.invoke(initial_state, context=context)
+    # Run and log agent
+    out, all_frame_outputs = run_and_log_agent(agent, initial_state, context)
 
-    # Output results
-    print("\n=== Selected view command ===")
-    print(out["selected"])
-    print("\n=== World model ===")
-    print(out["world"])
-    print("\n=== Messages ===")
-    for msg in out["messages"]:
-        # Handle both dict and LangChain message objects
-        content = (
-            msg.get("content")
-            if isinstance(msg, dict)
-            else getattr(msg, "content", str(msg))
-        )
-        print(f"  {content}")
-    if out["errors"]:
-        print("\n=== Errors ===")
-        for err in out["errors"]:
-            print(f"  - {err}")
+    # Save all frame results from agent's emit_output node
+    save_analysis_results(
+        "data",
+        {"perception_results": all_frame_outputs},
+        video_timestamps_map,
+        agent_output=out,
+    )
 
-    # Save detailed analysis to output/
+    # Save Mermaid diagram
     try:
-        os.makedirs("output", exist_ok=True)
-
-        # Save agent execution summary
-        summary_file = Path("output") / "agent_execution_summary.txt"
-        with open(summary_file, "w", encoding="utf-8") as f:
-            f.write("=" * 80 + "\n")
-            f.write("SAFETY VIEW AGENT - EXECUTION SUMMARY\n")
-            f.write("=" * 80 + "\n\n")
-
-            f.write("SELECTED VIEW COMMAND:\n")
-            f.write("-" * 40 + "\n")
-            if out["selected"]:
-                f.write(f"View ID: {out['selected'].view_id}\n")
-                f.write(
-                    f"Pan: {out['selected'].pan_deg}°, Tilt: {out['selected'].tilt_deg}°, Zoom: {out['selected'].zoom}x\n"
-                )
-                f.write(f"Rationale: {out['selected'].why}\n\n")
-
-            f.write("DETECTED HAZARDS:\n")
-            f.write("-" * 40 + "\n")
-            if out["world"].fused_hazards:
-                for h in out["world"].fused_hazards:
-                    f.write(f"• {h.hazard_type} (confidence: {h.confidence:.2%})\n")
-                    if h.evidence:
-                        f.write(f"  Evidence: {h.evidence}\n")
-            else:
-                f.write("No hazards detected\n")
-            f.write("\n")
-
-            f.write("OUTSTANDING UNOBSERVED REGIONS:\n")
-            f.write("-" * 40 + "\n")
-            if out["world"].outstanding_unobserved:
-                for r in out["world"].outstanding_unobserved:
-                    f.write(f"• {r.region_id}: {r.description}\n")
-                    f.write(f"  Risk Level: {r.risk:.1%}\n")
-            else:
-                f.write("No unobserved regions\n")
-            f.write("\n")
-
-            f.write("AGENT MESSAGES LOG:\n")
-            f.write("-" * 40 + "\n")
-            for i, msg in enumerate(out["messages"], 1):
-                # Handle both dict and LangChain message objects
-                content = (
-                    msg.get("content")
-                    if isinstance(msg, dict)
-                    else getattr(msg, "content", str(msg))
-                )
-                f.write(f"{i}. {content}\n")
-
-            if out["errors"]:
-                f.write("\nERRORS:\n")
-                f.write("-" * 40 + "\n")
-                for err in out["errors"]:
-                    f.write(f"⚠️  {err}\n")
-
-        print("✅ Agent execution summary saved to output/agent_execution_summary.txt")
-
-        # Save Mermaid diagram
         mermaid_text = agent.get_graph().draw_mermaid()
-        with open("output/flow.md", "w", encoding="utf-8") as f:
+        with open("data/flow.md", "w", encoding="utf-8") as f:
             f.write(f"# Safety View Agent Flow\n\n```mermaid\n{mermaid_text}\n```\n")
-        print("✅ Graph diagram saved to output/flow.md")
-
+        logger.info("Graph diagram saved to data/flow.md")
     except Exception as e:
-        print(f"\n⚠️  Could not save outputs: {e}")
+        logger.warning(f"Could not save graph diagram: {e}")
 
 
 if __name__ == "__main__":
