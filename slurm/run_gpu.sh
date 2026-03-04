@@ -6,8 +6,6 @@
 #SBATCH --mem=32G
 #SBATCH -t 00:30:00
 #SBATCH -o slurm-%j.out
-#SBATCH --container-image=/home/team-005/nvidia+pytorch+25.11-py3.sqsh
-#SBATCH --container-mounts=/home/team-005:/home/team-005
 
 # フェイルセーフ（エラー発生時に即座に処理を停止）
 set -euo pipefail
