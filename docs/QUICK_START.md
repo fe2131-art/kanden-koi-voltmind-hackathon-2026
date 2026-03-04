@@ -73,7 +73,7 @@ python src/run.py
 # .env ファイルを作成
 cat > .env << EOF
 OPENAI_API_KEY=sk-your-api-key-here
-OPENAI_MODEL=gpt-4o
+OPENAI_MODEL=gpt-5-nano-2025-08-07
 EOF
 
 # これで python src/run.py が自動的に .env を読み込みます

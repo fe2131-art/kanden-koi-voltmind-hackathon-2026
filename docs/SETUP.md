@@ -4,7 +4,7 @@
 
 ## 前提条件
 
-- **Python 3.11 以上** がシステムにインストール済み
+- **Python 3.12 以上** がシステムにインストール済み
 - **uv** パッケージマネージャー（最新版推奨）
   ```bash
   curl -LsSf https://astral.sh/uv/install.sh | sh

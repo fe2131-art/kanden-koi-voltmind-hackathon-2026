@@ -102,7 +102,7 @@ http://localhost:5173
 #### 動画再生
 1. ブラウザで `http://localhost:5173` を開く
 2. Video Player エリアで「再生」をクリック
-3. `/videos/free-video7-rice-cafinet.mp4` が再生される
+3. `/videos/video.mp4` が再生される
 
 #### BBox 同期制御
 

@@ -314,7 +314,7 @@ function App() {
             <video
               ref={videoRef}
               controls
-              src="/videos/free-video7-rice-cafinet.mp4"
+              src="/videos/video.mp4"
               style={styles.video}
             ></video>
             <canvas ref={canvasRef} style={styles.canvas}></canvas>

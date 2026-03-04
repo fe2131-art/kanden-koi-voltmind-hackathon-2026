@@ -9,7 +9,7 @@ import cv2
 import yaml
 from dotenv import load_dotenv
 
-# Load environment variables from .env file
+# .env ファイルから環境変数を読み込む
 load_dotenv()
 
 from safety_agent.agent import AgentState, OpenAICompatLLM, build_agent
@@ -19,16 +19,16 @@ from safety_agent.schema import CameraPose, Observation, ObservationProvider, Wo
 from util.logger import setup_logger
 from util.serializers import serialize_pydantic_or_dict
 
-# Setup logger
+# ロガーを設定
 logger = setup_logger("safety_view_agent")
 
 # ==========================================
-# Note: Video/audio constants are now loaded from configs/default.yaml
+# 注: ビデオ・音声定数は configs/default.yaml から読み込まれます
 # ==========================================
 
 
 def load_config(config_path: str = "configs/default.yaml") -> dict:
-    """Load YAML configuration."""
+    """YAML設定を読み込む。"""
     if not os.path.exists(config_path):
         logger.warning(f"Config file not found: {config_path}, using defaults")
         return {}
@@ -45,7 +45,7 @@ def load_config(config_path: str = "configs/default.yaml") -> dict:
 
 
 def get_llm(config: dict) -> Optional[OpenAICompatLLM]:
-    """Initialize LLM based on configuration and environment variables."""
+    """設定と環境変数に基づいて LLM を初期化。"""
     llm_config = config.get("llm", {})
     provider = llm_config.get("provider", "openai")
 
@@ -93,7 +93,7 @@ def get_llm(config: dict) -> Optional[OpenAICompatLLM]:
 
 
 def get_vlm(config: dict) -> Optional[VisionAnalyzer]:
-    """Initialize VLM (Vision Language Model) based on configuration and environment variables."""
+    """VLM（Vision Language Model）を設定と環境変数に基づいて初期化。"""
     vlm_config = config.get("vlm", {})
     llm_config = config.get("llm", {})
     provider = vlm_config.get("provider", "openai")
@@ -159,14 +159,14 @@ def get_vlm(config: dict) -> Optional[VisionAnalyzer]:
 
 
 def find_video(search_dirs: list[str], video_extensions: set[str]) -> Optional[Path]:
-    """Find video file in search directories.
+    """検索ディレクトリからビデオファイルを探す。
 
     Args:
-        search_dirs: List of directory paths to search
-        video_extensions: Set of valid video file extensions (e.g., {".mp4", ".avi"})
+        search_dirs: 検索対象ディレクトリパスのリスト
+        video_extensions: 有効なビデオファイル拡張子のセット（例: {".mp4", ".avi"}）
 
     Returns:
-        Path to first video file found, or None
+        見つかった最初のビデオファイルのパス、または None
     """
     for d in search_dirs:
         dir_path = Path(d)
@@ -188,18 +188,18 @@ def split_video_to_frames(
     max_frames: int = 0,
     clear_frames: bool = False,
 ) -> tuple[list[Path], list[float]]:
-    """Extract frames from video at specified FPS.
+    """ビデオから指定 FPS でフレームを抽出。
 
     Args:
-        video_path: Path to video file
-        frames_dir: Output directory for frames
-        frame_output_format: Frame filename format template (e.g., "frame_{timestamp}s.jpg")
-        target_fps: Target frames per second (e.g., 1.0 = 1 frame/sec)
-        max_frames: Maximum frames to extract (0 = unlimited)
-        clear_frames: If True, delete existing frames before extracting
+        video_path: ビデオファイルのパス
+        frames_dir: フレーム出力ディレクトリ
+        frame_output_format: フレームファイル名形式テンプレート（例: "frame_{timestamp}s.jpg"）
+        target_fps: 目標フレームレート（例: 1.0 = 1フレーム/秒）
+        max_frames: 抽出最大フレーム数（0 = 無制限）
+        clear_frames: True の場合、抽出前に既存フレームを削除
 
     Returns:
-        Tuple of (list of frame paths, list of video timestamps in seconds)
+        (フレームパスリスト, ビデオタイムスタンプリスト（秒単位）) のタプル
     """
     frames_dir = Path(frames_dir)
     frames_dir.mkdir(parents=True, exist_ok=True)
@@ -271,18 +271,18 @@ def extract_audio(
     audio_sample_rate: int = 16000,
     audio_channels: int = 1,
 ) -> Optional[Path]:
-    """Extract audio from video using ffmpeg.
+    """ffmpeg を使用してビデオから音声を抽出。
 
     Args:
-        video_path: Path to video file
-        audio_dir: Output directory for audio
-        audio_output_filename: Output audio filename
-        audio_codec: Audio codec (e.g., "pcm_s16le")
-        audio_sample_rate: Audio sample rate in Hz (e.g., 16000)
-        audio_channels: Number of audio channels (e.g., 1 for mono)
+        video_path: ビデオファイルのパス
+        audio_dir: 音声出力ディレクトリ
+        audio_output_filename: 出力音声ファイル名
+        audio_codec: 音声コーデック（例: "pcm_s16le"）
+        audio_sample_rate: 音声サンプリングレート（Hz、例: 16000）
+        audio_channels: 音声チャンネル数（例: 1 はモノラル）
 
     Returns:
-        Path to extracted audio file, or None if no audio or ffmpeg not available
+        抽出した音声ファイルのパス、またはなし（音声がないか ffmpeg が利用不可の場合）
     """
     audio_dir = Path(audio_dir)
     audio_dir.mkdir(parents=True, exist_ok=True)
@@ -318,13 +318,13 @@ def extract_audio(
 
 
 def load_frames(frames_dir: str = "data/frames") -> list[Path]:
-    """Load frame images from frames directory.
+    """フレームディレクトリから画像を読み込む。
 
     Args:
-        frames_dir: Directory path to search for frame images
+        frames_dir: フレーム画像を検索するディレクトリパス
 
     Returns:
-        List of Path objects to frame image files found, sorted
+        見つかったフレーム画像ファイルのパスオブジェクトのリスト（ソート済み）
     """
     frames_path = Path(frames_dir)
     if not frames_path.exists():
@@ -349,13 +349,13 @@ def save_analysis_results(
     video_timestamps: Optional[dict[str, float]] = None,
     agent_output: Optional[dict] = None,
 ) -> None:
-    """Save analysis results to output directory (append mode for history).
+    """分析結果を出力ディレクトリに保存（追記モードで履歴を保持）。
 
     Args:
-        output_dir: Output directory path
-        analysis_results: Dict with 'perception_results' key containing list of results
-        video_timestamps: Optional dict mapping obs_id to video timestamp in seconds
-        agent_output: Optional dict with agent execution results (selected, world, plan, messages)
+        output_dir: 出力ディレクトリパス
+        analysis_results: 結果リストを含む 'perception_results' キーの辞書
+        video_timestamps: obs_id をビデオタイムスタンプ（秒単位）にマッピングする辞書（オプション）
+        agent_output: エージェント実行結果の辞書（selected、world、plan、messages）（オプション）
     """
     os.makedirs(output_dir, exist_ok=True)
 
@@ -436,16 +436,16 @@ def prepare_observations(
     frame_output_format: str,
     audio_config: dict,
 ) -> tuple[list[Observation], dict]:
-    """Prepare observation data from video and frames.
+    """ビデオとフレームから観測データを準備。
 
     Args:
-        config: Configuration dictionary
-        video_extensions: Set of valid video extensions
-        frame_output_format: Frame filename format
-        audio_config: Audio configuration
+        config: 設定辞書
+        video_extensions: 有効なビデオ拡張子のセット
+        frame_output_format: フレームファイル名形式
+        audio_config: 音声設定
 
     Returns:
-        Tuple of (observation list, video_timestamps_map)
+        (観測リスト、ビデオタイムスタンプマップ) のタプル
     """
     video_cfg = config.get("video", {})
     audio_output_filename = audio_config.get("output_filename", "audio.wav")
@@ -516,15 +516,15 @@ def run_and_log_agent(
     initial_state: AgentState,
     context: dict,
 ) -> tuple[dict, list[dict]]:
-    """Run agent with streaming to collect all frame outputs.
+    """ストリーミングでエージェントを実行して全フレーム出力を収集。
 
     Args:
-        agent: LangGraph agent instance
-        initial_state: Initial agent state
-        context: Agent runtime context
+        agent: LangGraph エージェントインスタンス
+        initial_state: 初期エージェント状態
+        context: エージェント実行時コンテキスト
 
     Returns:
-        Tuple of (final_state, all_frame_outputs)
+        (最終状態、全フレーム出力) のタプル
     """
     logger.info("Running Safety View Agent")
 
@@ -562,7 +562,7 @@ def run_and_log_agent(
 
 
 def main():
-    """Main entry point for Safety View Agent."""
+    """Safety View Agent のメインエントリーポイント。"""
     # Load configuration
     config = load_config()
     agent_cfg = config.get("agent", {})
