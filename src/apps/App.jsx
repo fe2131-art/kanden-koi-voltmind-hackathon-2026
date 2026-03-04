@@ -104,7 +104,7 @@ function App() {
   const [mode, setMode] = useState('sync')
   const [delay, setDelay] = useState(0.7)
   const [status, setStatus] = useState('initializing...')
-  const [hud, setHud] = useState('(waiting for output/perception_results.json)')
+  const [hud, setHud] = useState('(waiting for data/perception_results.json)')
   const [log, setLog] = useState('')
 
   const wsRef = useRef(null)
@@ -218,14 +218,21 @@ function App() {
         const msg = JSON.parse(ev.data)
         recvCountRef.current++
 
-        // 絶対時刻ベースの同期：tOffset = videoTime - frameTimestamp
-        // msg.t は Unix timestamp（秒単位）
-        if (haveVideoPlayedRef.current && tOffsetRef.current === null && typeof msg.t === 'number') {
-          tOffsetRef.current = videoRef.current.currentTime - msg.t
+        // 完全自動同期: video_timestamp がある場合は直接マッピング
+        let t_adj
+        if (typeof msg.video_timestamp === 'number') {
+          // video_timestamp がある → 直接動画タイムラインにマッピング（tOffset 不要）
+          t_adj = msg.video_timestamp
+        } else {
+          // 後方互換: 従来の tOffset ロジック
+          // 絶対時刻ベースの同期：tOffset = videoTime - frameTimestamp
+          // msg.t は Unix timestamp（秒単位）
+          if (haveVideoPlayedRef.current && tOffsetRef.current === null && typeof msg.t === 'number') {
+            tOffsetRef.current = videoRef.current.currentTime - msg.t
+          }
+          // msg.t が絶対時刻の場合、tOffset で補正して動画タイムラインにマッピング
+          t_adj = tOffsetRef.current === null ? msg.t : msg.t + tOffsetRef.current
         }
-
-        // msg.t が絶対時刻の場合、tOffset で補正して動画タイムラインにマッピング
-        const t_adj = tOffsetRef.current === null ? msg.t : msg.t + tOffsetRef.current
         resultsRef.current.push({ ...msg, t_adj })
 
         const vNow = videoRef.current?.currentTime || 0
@@ -307,13 +314,13 @@ function App() {
             <video
               ref={videoRef}
               controls
-              src="/video.mp4"
+              src="/videos/free-video7-rice-cafinet.mp4"
               style={styles.video}
             ></video>
             <canvas ref={canvasRef} style={styles.canvas}></canvas>
           </div>
           <div style={styles.hint}>
-            ※ output/perception_results.json から推論結果を読み込みます。
+            ※ data/perception_results.json から推論結果を読み込みます。
           </div>
         </div>
 

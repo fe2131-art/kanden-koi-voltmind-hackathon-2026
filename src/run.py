@@ -1,12 +1,24 @@
 import json
 import os
+import subprocess
 import time
 from pathlib import Path
 from typing import Optional
 
+import cv2
 import yaml
 
 from safety_agent.agent import AgentState, OpenAICompatLLM, build_agent
+
+# ==========================================
+# Constants for video processing
+# ==========================================
+VIDEO_EXTENSIONS = {".mp4", ".avi", ".mov", ".mkv", ".webm"}
+FRAME_OUTPUT_FORMAT = "frame_{timestamp}s.jpg"
+AUDIO_OUTPUT_FILENAME = "audio.wav"
+AUDIO_SAMPLE_RATE = 16000
+AUDIO_CHANNELS = 1
+AUDIO_CODEC = "pcm_s16le"
 from safety_agent.perceiver import Perceiver, VisionAnalyzer
 from safety_agent.schema import CameraPose, Observation, ObservationProvider, WorldModel
 
@@ -135,8 +147,161 @@ def get_vlm(config: dict) -> Optional[VisionAnalyzer]:
         return None
 
 
-def load_images_from_input(input_dir: str = "input") -> list:
-    """Load images from input directory."""
+def find_video(search_dirs: list[str]) -> Optional[Path]:
+    """Find video file in search directories.
+
+    Args:
+        search_dirs: List of directory paths to search
+
+    Returns:
+        Path to first video file found, or None
+    """
+    for d in search_dirs:
+        dir_path = Path(d)
+        try:
+            for f in sorted(dir_path.iterdir()):
+                if f.is_file() and f.suffix.lower() in VIDEO_EXTENSIONS:
+                    print(f"✅ Found video: {f.name}")
+                    return f
+        except (FileNotFoundError, OSError, PermissionError):
+            continue
+    return None
+
+
+def split_video_to_frames(
+    video_path: str,
+    frames_dir: str,
+    target_fps: float = 1.0,
+    max_frames: int = 0,
+    clear_frames: bool = False,
+) -> tuple[list[Path], list[float]]:
+    """Extract frames from video at specified FPS.
+
+    Args:
+        video_path: Path to video file
+        frames_dir: Output directory for frames
+        target_fps: Target frames per second (e.g., 1.0 = 1 frame/sec)
+        max_frames: Maximum frames to extract (0 = unlimited)
+        clear_frames: If True, delete existing frames before extracting
+
+    Returns:
+        Tuple of (list of frame paths, list of video timestamps in seconds)
+    """
+    frames_dir = Path(frames_dir)
+    frames_dir.mkdir(parents=True, exist_ok=True)
+
+    # Clear existing frames if requested
+    if clear_frames:
+        for f in frames_dir.glob("frame_*.jpg"):
+            try:
+                f.unlink()
+            except OSError:
+                pass
+
+    # Open video
+    cap = cv2.VideoCapture(str(video_path))
+    if not cap.isOpened():
+        print(f"⚠️  Could not open video: {video_path}")
+        return [], []
+
+    source_fps = cap.get(cv2.CAP_PROP_FPS)
+    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+
+    if target_fps <= 0 or source_fps <= 0:
+        print(f"⚠️  Invalid FPS: source={source_fps}, target={target_fps}")
+        cap.release()
+        return [], []
+
+    frame_interval = max(1, int(round(source_fps / target_fps)))
+
+    frame_paths = []
+    video_timestamps = []
+    frame_count = 0
+    idx = 0
+
+    while True:
+        ret, frame = cap.read()
+        if not ret:
+            break
+
+        # Extract frame at specified interval
+        if idx % frame_interval == 0:
+            if max_frames > 0 and frame_count >= max_frames:
+                break
+
+            # Calculate timestamp in seconds
+            timestamp = idx / source_fps
+            timestamp_str = f"{timestamp:.3f}".rstrip('0').rstrip('.')
+
+            # Save frame
+            frame_filename = FRAME_OUTPUT_FORMAT.format(timestamp=timestamp_str)
+            frame_path = frames_dir / frame_filename
+            cv2.imwrite(str(frame_path), frame)
+
+            frame_paths.append(frame_path)
+            video_timestamps.append(timestamp)
+            frame_count += 1
+
+        idx += 1
+
+    cap.release()
+
+    print(f"✅ Extracted {len(frame_paths)} frames from {Path(video_path).name} at {target_fps} FPS")
+    return frame_paths, video_timestamps
+
+
+def extract_audio(video_path: str, audio_dir: str) -> Optional[Path]:
+    """Extract audio from video using ffmpeg.
+
+    Args:
+        video_path: Path to video file
+        audio_dir: Output directory for audio
+
+    Returns:
+        Path to extracted audio file, or None if no audio or ffmpeg not available
+    """
+    audio_dir = Path(audio_dir)
+    audio_dir.mkdir(parents=True, exist_ok=True)
+
+    # Check if ffprobe is available and if video has audio
+    try:
+        result = subprocess.run(
+            ["ffprobe", "-v", "error", "-select_streams", "a:0",
+             "-show_entries", "stream=codec_type", "-of", "csv=p=0", str(video_path)],
+            capture_output=True, text=True, timeout=5
+        )
+        if not result.stdout.strip():
+            print(f"⚠️  Video has no audio track: {Path(video_path).name}")
+            return None
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        print("⚠️  ffprobe not available (ffmpeg not installed)")
+        return None
+
+    # Extract audio using ffmpeg
+    audio_path = audio_dir / AUDIO_OUTPUT_FILENAME
+    try:
+        subprocess.run(
+            ["ffmpeg", "-y", "-i", str(video_path),
+             "-vn", "-acodec", AUDIO_CODEC, "-ar", str(AUDIO_SAMPLE_RATE),
+             "-ac", str(AUDIO_CHANNELS), str(audio_path)],
+            capture_output=True, timeout=30, check=True
+        )
+        print(f"✅ Extracted audio to {audio_path.name}")
+        return audio_path
+    except (FileNotFoundError, subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
+        print(f"⚠️  Could not extract audio: {e}")
+        return None
+
+
+def load_images_from_input(input_dir: str = "data/images") -> list[Path]:
+    """Load images from input directory.
+
+    Args:
+        input_dir: Directory path to search for images
+
+    Returns:
+        List of Path objects to image files found
+    """
     input_path = Path(input_dir)
     if not input_path.exists():
         print(f"⚠️  Input directory not found: {input_dir}")
@@ -157,11 +322,22 @@ def load_images_from_input(input_dir: str = "input") -> list:
         return []
 
 
-def save_analysis_results(output_dir: str, analysis_results: dict):
-    """Save analysis results to output directory (append mode for history)."""
+def save_analysis_results(
+    output_dir: str,
+    analysis_results: dict,
+    video_timestamps: Optional[dict[str, float]] = None,
+) -> None:
+    """Save analysis results to output directory (append mode for history).
+
+    Args:
+        output_dir: Output directory path
+        analysis_results: Dict with 'perception_results' key containing list of results
+        video_timestamps: Optional dict mapping obs_id to video timestamp in seconds
+    """
     os.makedirs(output_dir, exist_ok=True)
 
     results_file = Path(output_dir) / "perception_results.json"
+    default_data = {"perception_results": []}
 
     # 既存データを読み込む（追記式）
     if results_file.exists():
@@ -169,14 +345,21 @@ def save_analysis_results(output_dir: str, analysis_results: dict):
             with open(results_file, "r", encoding="utf-8") as f:
                 existing_data = json.load(f)
         except (json.JSONDecodeError, IOError):
-            existing_data = {"perception_results": []}
+            existing_data = default_data
     else:
-        existing_data = {"perception_results": []}
+        existing_data = default_data
 
     # タイムスタンプを付与して新しいフレームを追加
     current_timestamp = time.time()
     for result in analysis_results.get("perception_results", []):
         result["timestamp"] = current_timestamp  # Unix timestamp（秒単位）
+
+        # Add video_timestamp if available
+        if video_timestamps:
+            obs_id = result.get("obs_id")
+            if obs_id and obs_id in video_timestamps:
+                result["video_timestamp"] = video_timestamps[obs_id]
+
         existing_data["perception_results"].append(result)
 
     # ファイルに保存
@@ -192,9 +375,38 @@ def main():
     agent_cfg = config.get("agent", {})
     thresholds_cfg = config.get("thresholds", {})
     tokens_cfg = config.get("tokens", {})
+    video_cfg = config.get("video", {})
+
+    # Setup data directory
+    os.makedirs("data", exist_ok=True)
+
+    # Initialize video_timestamps_map for later use
+    video_timestamps_map = {}
+
+    # Try to find and process video
+    video_path = find_video(["data/videos", "data"])
+    if video_path:
+        print("\n=== Processing Video ===\n")
+        # extract_audio() and split_video_to_frames() create directories internally
+        extract_audio(str(video_path), "data/audio")
+
+        frame_paths, video_timestamps = split_video_to_frames(
+            str(video_path),
+            "data/frames",
+            target_fps=video_cfg.get("fps", 1.0),
+            max_frames=video_cfg.get("max_frames", 30),
+            clear_frames=video_cfg.get("clear_frames", False),
+        )
+
+        # Create obs_id -> video_timestamp mapping
+        if frame_paths:
+            video_timestamps_map = {f"img_{i}": ts for i, ts in enumerate(video_timestamps)}
 
     # Load images from input directory
-    image_files = load_images_from_input("input")
+    image_files = load_images_from_input("data/images")
+
+    # Initialize VLM once for all vision analysis
+    vlm = get_vlm(config)
 
     # Build observations from input images or use example observations
     if image_files:
@@ -208,8 +420,6 @@ def main():
             )
             for i, img_path in enumerate(image_files)
         ]
-        # Get VLM for vision analysis
-        vlm = get_vlm(config)
 
         # Process images with Perceiver and save results
         perceiver = Perceiver(enable_yolo=agent_cfg.get("enable_yolo", True), vlm=vlm)
@@ -250,15 +460,14 @@ def main():
                 }
             )
 
-        # Save results to output
-        save_analysis_results("output", analysis_results)
+        # Save results to data directory
+        save_analysis_results("data", analysis_results, video_timestamps_map)
 
         # Continue with agent processing
         provider = ObservationProvider(obs_list)
-        perceiver = Perceiver(enable_yolo=agent_cfg.get("enable_yolo", True), vlm=vlm)
     else:
         # Use example observations if no images found
-        print("⚠️  Using example observations (no images in input/)\n")
+        print("⚠️  Using example observations (no images in data/images/)\n")
         obs_list = [
             Observation(
                 obs_id="t0",
@@ -274,7 +483,6 @@ def main():
             ),
         ]
         provider = ObservationProvider(obs_list)
-        vlm = get_vlm(config)
         perceiver = Perceiver(enable_yolo=agent_cfg.get("enable_yolo", False), vlm=vlm)
 
     # Initialize LLM based on config & environment variables
@@ -332,12 +540,12 @@ def main():
         for err in out["errors"]:
             print(f"  - {err}")
 
-    # Save detailed analysis to output/
+    # Save detailed analysis to data/
     try:
-        os.makedirs("output", exist_ok=True)
+        os.makedirs("data", exist_ok=True)
 
         # Save agent execution summary
-        summary_file = Path("output") / "agent_execution_summary.txt"
+        summary_file = Path("data") / "agent_execution_summary.txt"
         with open(summary_file, "w", encoding="utf-8") as f:
             f.write("=" * 80 + "\n")
             f.write("SAFETY VIEW AGENT - EXECUTION SUMMARY\n")
@@ -390,13 +598,13 @@ def main():
                 for err in out["errors"]:
                     f.write(f"⚠️  {err}\n")
 
-        print("✅ Agent execution summary saved to output/agent_execution_summary.txt")
+        print("✅ Agent execution summary saved to data/agent_execution_summary.txt")
 
         # Save Mermaid diagram
         mermaid_text = agent.get_graph().draw_mermaid()
-        with open("output/flow.md", "w", encoding="utf-8") as f:
+        with open("data/flow.md", "w", encoding="utf-8") as f:
             f.write(f"# Safety View Agent Flow\n\n```mermaid\n{mermaid_text}\n```\n")
-        print("✅ Graph diagram saved to output/flow.md")
+        print("✅ Graph diagram saved to data/flow.md")
 
     except Exception as e:
         print(f"\n⚠️  Could not save outputs: {e}")

@@ -1,5 +1,34 @@
 # uv 仮想環境の使用方法
 
+## システム依存ツール（uv 管理外）
+
+### ffmpeg / ffprobe（動画処理）
+
+動画フレーム分割・音声抽出機能に必要です。**uv/pip ではなくシステムパッケージ** として別途インストールが必要です。
+
+**Ubuntu/Debian:**
+```bash
+sudo apt install ffmpeg
+```
+
+**macOS:**
+```bash
+brew install ffmpeg
+```
+
+**Windows:**
+- [FFmpeg 公式サイト](https://ffmpeg.org/download.html) からダウンロード
+- または `choco install ffmpeg` (Chocolatey を使う場合)
+
+**確認方法:**
+```bash
+ffmpeg -version
+ffprobe -version
+# バージョン情報が表示されれば OK（4.4.2 以上を推奨）
+```
+
+---
+
 ## 方法 1: `uv run` で自動実行（推奨）
 
 ```bash

@@ -4,7 +4,7 @@ import time
 import websockets
 from pathlib import Path
 
-OUTPUT_DIR = Path(__file__).parent.parent.parent / 'output'
+OUTPUT_DIR = Path(__file__).parent.parent.parent / 'data'
 PERCEPTION_RESULTS = OUTPUT_DIR / 'perception_results.json'
 
 def normalize_detection(obj: dict) -> dict:
@@ -22,7 +22,7 @@ def normalize_detection(obj: dict) -> dict:
     }
 
 async def monitor_and_stream(websocket):
-    """Monitor output/perception_results.json and stream changes to client."""
+    """Monitor data/perception_results.json and stream changes to client."""
     print("client connected")
     last_count = 0  # 前回送信した perception_results 数をトラッキング
     server_start_time = time.time()  # サーバー起動時刻（基準点）
@@ -47,9 +47,11 @@ async def monitor_and_stream(websocket):
 
                             # タイムスタンプを使用（Unix timestamp）
                             frame_timestamp = result.get('timestamp', time.time())
+                            video_ts = result.get('video_timestamp')
 
                             msg = {
-                                't': frame_timestamp,  # 実際のフレーム記録時刻
+                                't': video_ts if video_ts is not None else frame_timestamp,
+                                'video_timestamp': video_ts,  # 動画内秒数（あれば）
                                 'text': result.get('vision_analysis', 'Analysis complete'),
                                 'detections': normalized_dets,
                                 'obs_id': result.get('obs_id', 'unknown')

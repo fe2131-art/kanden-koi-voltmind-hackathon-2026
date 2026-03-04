@@ -55,7 +55,7 @@ src/apps/
 │  WebSocket Server (Port 8001)
 │  (python src/apps/server.py)
 │  ┌────────────────────────┐
-│  │ output/ 監視           │
+│  │ data/ 監視              │
 │  │ (perception_results.json) │
 │  └────────────────────────┘
 └──────────────────────────────┘
@@ -102,7 +102,7 @@ http://localhost:5173
 #### 動画再生
 1. ブラウザで `http://localhost:5173` を開く
 2. Video Player エリアで「再生」をクリック
-3. `/input/video.mp4` が再生される
+3. `/videos/free-video7-rice-cafinet.mp4` が再生される
 
 #### BBox 同期制御
 
@@ -187,15 +187,16 @@ python src/apps/server.py
 **症状:** ビデオプレイヤーが真っ黒で何も表示されない
 
 **原因:**
-1. `/input/video.mp4` が存在しない
-2. Vite dev server が静的ファイルを配信していない
+1. `data/videos/` に動画ファイルが存在しない
+2. Vite dev server が publicDir (data/) を配信していない
 
 **対策:**
 ```bash
-# /input に動画ファイルがあるか確認
-ls -lh input/
+# data/videos/ に動画ファイルがあるか確認
+ls -lh data/videos/
 
-# 存在しない場合は、サンプル動画を配置してください
+# 存在しない場合は、動画ファイルを配置してください
+cp /path/to/video.mp4 data/videos/
 ```
 
 ### BBox が描画されない
@@ -206,16 +207,16 @@ ls -lh input/
 1. WebSocket 接続が確立していない
 2. Mode が Latest なのに message がまだ届いていない
 3. canvas サイズが正しく計算されていない
-4. output/perception_results.json がない
+4. data/perception_results.json がない
 
 **対策:**
 ```
 1. Status パネル確認: WS 接続状態が `1=OPEN` か？
    → NO: WebSocket サーバーを起動
 2. Mode を Latest に変更 → BBox が出るか？
-   → YES: tOffset 推定に時間がかかっているだけ
+   → YES: video_timestamp 同期に時間がかかっているだけ
 3. ブラウザ DevTools > Elements で <canvas> サイズ確認
-4. output/perception_results.json が存在するか確認
+4. data/perception_results.json が存在し、video_timestamp が記録されているか確認
 ```
 
 ## 開発ガイド
@@ -255,8 +256,8 @@ const drawDetections = (dets, w, h) => {
 
 ```python
 async def monitor_and_stream(websocket):
-    # output/perception_results.json を監視
-    # 変更検出時に WebSocket で送信
+    # data/perception_results.json を監視
+    # 変更検出時に WebSocket で送信（video_timestamp 含む）
 ```
 
 ## パフォーマンス
@@ -272,7 +273,8 @@ async def monitor_and_stream(websocket):
 
 ### 1. run.py との統合
 
-現在、server.py が `output/perception_results.json` を監視してストリーミングしています。
+現在、server.py が `data/perception_results.json` を監視してストリーミングしています。
+video_timestamp フィールドにより、動画フレームと検出結果の完全自動同期を実現。
 
 将来は以下が可能：
 - フレームごとのリアルタイム処理表示

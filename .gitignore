@@ -72,17 +72,9 @@ htmlcov/
 # ==========================================
 # Project Output & Temporary
 # ==========================================
-# エージェント実行結果ファイルを除外（output/.gitkeep は git 管理）
-output/*
-!output/.gitkeep
-
-# 入力画像ファイル（input/.gitkeep は git 管理）
-input/*.jpg
-input/*.png
-input/*.wav
-input/*.mp4
-input/*.jpeg
-input/*.webp
+# データフォルダを除外（data/.gitkeep は git 管理）
+data/*
+!data/.gitkeep
 
 # ==========================================
 # Model & Dataset Files (LLM/Finetuning)

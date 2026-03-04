@@ -82,11 +82,22 @@ pytest tests/ -v
 # tests/test_e2e.py::test_e2e_agent_no_llm PASSED
 ```
 
-## ステップ 6: 入力画像を準備（オプション）
+## ステップ 6: 入力データを準備（オプション）
 
+### 静止画を使う場合：
 ```bash
-# input フォルダに画像を配置
-cp /path/to/your/image.jpg input/
+# data/images/ フォルダに画像を配置
+cp /path/to/your/image.jpg data/images/
+```
+
+### 動画を使う場合（推奨）：
+```bash
+# data/videos/ フォルダに動画ファイルを配置
+cp /path/to/your/video.mp4 data/videos/
+
+# エージェントが自動的に以下を実行します：
+# - フレーム分割 (data/frames/ に保存)
+# - 音声抽出 (data/audio/ に保存)
 ```
 
 ## ステップ 7: エージェントを実行
@@ -99,10 +110,12 @@ set -a && source .env && set +a && python src/run.py
 python src/run.py
 ```
 
-**実行後、以下のファイルが `output/` に生成されます：**
-- `perception_results.json` - 構造化データ（Vision 分析結果含む）
+**実行後、以下のファイルが `data/` に生成されます：**
+- `perception_results.json` - 構造化データ（Vision 分析結果 + video_timestamp 含む）
 - `agent_execution_summary.txt` - 人間向けレポート
 - `flow.md` - LangGraph 実行フロー図
+- `frames/` - 抽出されたフレーム画像
+- `audio/audio.wav` - 抽出された音声
 
 ## 一般的な問題
 

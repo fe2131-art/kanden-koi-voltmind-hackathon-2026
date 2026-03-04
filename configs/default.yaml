@@ -33,6 +33,12 @@ vlm:
     model: null    # null → llm.openai.model を流用（gpt-5-nano-2025-08-07）
     timeout_s: 60.0
 
+# Video processing
+video:
+  fps: 1.0            # フレーム抽出レート (0.5-2.0 推奨)
+  max_frames: 30      # 最大フレーム数 (0 = 無制限)
+  clear_frames: false # true = 実行前に data/frames/ を削除して再実行
+
 # LLM トークン設定
 tokens:
   vision_max_completion_tokens: 5000  # Vision API: 推論 + 応答用（gpt-5-nano は推論に 4000+ 使用）

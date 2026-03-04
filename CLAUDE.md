@@ -22,16 +22,22 @@ kanden-koi-voltmind-hackathon-2026/
 │   ├── safety_agent/          # メインパッケージ
 │   │   ├── __init__.py
 │   │   ├── schema.py          # Pydantic モデル定義
-│   │   ├── perceiver.py       # Perceiver クラス（知覚処理）
+│   │   ├── perceiver.py       # Perceiver クラス（知覚処理 + VLM）
 │   │   └── agent.py           # LLM・グラフノード・ビルダー
-│   └── apps/                  # 将来のデモアプリ用
+│   └── apps/                  # React + Vite デモアプリ
 │
 ├── tests/
 │   ├── test_schema.py         # スキーマ検証テスト
 │   └── test_e2e.py            # E2Eスモークテスト（LLM不要）
 │
-├── input/                      # 観測データ入力（画像・音声等）
-├── output/                     # エージェント実行結果・グラフ図
+├── data/                       # 統合データフォルダ
+│   ├── videos/                # 入力動画
+│   ├── frames/                # 抽出フレーム
+│   ├── audio/                 # 抽出音声
+│   ├── images/                # 静止画入力
+│   ├── perception_results.json # 分析結果（追記式）
+│   ├── agent_execution_summary.txt
+│   └── flow.md                # グラフ図
 │
 ├── finetuning/
 │   ├── data/samples/

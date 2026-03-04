@@ -110,6 +110,7 @@ class Observation:
     image_path: Optional[str] = None
     audio_text: Optional[str] = None
     camera_pose: CameraPose = field(default_factory=CameraPose)
+    video_timestamp: Optional[float] = None  # 動画内の秒数
 
 
 class ObservationProvider:
