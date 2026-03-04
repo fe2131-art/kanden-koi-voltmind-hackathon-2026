@@ -192,7 +192,6 @@ class AgentState(TypedDict):
     # ラッチ：同フレーム内で fuse_modalities が2回以上実行されるのを防止
     barrier_obs_id: Optional[str]
 
-    # フレームごとの統合出力（PR3）
     latest_output: Optional[Dict[str, Any]]
 
     # 世界モデル、計画、選択
@@ -223,7 +222,6 @@ class ContextSchema(TypedDict):
     info_gain_weight: float
     safety_priority_base: float
 
-    # PR1: fan-in バリア設定
     expected_modalities: List[str]
 
     # run_mode: "until_provider_ends" | "stop_when_safe"
@@ -717,7 +715,6 @@ def select_view(state: AgentState, runtime: Runtime[ContextSchema]) -> Dict[str,
 def emit_output(state: AgentState) -> Dict[str, Any]:
     """
     フレームごとに latest_output を更新し、統合出力を生成。
-    PR3: emit_output ノード
     """
     obs = state.get("observation")
     ir = state.get("ir")

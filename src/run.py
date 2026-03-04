@@ -588,7 +588,6 @@ def main():
     # Apply max_steps filter to obs_list
     max_steps_cfg = agent_cfg.get("max_steps", 1)
     if max_steps_cfg == -1:
-        #全フレーム実行
         actual_max_steps = len(obs_list)
     else:
         # N フレームだけ実行（obs_list を先頭から max_steps_cfg 件に制限）
@@ -625,10 +624,10 @@ def main():
         "max_steps": actual_max_steps,
         "observation": None,
         "ir": None,
-        "modality_results": {},  # Dict に変更（メモリリーク防止）
-        "received_modalities": [],  # PR1: fan-in バリア
-        "barrier_obs_id": None,  # ラッチ（同フレーム内で fuse は1回だけ）
-        "latest_output": None,  # PR3: 統合出力
+        "modality_results": {},
+        "received_modalities": [],
+        "barrier_obs_id": None,
+        "latest_output": None,
         "world": WorldModel(),
         "plan": None,
         "selected": None,
