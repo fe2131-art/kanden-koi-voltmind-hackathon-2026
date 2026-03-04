@@ -2,7 +2,7 @@
 
 # Agent parameters
 agent:
-  max_steps: 1    # 実行時間短縮：3ステップで判定
+  max_steps: 1    # デフォルト：1フレーム実行
   enable_yolo: false
 
 # LLM configuration

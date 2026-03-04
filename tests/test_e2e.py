@@ -42,7 +42,10 @@ def test_e2e_agent_no_llm():
         "max_steps": 3,
         "observation": None,
         "ir": None,
-        "modality_results": [],  # fan-in: vision_node と audio_node の結果を蓄積
+        "modality_results": {},  # Dict に変更（メモリリーク防止）
+        "received_modalities": [],  # PR1: fan-in バリア
+        "barrier_obs_id": None,  # ラッチ（同フレーム内で fuse は1回だけ）
+        "latest_output": None,  # PR3: 統合出力
         "world": WorldModel(),
         "plan": None,
         "selected": None,
@@ -65,6 +68,8 @@ def test_e2e_agent_no_llm():
         "safety_priority_weight": 0.7,
         "info_gain_weight": 0.3,
         "safety_priority_base": 0.7,
+        "expected_modalities": ["yolo", "vlm", "audio"],  # yolo/vlm に分割
+        "run_mode": "until_provider_ends",  # provider が None を返すまで継続
     }
 
     # Run agent
@@ -84,8 +89,11 @@ def test_e2e_agent_no_llm():
     # Verify world model is updated
     assert out["world"] is not None
 
-    # Verify modality_results is properly processed (fan-in)
-    assert isinstance(out["modality_results"], list)
+    # Verify modality_results is properly processed (fan-in) - now dict
+    assert isinstance(out["modality_results"], dict)
+
+    # Verify barrier_obs_id is present (latch for join_modalities)
+    assert "barrier_obs_id" in out
 
     # Verify perception IR contains audio cues from audio_node
     assert out["ir"] is not None
@@ -94,7 +102,22 @@ def test_e2e_agent_no_llm():
     # Verify no unexpected errors
     assert isinstance(out["errors"], list)
 
+    # PR1: Verify received_modalities is a list
+    assert "received_modalities" in out
+    assert isinstance(out["received_modalities"], list)
+
+    # PR3: Verify latest_output is properly populated
+    assert "latest_output" in out
+    assert out["latest_output"] is not None
+    assert out["latest_output"]["obs_id"] is not None
+    assert out["latest_output"]["selected_view"] is not None
+    assert "step" in out["latest_output"]
+    assert "ir" in out["latest_output"]
+    assert "world" in out["latest_output"]
+
     print("✅ E2E test passed")
     print(f"Selected view: {out['selected'].view_id}")
     print(f"Messages: {len(out['messages'])}")
     print(f"Errors: {out['errors']}")
+    print(f"Received modalities: {out['received_modalities']}")
+    print(f"Latest output obs_id: {out['latest_output']['obs_id']}")

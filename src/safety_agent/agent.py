@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import re
-from typing import Any, Dict, List, Literal, Optional
+from typing import Any, Dict, List, Optional
 
 import httpx
 from langgraph.graph import END, START, StateGraph
@@ -132,13 +132,49 @@ def _robust_json_loads(text: str) -> Dict[str, Any]:
 # =========================
 
 
-def _add_list(left, right):
-    return (left or []) + (right or [])
+def _merge_dict(left, right):
+    """右勝ちの dict merge。right が {} のときは完全リセット。"""
+    if right == {}:
+        return {}
+    return {**(left or {}), **(right or {})}
+
+
+_RESET_SENTINEL = "__reset__"
+
+
+def _unique_append_with_reset(left: List[str], right: List[str]) -> List[str]:
+    """リセットセンチネルで空にできる重複なし追記 reducer。"""
+    if _RESET_SENTINEL in (right or []):
+        return []
+    return sorted(set((left or []) + (right or [])))
+
+
+_MAX_MESSAGES = 20
+
+
+def _sliding_window_messages(left, right):
+    """スライディングウィンドウで直近 _MAX_MESSAGES 件のみ保持する reducer。"""
+    combined = add_messages(left or [], right or [])
+    # add_messages 後のスライシング
+    if isinstance(combined, list) and len(combined) > _MAX_MESSAGES:
+        return combined[-_MAX_MESSAGES:]
+    return combined
+
+
+_MAX_ERRORS = 50
+
+
+def _sliding_window_errors(left: List[str], right: List[str]) -> List[str]:
+    """直近 _MAX_ERRORS 件のみ保持する reducer。"""
+    combined = (left or []) + (right or [])
+    if len(combined) > _MAX_ERRORS:
+        return combined[-_MAX_ERRORS:]
+    return combined
 
 
 class AgentState(TypedDict):
-    # メッセージログ（オプションだがトレースに便利）
-    messages: Annotated[List[Dict[str, str]], add_messages]
+    # メッセージログ（スライディングウィンドウ化）
+    messages: Annotated[List, _sliding_window_messages]
 
     step: int
     max_steps: int
@@ -147,8 +183,17 @@ class AgentState(TypedDict):
     observation: Optional[Observation]
     ir: Optional[PerceptionIR]
 
-    # fan-out/fan-in: modality_results が vision_node, audio_node から蓄積される
-    modality_results: Annotated[List[ModalityResult], _add_list]
+    # fan-out/fan-in: modality_results を dict に変更（メモリリーク防止）
+    modality_results: Annotated[Dict[str, ModalityResult], _merge_dict]
+
+    # fan-in バリア：受け取ったモダリティ名（センチネルでリセット可能）
+    received_modalities: Annotated[List[str], _unique_append_with_reset]
+
+    # ラッチ：同フレーム内で fuse_modalities が2回以上実行されるのを防止
+    barrier_obs_id: Optional[str]
+
+    # フレームごとの統合出力（PR3）
+    latest_output: Optional[Dict[str, Any]]
 
     # 世界モデル、計画、選択
     world: WorldModel
@@ -156,7 +201,7 @@ class AgentState(TypedDict):
     selected: Optional[ViewCommand]
 
     done: bool
-    errors: Annotated[List[str], _add_list]
+    errors: Annotated[List[str], _sliding_window_errors]
 
 
 class ContextSchema(TypedDict):
@@ -178,6 +223,12 @@ class ContextSchema(TypedDict):
     info_gain_weight: float
     safety_priority_base: float
 
+    # PR1: fan-in バリア設定
+    expected_modalities: List[str]
+
+    # run_mode: "until_provider_ends" | "stop_when_safe"
+    run_mode: str
+
 
 # =========================
 # グラフノード関数
@@ -188,8 +239,8 @@ def ingest_observation(
     state: AgentState, runtime: Runtime[ContextSchema]
 ) -> Command:
     """
-    観測を取得して、vision_node と audio_node へ fan-out で送信。
-    Command + Send API により真の並列実行を実現。
+    観測を取得して、yolo_node、vlm_node、audio_node へ fan-out で送信。
+    Command + Send API により真の LangGraph 並列実行を実現。
     """
     step = state["step"]
     obs = state.get("observation")
@@ -206,104 +257,137 @@ def ingest_observation(
             )
         obs = nxt
 
-    # fan-out: vision と audio を並列ノードへ送信
+    # fan-out: yolo, vlm, audio を並列ノードへ送信
     sends: list[Send] = [
-        Send("vision_node", {"observation": obs}),
+        Send("yolo_node", {"observation": obs}),
+        Send("vlm_node", {"observation": obs}),
         Send("audio_node", {"observation": obs}),
     ]
 
     return Command(
         update={
             "observation": obs,
-            "modality_results": [],  # fan-in バッファをリセット
+            "done": False,  # 毎フレーム開始時にクリア
+            "modality_results": {},  # dict リセット
+            "received_modalities": [_RESET_SENTINEL],  # バリアカウンタをリセット
+            "barrier_obs_id": None,  # ラッチをリセット
             "messages": [{"role": "assistant", "content": f"[ingest] fan-out -> {obs.obs_id}"}],
         },
         goto=sends,
     )
 
 
-def vision_node(
-    state: AgentState, runtime: Runtime[ContextSchema]
-) -> Dict[str, Any]:
-    """Vision ノード：VLM + YOLO を並列実行。"""
+def yolo_node(state: AgentState, runtime: Runtime[ContextSchema]) -> Command:
+    """YOLO ノード：物体検出を実行。"""
     obs = state.get("observation")
-    if obs is None:
-        return {
-            "modality_results": [
-                ModalityResult(
-                    modality_name="vision",
-                    error="No observation provided",
-                )
-            ]
-        }
-
-    ctx = runtime.context
+    yolo = runtime.context.get("yolo_detector")
     objects = []
+    error = None
+
+    if obs and obs.image_path and yolo:
+        try:
+            objects = yolo.detect(obs.image_path)
+        except Exception as e:
+            error = f"yolo: {e}"
+
+    result = ModalityResult(modality_name="yolo", objects=objects, error=error)
+    return Command(
+        update={
+            "modality_results": {"yolo": result},
+            "received_modalities": ["yolo"],
+            "messages": [{"role": "assistant", "content": f"[yolo] objects={len(objects)}"}],
+        },
+        goto="join_modalities",
+    )
+
+
+def vlm_node(state: AgentState, runtime: Runtime[ContextSchema]) -> Command:
+    """VLM ノード：画像テキスト分析を実行。"""
+    obs = state.get("observation")
+    analyzer = runtime.context.get("vision_analyzer")
     description = None
     error = None
 
-    try:
-        # YOLO 検出（CPU/GPU）
-        if ctx.get("yolo_detector") and obs.image_path:
-            objects = ctx["yolo_detector"].detect(obs.image_path)
-        elif obs.image_path:
-            # フォールバック：簡易画像分析
-            objects = []
+    if obs and obs.image_path and analyzer:
+        try:
+            description = analyzer.analyze(obs.image_path)
+        except Exception as e:
+            error = f"vlm: {e}"
 
-        # VLM 分析（HTTP I/O）
-        if ctx.get("vision_analyzer") and obs.image_path:
-            description = ctx["vision_analyzer"].analyze(obs.image_path)
-    except Exception as e:
-        error = f"vision_node error: {e}"
-
-    result = ModalityResult(
-        modality_name="vision",
-        objects=objects,
-        description=description,
-        error=error,
+    result = ModalityResult(modality_name="vlm", description=description, error=error)
+    return Command(
+        update={
+            "modality_results": {"vlm": result},
+            "received_modalities": ["vlm"],
+            "messages": [{"role": "assistant", "content": f"[vlm] {'ok' if description else 'none'}"}],
+        },
+        goto="join_modalities",
     )
-    return {
-        "modality_results": [result],
-        "messages": [
-            {
-                "role": "assistant",
-                "content": f"[vision] objects={len(objects)} vlm={'ok' if description else 'none'}",
-            }
-        ],
-    }
 
 
-def audio_node(
-    state: AgentState, runtime: Runtime[ContextSchema]
-) -> Dict[str, Any]:
+def audio_node(state: AgentState, runtime: Runtime[ContextSchema]) -> Command:
     """Audio ノード：音声解析を実行。"""
     obs = state.get("observation")
-    if obs is None:
-        return {
-            "modality_results": [
-                ModalityResult(
-                    modality_name="audio",
-                    error="No observation provided",
-                )
-            ]
-        }
+    audio_cues = []
+    error = None
 
-    try:
-        audio_cues = runtime.context["audio_analyzer"].analyze(obs.audio_text)
-        error = None
-    except Exception as e:
-        audio_cues = []
-        error = f"audio_node error: {e}"
+    if obs:
+        try:
+            audio_cues = runtime.context["audio_analyzer"].analyze(obs.audio_text)
+        except Exception as e:
+            error = f"audio: {e}"
 
-    result = ModalityResult(
-        modality_name="audio",
-        audio_cues=audio_cues,
-        error=error,
+    result = ModalityResult(modality_name="audio", audio_cues=audio_cues, error=error)
+    return Command(
+        update={
+            "modality_results": {"audio": result},
+            "received_modalities": ["audio"],
+            "messages": [{"role": "assistant", "content": f"[audio] cues={len(audio_cues)}"}],
+        },
+        goto="join_modalities",
     )
-    return {
-        "modality_results": [result],
-        "messages": [{"role": "assistant", "content": f"[audio] cues={len(audio_cues)}"}],
-    }
+
+
+def join_modalities(state: AgentState, runtime: Runtime[ContextSchema]) -> Command:
+    """
+    Fan-in バリア + ラッチ：全て期待するモダリティが受け取ったかを確認。
+    ラッチ（barrier_obs_id）により、同フレーム内で fuse_modalities は1回だけ実行される。
+    """
+    expected = set(runtime.context.get("expected_modalities", ["yolo", "vlm", "audio"]))
+    received = set(state.get("received_modalities", []))
+    obs = state.get("observation")
+    current_obs_id = obs.obs_id if obs else None
+    barrier_obs_id = state.get("barrier_obs_id")
+
+    if expected.issubset(received):
+        # 全てのモダリティが揃った
+        if barrier_obs_id == current_obs_id:
+            # 既にこのフレーム（obs_id）で fuse 実行済み → スキップ
+            return Command(
+                update={"messages": [{"role": "assistant", "content": "[join] already fused, skip"}]},
+                goto=END,
+            )
+        # 初回: ラッチをセットして fuse へ
+        return Command(
+            update={
+                "barrier_obs_id": current_obs_id,
+                "messages": [{"role": "assistant", "content": "[join] all modalities received"}],
+            },
+            goto="fuse_modalities",
+        )
+    else:
+        # 未揃い → このサブタスクの枝を終了
+        return Command(
+            update={
+                "messages": [
+                    {
+                        "role": "assistant",
+                        "content": "[join] waiting",
+                    }
+                ]
+            },
+            goto=END,
+        )
 
 
 def fuse_modalities(
@@ -311,21 +395,22 @@ def fuse_modalities(
 ) -> Dict[str, Any]:
     """
     全モダリティの ModalityResult を PerceptionIR に統合する。
-    fan-in ポイント：vision_node と audio_node の完了後に実行。
+    fan-in ポイント：yolo_node、vlm_node、audio_node の完了後に実行。
     """
     obs = state.get("observation")
     if obs is None:
         return {"errors": ["No observation in state"], "done": True}
 
-    # modality_results を辞書化して検索しやすく
-    results = {r.modality_name: r for r in state.get("modality_results", [])}
+    # modality_results は既に dict
+    results: Dict[str, ModalityResult] = state.get("modality_results", {})
 
-    vision = results.get("vision")
+    yolo = results.get("yolo")
+    vlm = results.get("vlm")
     audio = results.get("audio")
 
-    objects = vision.objects if vision else []
-    audio_cues = audio.audio_cues if audio else []
-    description = vision.description if vision else None
+    objects = (yolo.objects if yolo and yolo.objects else [])
+    audio_cues = (audio.audio_cues if audio and audio.audio_cues else [])
+    description = (vlm.description if vlm else None)
     modality_errors = [r.error for r in results.values() if r.error]
 
     # Perceiver（ハザード推定専用）を呼び出す
@@ -612,6 +697,10 @@ def select_view(state: AgentState, runtime: Runtime[ContextSchema]) -> Dict[str,
         max_haz_conf < 0.4
     )
 
+    # until_provider_ends モードでは done による早期停止を無効化
+    if runtime.context.get("run_mode", "until_provider_ends") == "until_provider_ends":
+        done = False
+
     return {
         "selected": cmd,
         "world": new_world,
@@ -625,14 +714,52 @@ def select_view(state: AgentState, runtime: Runtime[ContextSchema]) -> Dict[str,
     }
 
 
+def emit_output(state: AgentState) -> Dict[str, Any]:
+    """
+    フレームごとに latest_output を更新し、統合出力を生成。
+    PR3: emit_output ノード
+    """
+    obs = state.get("observation")
+    ir = state.get("ir")
+    world = state.get("world")
+    selected = state.get("selected")
+
+    output = {
+        "obs_id": obs.obs_id if obs else None,
+        "video_timestamp": obs.video_timestamp if obs else None,
+        "ir": ir.model_dump() if ir else None,
+        "world": {
+            "fused_hazards": [h.model_dump() for h in (world.fused_hazards if world else [])],
+            "outstanding_unobserved": [
+                r.model_dump() for r in (world.outstanding_unobserved if world else [])
+            ],
+        },
+        "selected_view": selected.model_dump() if selected else None,
+        "frame_errors": list(state.get("errors", [])),
+        "step": state.get("step", 0),
+    }
+
+    return {
+        "latest_output": output,
+        "messages": [
+            {
+                "role": "assistant",
+                "content": f"[emit] step={state.get('step', 0)} obs={obs.obs_id if obs else 'none'}",
+            }
+        ],
+    }
+
+
 def bump_step(state: AgentState) -> Dict[str, Any]:
     return {"step": state["step"] + 1}
 
 
-def should_continue(state: AgentState) -> Literal["ingest_observation", END]:
-    if state.get("done"):
+def should_continue(state: AgentState) -> str:
+    max_steps = state.get("max_steps", 0)
+
+    if max_steps and state["step"] >= max_steps:
         return END
-    if state["step"] >= state["max_steps"]:
+    if state.get("done"):
         return END
     return "ingest_observation"
 
@@ -645,28 +772,29 @@ def should_continue(state: AgentState) -> Literal["ingest_observation", END]:
 def build_agent():
     builder = StateGraph(AgentState, context_schema=ContextSchema)
 
-    # ノード登録（fan-out/fan-in 対応）
+    # ノード登録（yolo/vlm に分割した fan-out/fan-in 対応）
     builder.add_node("ingest_observation", ingest_observation)
-    builder.add_node("vision_node", vision_node)
+    builder.add_node("yolo_node", yolo_node)
+    builder.add_node("vlm_node", vlm_node)
     builder.add_node("audio_node", audio_node)
+    builder.add_node("join_modalities", join_modalities)  # ラッチ付き fan-in バリア
     builder.add_node("fuse_modalities", fuse_modalities)
     builder.add_node("update_world_model", update_world_model)
     builder.add_node("propose_next_view_llm", propose_next_view_llm)
     builder.add_node("validate_and_guardrails", validate_and_guardrails)
     builder.add_node("select_view", select_view)
+    builder.add_node("emit_output", emit_output)
     builder.add_node("bump_step", bump_step)
 
     # エッジ設定
     builder.add_edge(START, "ingest_observation")
-    # fan-out は ingest_observation が Command で goto=[Send(...), Send(...)] するため
-    # ここには条件付きエッジは不要（Command が直接ルーティング）
-    builder.add_edge("vision_node", "fuse_modalities")
-    builder.add_edge("audio_node", "fuse_modalities")
+    # fan-out: yolo/vlm/audio ノードは Command で goto="join_modalities" するため静的エッジは不要
     builder.add_edge("fuse_modalities", "update_world_model")
     builder.add_edge("update_world_model", "propose_next_view_llm")
     builder.add_edge("propose_next_view_llm", "validate_and_guardrails")
     builder.add_edge("validate_and_guardrails", "select_view")
-    builder.add_edge("select_view", "bump_step")
+    builder.add_edge("select_view", "emit_output")
+    builder.add_edge("emit_output", "bump_step")
     builder.add_conditional_edges("bump_step", should_continue)
 
     return builder.compile()

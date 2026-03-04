@@ -317,33 +317,30 @@ def extract_audio(
         return None
 
 
-def load_images_from_input(input_dir: str = "data/images") -> list[Path]:
-    """Load images from input directory.
+def load_frames(frames_dir: str = "data/frames") -> list[Path]:
+    """Load frame images from frames directory.
 
     Args:
-        input_dir: Directory path to search for images
+        frames_dir: Directory path to search for frame images
 
     Returns:
-        List of Path objects to image files found
+        List of Path objects to frame image files found, sorted
     """
-    input_path = Path(input_dir)
-    if not input_path.exists():
-        logger.warning(f"Input directory not found: {input_dir}")
+    frames_path = Path(frames_dir)
+    if not frames_path.exists():
         return []
 
-    image_extensions = {".jpg", ".jpeg", ".png", ".bmp", ".gif"}
-    image_files = [
+    image_extensions = {".jpg", ".jpeg", ".png", ".bmp"}
+    frame_files = sorted([
         f
-        for f in input_path.iterdir()
+        for f in frames_path.iterdir()
         if f.is_file() and f.suffix.lower() in image_extensions
-    ]
+    ])
 
-    if image_files:
-        logger.info(f"Found {len(image_files)} image(s) in {input_dir}/")
-        return sorted(image_files)
-    else:
-        logger.warning(f"No images found in {input_dir}/")
-        return []
+    if frame_files:
+        logger.info(f"Found {len(frame_files)} frame(s) in {frames_dir}/")
+
+    return frame_files
 
 
 def save_analysis_results(
@@ -439,7 +436,7 @@ def prepare_observations(
     frame_output_format: str,
     audio_config: dict,
 ) -> tuple[list[Observation], dict]:
-    """Prepare observation data from video and images.
+    """Prepare observation data from video and frames.
 
     Args:
         config: Configuration dictionary
@@ -480,23 +477,23 @@ def prepare_observations(
         if frame_paths:
             video_timestamps_map = {f"img_{i}": ts for i, ts in enumerate(video_timestamps)}
 
-    # Process input images
-    image_files = load_images_from_input("data/images")
-    if image_files:
-        logger.info(f"Processing {len(image_files)} input image(s)")
+    # Load frame images from data/frames
+    frame_files = load_frames("data/frames")
+    if frame_files:
+        logger.info(f"Processing {len(frame_files)} frame image(s)")
         obs_list = [
             Observation(
                 obs_id=f"img_{i}",
-                image_path=str(img_path.absolute()),
+                image_path=str(frame_path.absolute()),
                 audio_text=None,
                 camera_pose=CameraPose(pan_deg=0, tilt_deg=0, zoom=1),
             )
-            for i, img_path in enumerate(image_files)
+            for i, frame_path in enumerate(frame_files)
         ]
         return obs_list, video_timestamps_map
     else:
-        # Use example observations if no images found
-        logger.warning("No images found, using example observations")
+        # Use example observations if no frames found (test fallback)
+        logger.warning("No frames found in data/frames, using example observations")
         obs_list = [
             Observation(
                 obs_id="t0",
@@ -518,8 +515,8 @@ def run_and_log_agent(
     agent: object,
     initial_state: AgentState,
     context: dict,
-) -> dict:
-    """Run agent and log results.
+) -> tuple[dict, list[dict]]:
+    """Run agent with streaming to collect all frame outputs.
 
     Args:
         agent: LangGraph agent instance
@@ -527,28 +524,41 @@ def run_and_log_agent(
         context: Agent runtime context
 
     Returns:
-        Agent output dictionary
+        Tuple of (final_state, all_frame_outputs)
     """
     logger.info("Running Safety View Agent")
-    out = agent.invoke(initial_state, context=context)
+
+    all_frame_outputs: list[dict] = []
+    final_state: dict = {}
+    prev_latest_obs_id: str | None = None
+
+    for state in agent.stream(initial_state, context=context, stream_mode="values"):
+        latest = state.get("latest_output")
+        if "latest_output" in state and latest:
+            obs_id = latest.get("obs_id")
+            # フレームが更新されたときのみ追加（重複回避）
+            if obs_id != prev_latest_obs_id:
+                all_frame_outputs.append(latest)
+                prev_latest_obs_id = obs_id
+        final_state = state
 
     # Log agent results
-    if out["selected"]:
+    if final_state.get("selected"):
         logger.info(
-            f"Selected view: {out['selected'].view_id} "
-            f"(pan={out['selected'].pan_deg}°, tilt={out['selected'].tilt_deg}°)"
+            f"Selected view: {final_state['selected'].view_id} "
+            f"(pan={final_state['selected'].pan_deg}°, tilt={final_state['selected'].tilt_deg}°)"
         )
 
-    hazard_count = len(out["world"].fused_hazards) if out["world"].fused_hazards else 0
+    hazard_count = len(final_state["world"].fused_hazards) if final_state.get("world") and final_state["world"].fused_hazards else 0
     logger.info(f"Hazards detected: {hazard_count}")
 
-    unobs_count = len(out["world"].outstanding_unobserved) if out["world"].outstanding_unobserved else 0
+    unobs_count = len(final_state["world"].outstanding_unobserved) if final_state.get("world") and final_state["world"].outstanding_unobserved else 0
     logger.info(f"Outstanding unobserved regions: {unobs_count}")
 
-    if out["errors"]:
-        logger.warning(f"Errors: {len(out['errors'])}")
+    if final_state.get("errors"):
+        logger.warning(f"Errors: {len(final_state['errors'])}")
 
-    return out
+    return final_state, all_frame_outputs
 
 
 def main():
@@ -570,56 +580,31 @@ def main():
     video_extensions = set(video_formats_cfg.get("extensions", [".mp4", ".avi", ".mov", ".mkv", ".webm"]))
     frame_output_format = video_formats_cfg.get("frame_output", "frame_{timestamp}s.jpg")
 
-    # Prepare observations from video and images
+    # Prepare observations from video and frames
     obs_list, video_timestamps_map = prepare_observations(
         config, video_extensions, frame_output_format, audio_cfg
     )
 
-    # Initialize VLM for image processing
-    vision_analyzer = get_vlm(config)
+    # Apply max_steps filter to obs_list
+    max_steps_cfg = agent_cfg.get("max_steps", 1)
+    if max_steps_cfg == -1:
+        #全フレーム実行
+        actual_max_steps = len(obs_list)
+    else:
+        # N フレームだけ実行（obs_list を先頭から max_steps_cfg 件に制限）
+        obs_list = obs_list[:max_steps_cfg]
+        actual_max_steps = len(obs_list)
 
-    # Process images with VLM and Perceiver if available
-    if vision_analyzer:
-        perceiver = Perceiver()
-        analysis_results = {
-            "input_images": [],
-            "perception_results": [],
-        }
-
-        for obs in obs_list:
-            if obs.image_path:
-                # Run VLM Vision Analysis
-                vision_text = ""
-                try:
-                    vision_text = vision_analyzer.analyze(obs.image_path)
-                except Exception as e:
-                    logger.warning(f"Vision Analysis failed for {Path(obs.image_path).name}: {e}")
-
-                # Run Perceiver
-                ir = perceiver.estimate(
-                    obs,
-                    objects=[],
-                    audio_cues=[],
-                    vision_description=vision_text
-                )
-
-                analysis_results["perception_results"].append(
-                    {
-                        "obs_id": ir.obs_id,
-                        "objects": [obj.model_dump() for obj in ir.objects],
-                        "hazards": [h.model_dump() for h in ir.hazards],
-                        "unobserved": [u.model_dump() for u in ir.unobserved],
-                        "audio": [a.model_dump() for a in ir.audio],
-                        "vision_analysis": vision_text,
-                    }
-                )
-
-        save_analysis_results("data", analysis_results, video_timestamps_map)
+    if actual_max_steps > 0:
+        logger.info(f"Configured to process {actual_max_steps} observation(s)")
+    else:
+        logger.warning("No observations to process")
 
     # Initialize agent components
     provider = ObservationProvider(obs_list)
     perceiver = Perceiver()
     llm = get_llm(config)
+    vision_analyzer = get_vlm(config)
 
     # Build agent
     agent = build_agent()
@@ -637,10 +622,13 @@ def main():
     initial_state: AgentState = {
         "messages": [],
         "step": 0,
-        "max_steps": agent_cfg.get("max_steps", 3),
-        "observation": provider.next(),
+        "max_steps": actual_max_steps,
+        "observation": None,
         "ir": None,
-        "modality_results": [],
+        "modality_results": {},  # Dict に変更（メモリリーク防止）
+        "received_modalities": [],  # PR1: fan-in バリア
+        "barrier_obs_id": None,  # ラッチ（同フレーム内で fuse は1回だけ）
+        "latest_output": None,  # PR3: 統合出力
         "world": WorldModel(),
         "plan": None,
         "selected": None,
@@ -663,14 +651,20 @@ def main():
         "safety_priority_weight": view_planning_cfg.get("safety_priority_weight", 0.7),
         "info_gain_weight": view_planning_cfg.get("info_gain_weight", 0.3),
         "safety_priority_base": view_planning_cfg.get("safety_priority_base", 0.7),
+        "expected_modalities": ["yolo", "vlm", "audio"],  # yolo/vlm に分割
+        "run_mode": "until_provider_ends",  # provider が None を返すまで継続
     }
 
     # Run and log agent
-    out = run_and_log_agent(agent, initial_state, context)
+    out, all_frame_outputs = run_and_log_agent(agent, initial_state, context)
 
-    # Save agent execution results to JSON
-    empty_analysis = {"perception_results": []}
-    save_analysis_results("data", empty_analysis, agent_output=out)
+    # Save all frame results from agent's emit_output node
+    save_analysis_results(
+        "data",
+        {"perception_results": all_frame_outputs},
+        video_timestamps_map,
+        agent_output=out,
+    )
 
     # Save Mermaid diagram
     try:
