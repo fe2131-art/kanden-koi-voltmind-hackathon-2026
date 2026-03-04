@@ -76,7 +76,7 @@ omit = ["*/tests/*"]
 
 [tool.ruff]
 line-length = 88
-target-version = "py311"
+target-version = "py312"
 
 [tool.ruff.lint]
 select = [
@@ -91,7 +91,7 @@ ignore = ["E501"]  # line-too-long
 known-first-party = ["safety_agent"]
 
 [tool.pyright]
-pythonVersion = "3.11"
+pythonVersion = "3.12"
 typeCheckingMode = "standard"
 reportOptionalMemberAccess = "information"
 reportOptionalSubscript = "information"
