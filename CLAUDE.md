@@ -108,8 +108,9 @@ python src/run.py
 # .env を作成（.env.example を参考）
 cp .env.example .env
 # .env を編集してAPIキーを入力
-# 環境変数を読み込んで実行
-set -a && source .env && set +a && python src/run.py
+
+# 実行（.env から自動的に環境変数を読み込み）
+python src/run.py
 ```
 
 ### ダミー学習実行

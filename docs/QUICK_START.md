@@ -14,7 +14,7 @@ cp .env.example .env
 pytest tests/ -v
 
 # 3. 実行（Vision API 使用、30-40秒）
-set -a && source .env && set +a && python src/run.py
+python src/run.py
 
 # 4. 結果確認
 cat data/perception_results.json
@@ -72,8 +72,8 @@ test_e2e.py::test_e2e_agent_no_llm PASSED
 ### 5. 本体を実行
 
 ```bash
-# 環境変数を読み込んで実行
-set -a && source .env && set +a && python src/run.py
+# シンプルに実行（.env から環境変数を自動読み込み）
+python src/run.py
 ```
 
 **実行中のログ:**
@@ -153,11 +153,14 @@ uv sync --force
 ### 「OPENAI_API_KEY is not set」
 
 ```bash
-# 環境変数を確認
-echo $OPENAI_API_KEY
+# .env ファイルが存在するか確認
+ls -la .env
 
-# .env が正しく読み込まれているか確認
-set -a && source .env && set +a && echo $OPENAI_API_KEY
+# .env の内容を確認（最初の7行）
+head -7 .env
+
+# .env ファイルに正しいキーが記載されているか確認
+grep OPENAI_API_KEY .env
 ```
 
 ### テストが失敗する

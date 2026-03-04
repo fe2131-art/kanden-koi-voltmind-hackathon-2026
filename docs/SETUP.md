@@ -103,12 +103,11 @@ cp /path/to/your/video.mp4 data/videos/
 ## ステップ 7: エージェントを実行
 
 ```bash
-# .env を読み込んで実行
-set -a && source .env && set +a && python src/run.py
-
-# または
+# .env ファイルから自動的に環境変数を読み込んで実行
 python src/run.py
 ```
+
+**注**: `.env` ファイルは自動的に読み込まれます（`python-dotenv` ライブラリにより）
 
 **実行後、以下のファイルが `data/` に生成されます：**
 - `perception_results.json` - 構造化データ（Vision 分析結果 + video_timestamp 含む）
@@ -129,11 +128,14 @@ uv sync --force
 ### OPENAI_API_KEY is not set
 
 ```bash
-# 環境変数を確認
-echo $OPENAI_API_KEY
+# .env ファイルが存在するか確認
+ls -la .env
 
-# .env が正しく読み込まれているか確認
-set -a && source .env && set +a && echo $OPENAI_API_KEY
+# .env の内容を確認
+grep OPENAI_API_KEY .env
+
+# .env を編集してAPIキーを設定
+nano .env
 ```
 
 ### Vision API が空の応答を返す
@@ -187,7 +189,8 @@ http://localhost:5173
 
 #### 5. エージェントを実行（ターミナル 3）
 ```bash
-set -a && source .env && set +a && python src/run.py
+# .env から自動的に環境変数を読み込んで実行
+python src/run.py
 ```
 
 ### 動作確認チェックリスト

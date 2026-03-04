@@ -135,8 +135,8 @@ cp .env.example .env
 # テスト実行
 pytest tests/ -v
 
-# エージェント実行
-set -a && source .env && set +a && python src/run.py
+# エージェント実行（.env から自動読み込み）
+python src/run.py
 
 # ダミー学習
 python finetuning/train_dummy.py
