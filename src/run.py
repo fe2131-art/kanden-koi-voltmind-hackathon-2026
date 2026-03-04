@@ -7,6 +7,10 @@ from typing import Optional
 
 import cv2
 import yaml
+from dotenv import load_dotenv
+
+# Load environment variables from .env file
+load_dotenv()
 
 from safety_agent.agent import AgentState, OpenAICompatLLM, build_agent
 
@@ -205,7 +209,6 @@ def split_video_to_frames(
         return [], []
 
     source_fps = cap.get(cv2.CAP_PROP_FPS)
-    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
 
     if target_fps <= 0 or source_fps <= 0:
         print(f"⚠️  Invalid FPS: source={source_fps}, target={target_fps}")
