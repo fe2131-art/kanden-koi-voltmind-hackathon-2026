@@ -70,7 +70,7 @@ class OpenAICompatLLM:
     def chat_json(
         self, system: str, user: str, max_tokens: int = 800
     ) -> Dict[str, Any]:
-        url = f"{self.base_url}/chat/completions"
+        url = f"{self.base_url}/v1/chat/completions"
         headers = {"Authorization": f"Bearer {self.api_key}"}
         messages = [
             {"role": "system", "content": system},
@@ -96,7 +96,7 @@ class OpenAICompatLLM:
 
     def chat_text(self, system: str, user: str, max_tokens: int = 500) -> str:
         """チャットリクエストを送信してプレーンテキストの応答を返す。"""
-        url = f"{self.base_url}/chat/completions"
+        url = f"{self.base_url}/v1/chat/completions"
         headers = {"Authorization": f"Bearer {self.api_key}"}
         messages = [
             {"role": "system", "content": system},

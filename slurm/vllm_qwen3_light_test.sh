@@ -66,8 +66,8 @@ uv run vllm serve "$MODEL" \
   --max-model-len 8192 \
   --gpu-memory-utilization 0.90 \
   --enable-prefix-caching \
-  --reasoning-parser qwen3 \
   > "vllm_${SLURM_JOB_ID}.log" 2>&1 &
+# --reasoning-parser qwen3 は Qwen3 thinking モデル用。必要なら上記に追加。
 
 VLLM_PID=$!
 echo "vLLM PID=$VLLM_PID"

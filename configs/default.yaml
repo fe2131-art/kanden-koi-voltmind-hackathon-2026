@@ -8,7 +8,7 @@ agent:
 # LLM configuration
 llm:
   # Provider: "vllm" (local) or "openai" (API)
-  provider: "openai"
+  provider: "vllm"
 
   # vLLM settings (local server)
   vllm:
@@ -27,7 +27,7 @@ llm:
 # VLM 設定（Vision Language Model / 画像分析専用）
 # model: null の場合 → llm.openai.model を自動参照（共有設定）
 vlm:
-  provider: "openai"
+  provider: "vllm"
   openai:
     base_url: "https://api.openai.com/v1"
     model: null    # null → llm.openai.model を流用（gpt-5-nano-2025-08-07）
