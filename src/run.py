@@ -1,5 +1,6 @@
 import json
 import os
+import shutil
 import subprocess
 import time
 from pathlib import Path
@@ -28,20 +29,39 @@ logger = setup_logger("safety_view_agent")
 
 
 def load_config(config_path: str = "configs/default.yaml") -> dict:
-    """YAML設定を読み込む。"""
+    """YAML設定を読み込む。ファイル未検出・構文エラーは即 raise する。"""
     if not os.path.exists(config_path):
-        logger.warning(f"Config file not found: {config_path}, using defaults")
-        return {}
-
+        raise FileNotFoundError(
+            f"設定ファイルが見つかりません: {config_path}\n"
+            "リポジトリルートから実行しているか確認してください。"
+        )
     try:
         with open(config_path, "r", encoding="utf-8") as f:
-            return yaml.safe_load(f) or {}
+            cfg = yaml.safe_load(f)
+        if cfg is None:
+            raise ValueError(f"設定ファイルが空です: {config_path}")
+        return cfg
     except yaml.YAMLError as e:
-        logger.warning(f"Failed to parse YAML config: {e}, using defaults")
-        return {}
+        raise ValueError(f"YAML 構文エラー ({config_path}): {e}") from e
     except (IOError, OSError) as e:
-        logger.warning(f"Failed to read config file: {e}, using defaults")
-        return {}
+        raise IOError(f"設定ファイル読み込み失敗 ({config_path}): {e}") from e
+
+
+def load_prompts(prompt_path: str = "configs/prompt.yaml") -> dict:
+    """プロンプト設定を読み込む。ファイル未検出・構文エラーは即 raise する。"""
+    if not os.path.exists(prompt_path):
+        raise FileNotFoundError(
+            f"プロンプト設定ファイルが見つかりません: {prompt_path}\n"
+            "configs/prompt.yaml を作成してください。"
+        )
+    try:
+        with open(prompt_path, "r", encoding="utf-8") as f:
+            cfg = yaml.safe_load(f)
+        if cfg is None:
+            raise ValueError(f"プロンプト設定ファイルが空です: {prompt_path}")
+        return cfg
+    except yaml.YAMLError as e:
+        raise ValueError(f"プロンプト YAML 構文エラー ({prompt_path}): {e}") from e
 
 
 def get_llm(config: dict) -> Optional[OpenAICompatLLM]:
@@ -57,8 +77,18 @@ def get_llm(config: dict) -> Optional[OpenAICompatLLM]:
             return None
 
         openai_cfg = llm_config.get("openai", {})
-        model = os.getenv("OPENAI_MODEL", openai_cfg.get("model", "gpt-4o"))
-        base_url = openai_cfg.get("base_url", "https://api.openai.com/v1")
+        model = os.getenv("OPENAI_MODEL") or openai_cfg.get("model")
+        if not model:
+            raise ValueError(
+                "LLM モデル名が未設定です。"
+                "configs/default.yaml の llm.openai.model または環境変数 OPENAI_MODEL を設定してください。"
+            )
+        base_url = openai_cfg.get("base_url")
+        if not base_url:
+            raise ValueError(
+                "LLM ベースURLが未設定です。"
+                "configs/default.yaml の llm.openai.base_url を設定してください。"
+            )
 
         logger.info(f"Using OpenAI API (model={model})")
         return OpenAICompatLLM(
@@ -92,11 +122,28 @@ def get_llm(config: dict) -> Optional[OpenAICompatLLM]:
         return None
 
 
-def get_vlm(config: dict) -> Optional[VisionAnalyzer]:
+def get_vlm(config: dict, prompts: dict) -> Optional[VisionAnalyzer]:
     """VLM（Vision Language Model）を設定と環境変数に基づいて初期化。"""
     vlm_config = config.get("vlm", {})
     llm_config = config.get("llm", {})
     provider = vlm_config.get("provider", "openai")
+
+    # vision_analysis プロンプトを取得（必須）
+    vision_prompt = prompts.get("vision_analysis", {}).get("default_prompt")
+    if vision_prompt is None:
+        raise ValueError(
+            "プロンプト設定 vision_analysis.default_prompt が見つかりません。"
+            "configs/prompt.yaml を確認してください。"
+        )
+
+    # tokens_cfg から vision_max_completion_tokens を取得（必須）
+    tokens_cfg = config.get("tokens", {})
+    vision_max_tokens = tokens_cfg.get("vision_max_completion_tokens")
+    if vision_max_tokens is None:
+        raise ValueError(
+            "tokens.vision_max_completion_tokens が未設定です。"
+            "configs/default.yaml を確認してください。"
+        )
 
     if provider == "openai":
         # OpenAI API
@@ -108,19 +155,33 @@ def get_vlm(config: dict) -> Optional[VisionAnalyzer]:
         vlm_openai = vlm_config.get("openai", {})
         llm_openai = llm_config.get("openai", {})
 
-        # モデル: VLM設定 > 環境変数 > LLM設定(fallback) > デフォルト
-        model = os.getenv(
-            "VLM_MODEL",
-            vlm_openai.get("model") or llm_openai.get("model", "gpt-5-nano-2025-08-07"),
-        )
+        # モデル: VLM設定 > 環境変数 > LLM設定(fallback)
+        model = os.getenv("VLM_MODEL") or vlm_openai.get("model") or llm_openai.get("model")
+        if not model:
+            raise ValueError(
+                "VLM モデル名が未設定です。"
+                "configs/default.yaml の vlm.openai.model または環境変数 VLM_MODEL を設定してください。"
+            )
 
         # ベースURL: VLM設定 > LLM設定
-        base_url = vlm_openai.get("base_url") or llm_openai.get(
-            "base_url", "https://api.openai.com/v1"
-        )
+        _vlm_base = vlm_openai.get("base_url")
+        _llm_base = llm_openai.get("base_url")
+        base_url = _vlm_base if _vlm_base is not None else _llm_base
+        if not base_url:
+            raise ValueError(
+                "VLM ベースURLが未設定です。"
+                "configs/default.yaml の vlm.openai.base_url または llm.openai.base_url を設定してください。"
+            )
 
         # タイムアウト: VLM設定 > LLM設定
-        timeout_s = vlm_openai.get("timeout_s") or llm_openai.get("timeout_s", 60.0)
+        _vlm_timeout = vlm_openai.get("timeout_s")
+        _llm_timeout = llm_openai.get("timeout_s")
+        timeout_s = _vlm_timeout if _vlm_timeout is not None else _llm_timeout
+        if timeout_s is None:
+            raise ValueError(
+                "VLM タイムアウトが未設定です。"
+                "configs/default.yaml の vlm.openai.timeout_s を設定してください。"
+            )
 
         logger.info(f"Using VisionAnalyzer (model={model})")
         return VisionAnalyzer(
@@ -128,29 +189,47 @@ def get_vlm(config: dict) -> Optional[VisionAnalyzer]:
             model=model,
             api_key=api_key,
             timeout_s=timeout_s,
+            default_prompt=vision_prompt.strip(),
+            max_tokens=vision_max_tokens,
         )
 
     elif provider == "vllm":
         # Local vLLM server (image support may vary)
         vlm_vllm = vlm_config.get("vllm", {})
         llm_vllm = llm_config.get("vllm", {})
+
+        # ベースURL: VLM設定 > 環境変数 > LLM設定
+        _vlm_url = vlm_vllm.get("base_url")
+        _llm_url = llm_vllm.get("base_url")
         base_url = os.getenv(
-            "LLM_BASE_URL", vlm_vllm.get("base_url") or llm_vllm.get("base_url")
+            "LLM_BASE_URL",
+            _vlm_url if _vlm_url is not None else _llm_url,
         )
-        model = os.getenv("VLM_MODEL", vlm_vllm.get("model") or llm_vllm.get("model"))
+
+        # モデル: VLM設定 > 環境変数 > LLM設定
+        model = os.getenv("VLM_MODEL") or vlm_vllm.get("model") or llm_vllm.get("model")
 
         if not base_url:
             logger.warning("LLM_BASE_URL not set, VLM disabled")
             return None
 
-        api_key = vlm_vllm.get("api_key") or llm_vllm.get("api_key", "EMPTY")
-        timeout_s = vlm_vllm.get("timeout_s") or llm_vllm.get("timeout_s", 60.0)
+        # API キーとタイムアウト
+        _vlm_api = vlm_vllm.get("api_key")
+        _llm_api = llm_vllm.get("api_key")
+        api_key = _vlm_api if _vlm_api is not None else (_llm_api or "EMPTY")
+
+        _vlm_timeout = vlm_vllm.get("timeout_s")
+        _llm_timeout = llm_vllm.get("timeout_s")
+        timeout_s = _vlm_timeout if _vlm_timeout is not None else (_llm_timeout or 60.0)
+
         logger.info(f"Using VisionAnalyzer with vLLM at {base_url} (model={model})")
         return VisionAnalyzer(
             base_url=base_url,
             model=model,
             api_key=api_key,
             timeout_s=timeout_s,
+            default_prompt=vision_prompt.strip(),
+            max_tokens=vision_max_tokens,
         )
 
     else:
@@ -430,6 +509,83 @@ def save_analysis_results(
     logger.info(f"Results appended to {results_file} ({frame_count} frames, {agent_count} agent execution)")
 
 
+def prepare_observations_inspesafe(
+    config: dict,
+    frame_output_format: str,
+    audio_config: dict,
+) -> tuple[list[Observation], dict]:
+    """InspecSafe-V1 モード: セッションパスから動画・音声を取得して Observation を構築。
+
+    Args:
+        config: 設定辞書
+        frame_output_format: フレームファイル名形式テンプレート
+        audio_config: 音声設定
+
+    Returns:
+        (観測リスト、ビデオタイムスタンプマップ) のタプル
+    """
+    data_cfg = config.get("data", {})
+    inspesafe_cfg = data_cfg.get("inspesafe", {})
+
+    # 設定値の取得
+    dataset_path = Path(inspesafe_cfg.get("dataset_path", "../InspecSafe-V1"))
+    session_rel = inspesafe_cfg.get("session", "")
+    if not session_rel:
+        raise ValueError("data.inspesafe.session が設定されていません")
+
+    # セッションディレクトリを解決（DATA_PATH/ を補完）
+    session_dir = dataset_path / "DATA_PATH" / session_rel
+    if not session_dir.exists():
+        raise FileNotFoundError(f"セッションが見つかりません: {session_dir}")
+
+    # 動画ファイル（*_visible_*.mp4）を取得
+    rgb_videos = sorted(session_dir.glob("*_visible_*.mp4"))
+    if not rgb_videos:
+        raise FileNotFoundError(f"RGB 動画が見つかりません: {session_dir}")
+    video_path = rgb_videos[0]
+    logger.info(f"[inspesafe] 動画: {video_path}")
+
+    # 音声ファイル（*_audio_*.wav）を data/audio/ にコピー
+    audio_files = sorted(session_dir.glob("*_audio_*.wav"))
+    audio_dir = Path("data/audio")
+    audio_dir.mkdir(parents=True, exist_ok=True)
+    audio_output_filename = audio_config.get("output_filename", "audio.wav")
+    audio_dest = audio_dir / audio_output_filename
+
+    if audio_files:
+        shutil.copy2(str(audio_files[0]), str(audio_dest))
+        logger.info(f"[inspesafe] 音声コピー: {audio_files[0]} → {audio_dest}")
+    else:
+        logger.warning(f"[inspesafe] 音声ファイルなし: {session_dir}")
+
+    # フレーム展開（既存の split_video_to_frames を再利用）
+    video_cfg = config.get("video", {})
+    frames, video_timestamps = split_video_to_frames(
+        video_path=str(video_path),
+        frames_dir="data/frames",
+        frame_output_format=frame_output_format,
+        target_fps=video_cfg.get("fps", 1.0),
+        max_frames=video_cfg.get("max_frames", 30),
+        clear_frames=video_cfg.get("clear_frames", False),
+    )
+    logger.info(f"[inspesafe] {len(frames)} フレーム展開完了")
+
+    video_timestamps_map = {f"img_{i}": ts for i, ts in enumerate(video_timestamps)}
+
+    # Observation リスト構築（load_frames を再利用）
+    frame_paths = load_frames("data/frames")
+    obs_list = [
+        Observation(
+            obs_id=f"img_{i}",
+            image_path=str(fp.resolve()),
+            audio_text=None,
+            camera_pose=CameraPose(pan_deg=0, tilt_deg=0, zoom=1),
+        )
+        for i, fp in enumerate(frame_paths)
+    ]
+    return obs_list, video_timestamps_map
+
+
 def prepare_observations(
     config: dict,
     video_extensions: set,
@@ -447,6 +603,13 @@ def prepare_observations(
     Returns:
         (観測リスト、ビデオタイムスタンプマップ) のタプル
     """
+    # データ入力モードの判定
+    data_mode = config.get("data", {}).get("mode", "manual")
+
+    if data_mode == "inspesafe":
+        return prepare_observations_inspesafe(config, frame_output_format, audio_config)
+
+    # 以降は manual モード処理
     video_cfg = config.get("video", {})
     audio_output_filename = audio_config.get("output_filename", "audio.wav")
     audio_codec = audio_config.get("codec", "pcm_s16le")
@@ -492,23 +655,13 @@ def prepare_observations(
         ]
         return obs_list, video_timestamps_map
     else:
-        # Use example observations if no frames found (test fallback)
-        logger.warning("No frames found in data/frames, using example observations")
-        obs_list = [
-            Observation(
-                obs_id="t0",
-                image_path=None,
-                audio_text="I hear a car approach from the right",
-                camera_pose=CameraPose(pan_deg=0, tilt_deg=0, zoom=1),
-            ),
-            Observation(
-                obs_id="t1",
-                image_path=None,
-                audio_text=None,
-                camera_pose=CameraPose(pan_deg=30, tilt_deg=0, zoom=1),
-            ),
-        ]
-        return obs_list, video_timestamps_map
+        raise FileNotFoundError(
+            "フレームが見つかりません: data/frames/\n"
+            "以下のいずれかを実施してください：\n"
+            "1. data/videos/ にビデオファイルを配置し、split_video_to_frames() を実行\n"
+            "2. data/frames/ に画像ファイルを直接配置\n"
+            "3. configs/default.yaml で data.mode = 'inspesafe' に設定"
+        )
 
 
 def run_and_log_agent(
@@ -565,12 +718,12 @@ def main():
     """Safety View Agent のメインエントリーポイント。"""
     # Load configuration
     config = load_config()
+    prompts = load_prompts()
     agent_cfg = config.get("agent", {})
     thresholds_cfg = config.get("thresholds", {})
     tokens_cfg = config.get("tokens", {})
     video_cfg = config.get("video", {})
     audio_cfg = config.get("audio", {})
-    view_planning_cfg = config.get("view_planning", {})
 
     # Setup data directory
     os.makedirs("data", exist_ok=True)
@@ -603,13 +756,16 @@ def main():
     provider = ObservationProvider(obs_list)
     perceiver = Perceiver()
     llm = get_llm(config)
-    vision_analyzer = get_vlm(config)
+    vision_analyzer = get_vlm(config, prompts)
 
     # Build agent
     agent = build_agent()
 
     # Initialize modality analyzers for fan-out nodes
-    audio_analyzer = AudioAnalyzer()
+    audio_analyzer = None
+    if agent_cfg.get("enable_audio", False):
+        audio_analyzer = AudioAnalyzer()
+
     yolo_detector = None
     if agent_cfg.get("enable_yolo", False):
         try:
@@ -629,11 +785,15 @@ def main():
         "barrier_obs_id": None,
         "latest_output": None,
         "world": WorldModel(),
-        "plan": None,
-        "selected": None,
+        "assessment": None,
         "done": False,
         "errors": [],
     }
+
+    # Build expected_modalities based on enabled features
+    expected_modalities = ["yolo", "vlm"]  # Vision is always expected
+    if agent_cfg.get("enable_audio", False):
+        expected_modalities.append("audio")
 
     # Context (with modality analyzers for fan-out nodes)
     context = {
@@ -643,14 +803,11 @@ def main():
         "vision_analyzer": vision_analyzer,
         "yolo_detector": yolo_detector,
         "audio_analyzer": audio_analyzer,
-        "risk_stop_threshold": thresholds_cfg.get("risk_stop_threshold", 0.2),
-        "hazard_focus_threshold": thresholds_cfg.get("hazard_focus_threshold", 0.6),
+        "prompts": prompts,
         "chat_max_tokens": tokens_cfg.get("chat_max_tokens", 2000),
-        "max_outstanding_regions": view_planning_cfg.get("max_outstanding_regions", 6),
-        "safety_priority_weight": view_planning_cfg.get("safety_priority_weight", 0.7),
-        "info_gain_weight": view_planning_cfg.get("info_gain_weight", 0.3),
-        "safety_priority_base": view_planning_cfg.get("safety_priority_base", 0.7),
-        "expected_modalities": ["yolo", "vlm", "audio"],  # yolo/vlm に分割
+        "max_outstanding_regions": agent_cfg.get("max_outstanding_regions", 6),
+        "context_history_size": agent_cfg.get("context_history_size", 1),
+        "expected_modalities": expected_modalities,
         "run_mode": "until_provider_ends",  # provider が None を返すまで継続
     }
 

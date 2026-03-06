@@ -44,17 +44,25 @@ class VisionAnalyzer:
     """OpenAI互換のVision API を使用して画像を分析するクラス。"""
 
     def __init__(
-        self, base_url: str, model: str, api_key: str = "EMPTY", timeout_s: float = 60.0
+        self,
+        base_url: str,
+        model: str,
+        api_key: str = "EMPTY",
+        timeout_s: float = 60.0,
+        default_prompt: Optional[str] = None,
+        max_tokens: Optional[int] = None,
     ):
         self.base_url = base_url.rstrip("/")
         self.model = model
         self.api_key = api_key
         self.timeout_s = timeout_s
+        self.default_prompt = default_prompt
+        self.max_tokens = max_tokens
         # GPT-5 系モデルは max_tokens ではなく max_completion_tokens を使用
         self._use_max_completion_tokens = "gpt-5" in model.lower()
 
     def analyze(
-        self, image_path: str, prompt: Optional[str] = None, max_tokens: int = 4000
+        self, image_path: str, prompt: Optional[str] = None, max_tokens: Optional[int] = None
     ) -> str:
         """画像を分析してテキスト結果を返す。"""
         import base64
@@ -62,16 +70,25 @@ class VisionAnalyzer:
         if not Path(image_path).exists():
             return f"Image not found: {image_path}"
 
-        # デフォルトプロンプト（日本語・安全性フォーカス）
+        # デフォルトプロンプト（外部化済み）
         if prompt is None:
-            prompt = (
-                "この画像の安全性を分析してください。以下に焦点を当ててください：\n"
-                "1. 人物や動く物体の有無\n"
-                "2. 潜在的な危険や危機的な状況\n"
-                "3. ブラインドスポットや注意が必要な領域\n"
-                "4. 総合的な安全性評価（安全/注意/危険）\n"
-                "簡潔に（100-200語程度）答えてください。"
-            )
+            if self.default_prompt is None:
+                raise ValueError(
+                    "VisionAnalyzer.analyze() にプロンプトが未指定で、"
+                    "default_prompt も未設定です。"
+                    "configs/prompt.yaml の vision_analysis.default_prompt を確認してください。"
+                )
+            prompt = self.default_prompt
+
+        # デフォルト max_tokens（外部化済み）
+        if max_tokens is None:
+            if self.max_tokens is None:
+                raise ValueError(
+                    "VisionAnalyzer.analyze() の max_tokens が未指定で、"
+                    "コンストラクタの max_tokens も未設定です。"
+                    "configs/default.yaml の tokens.vision_max_completion_tokens を確認してください。"
+                )
+            max_tokens = self.max_tokens
 
         # 画像を読み込んでエンコード
         with open(image_path, "rb") as f:

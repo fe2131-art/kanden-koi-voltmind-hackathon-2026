@@ -22,6 +22,49 @@ uv sync --extra dev
 source .venv/bin/activate
 ```
 
+## データセット配置
+
+### 2 つのデータ入力モード
+
+Safety View Agent は以下の 2 つのモードをサポートしています：
+
+| モード | 入力ソース | 用途 |
+|--------|-----------|------|
+| **manual** | `data/videos/` | カスタム動画による評価 |
+| **inspesafe** | `../InspecSafe-V1/` | InspecSafe-V1 産業用データセット |
+
+### manual モード（デフォルト）
+
+動画ファイルを `data/videos/` に配置して使用：
+
+```bash
+# 動画ファイルを配置
+cp your_video.mp4 data/videos/
+
+# エージェント実行
+python src/run.py
+```
+
+### inspesafe モード
+
+InspecSafe-V1 データセットをセッション指定で自動展開・処理。詳細は [INSPESAFE_INTEGRATION.md](INSPESAFE_INTEGRATION.md) を参照：
+
+```yaml
+# configs/default.yaml
+data:
+  mode: "inspesafe"
+  inspesafe:
+    dataset_path: "../InspecSafe-V1"
+    session: "train/Other_modalities/58132919535743_20251118_session_1400_2#bowenguanshang-you"
+```
+
+```bash
+# エージェント実行（動画・音声は自動展開）
+python src/run.py
+```
+
+**詳細セットアップ:** [INSPESAFE_INTEGRATION.md](INSPESAFE_INTEGRATION.md)
+
 ## 最初の実行（2分）
 
 ### オプション A: LLM なし（推奨・テスト用）
@@ -78,6 +121,37 @@ EOF
 
 # これで python src/run.py が自動的に .env を読み込みます
 python src/run.py
+```
+
+## 設定オプション（`configs/default.yaml`）
+
+### エージェント設定
+
+```yaml
+agent:
+  max_steps: 1              # 処理フレーム数（-1: 全フレーム）
+  enable_yolo: false        # YOLO 物体検出の有効/無効
+  enable_audio: false       # 音声解析の有効/無効
+  max_outstanding_regions: 6     # LLM が検討する未確認領域の上限数
+  context_history_size: 1        # 前回判断の参照（0=なし, 1=前回のみ、推奨）
+```
+
+### context_history_size について
+
+- **0**: フレーム独立判定（メモリ最小、トレンド検出不可）
+- **1**: **推奨**。前フレームの判断を参照し、変化を検出（短期トレンド）
+- **2+**: 将来拡張（複数フレーム履歴）
+
+#### 効果の違い
+
+```
+context_history_size = 0:
+  フレーム1: "high risk" → フレーム2: "low risk" → 見た目は改善
+
+context_history_size = 1（推奨）:
+  フレーム1: "high risk" → フレーム2: "low risk" →
+  LLM: "前回は high だったが、今は low。リスク低下したか？"
+  → より正確な判定（文脈認識）
 ```
 
 ## テスト実行（1分）

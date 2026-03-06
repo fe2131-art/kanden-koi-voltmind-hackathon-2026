@@ -6,13 +6,11 @@ from src.safety_agent.schema import (
     CameraPose,
     DetectedObject,
     Hazard,
-    NextViewPlan,
+    SafetyAssessment,
     Observation,
     ObservationProvider,
     PerceptionIR,
     UnobservedRegion,
-    ViewCandidate,
-    ViewCommand,
     WorldModel,
 )
 
@@ -77,42 +75,22 @@ def test_world_model():
     world = WorldModel()
     assert len(world.fused_hazards) == 0
     assert len(world.outstanding_unobserved) == 0
-    assert world.last_selected_view is None
+    assert world.last_assessment is None
 
 
-def test_view_candidate():
-    cand = ViewCandidate(
-        view_id="v1",
-        pan_deg=0.0,
-        tilt_deg=0.0,
-        zoom=1.0,
-        expected_info_gain=0.5,
-        safety_priority=0.6,
-        rationale="Test view",
+def test_safety_assessment():
+    assessment = SafetyAssessment(
+        risk_level="high",
+        safety_status="フォークリフトが人に接近中",
+        detected_hazards=["forklift_proximity"],
+        action_type="focus_region",
+        target_region="zone_A",
+        reason="高リスク未確認領域を優先観測",
+        priority=0.85,
     )
-    assert cand.view_id == "v1"
-
-
-def test_next_view_plan():
-    cand = ViewCandidate(
-        view_id="v1",
-        pan_deg=0.0,
-        tilt_deg=0.0,
-        expected_info_gain=0.5,
-        safety_priority=0.6,
-        rationale="Test",
-    )
-    plan = NextViewPlan(candidates=[cand], stop=False)
-    assert len(plan.candidates) == 1
-    assert plan.stop is False
-
-
-def test_view_command():
-    cmd = ViewCommand(
-        view_id="v1", pan_deg=45.0, tilt_deg=10.0, zoom=1.0, why="Test command"
-    )
-    assert cmd.view_id == "v1"
-    assert cmd.pan_deg == 45.0
+    assert assessment.risk_level == "high"
+    assert assessment.action_type == "focus_region"
+    assert assessment.priority == 0.85
 
 
 def test_observation():
