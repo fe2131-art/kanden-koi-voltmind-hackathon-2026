@@ -70,7 +70,7 @@ audio:
 # LLM トークン設定
 tokens:
   vision_max_completion_tokens: 5000  # Vision API: 推論 + 応答用（gpt-5-nano は推論に 4000+ 使用）
-  chat_max_tokens: 2000               # テキスト生成用
+  chat_max_tokens: 4000               # テキスト生成用（推論トークンを考慮して 2000 から増加）
 
 # Thresholds
 thresholds:

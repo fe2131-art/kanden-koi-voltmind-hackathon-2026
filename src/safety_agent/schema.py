@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import List, Literal, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 # =========================
 # Schemas (Pydantic)
@@ -31,13 +31,23 @@ class AudioCue(BaseModel):
 
 
 class UnobservedRegion(BaseModel):
+    """未確認領域（ブラインドスポット）"""
+    model_config = ConfigDict(
+        exclude_none=False,  # None 値も含める
+        # JSON 出力時、内部用フィールドを除外
+    )
+
     region_id: str
     description: str
     risk: float = Field(
         ge=0, le=1
     )  # heuristic risk that something hazardous may be there
-    suggested_pan_deg: Optional[float] = None
-    suggested_tilt_deg: Optional[float] = None
+    suggested_pan_deg: Optional[float] = Field(
+        default=None, exclude=True
+    )  # システム内部用（JSON出力から除外）
+    suggested_tilt_deg: Optional[float] = Field(
+        default=None, exclude=True
+    )  # システム内部用（JSON出力から除外）
 
 
 class Hazard(BaseModel):

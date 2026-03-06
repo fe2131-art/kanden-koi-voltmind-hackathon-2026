@@ -96,17 +96,27 @@ python src/run.py
 
 ### オプション C: ローカル LLM（vLLM）で実行
 
+vLLM は **Structured Outputs** 機能で JSON スキーマに厳密に従う出力を生成するため、JSON パースエラーが発生しません（推奨）。
+
 ```bash
-# 1. 別ターミナルで vLLM サーバーを起動
+# 1. 別ターミナルで vLLM サーバーを起動（JSON スキーマ対応モデルを使用）
 python -m vllm.entrypoints.openai.api_server \
   --model meta-llama/Llama-2-7b-hf \
-  --port 8000
+  --port 8000 \
+  --enable-prefix-caching  # オプション：キャッシング有効化で高速化
 
 # 2. メインターミナルで実行
 export LLM_BASE_URL="http://localhost:8000"
 export LLM_MODEL="meta-llama/Llama-2-7b-hf"
+export LLAMA_LOG_LEVEL="off"  # オプション：vLLM ログを抑制
 python src/run.py
 ```
+
+**vLLM の利点**:
+- 📊 **Structured Outputs**: JSON スキーマで出力形式を保証
+- ⚡ **高速**: CPU/GPU で高速推論
+- 💰 **無料**: APIコストなし
+- 🔒 **プライベート**: ローカル実行で機密性を確保
 
 ## `.env` ファイルで環境変数を管理（推奨）
 

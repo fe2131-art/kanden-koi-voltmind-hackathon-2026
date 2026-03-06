@@ -135,9 +135,13 @@ class VisionAnalyzer:
             if r.status_code >= 400:
                 try:
                     error_detail = r.json().get("error", {})
-                    error_msg = error_detail.get("message", r.text)
+                    error_msg = error_detail.get("message", "Unknown error")
                 except Exception:
-                    error_msg = r.text
+                    # HTML エラーレスポンスの場合、簡潔なエラーメッセージに変換
+                    if "<html>" in r.text.lower():
+                        error_msg = f"HTTP {r.status_code} (likely upstream error)"
+                    else:
+                        error_msg = r.text[:200]  # テキストエラーは最初の200文字
                 return f"Vision API error {r.status_code}: {error_msg}"
             r.raise_for_status()
             data = r.json()

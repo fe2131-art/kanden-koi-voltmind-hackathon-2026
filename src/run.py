@@ -99,7 +99,7 @@ def get_llm(config: dict) -> Optional[OpenAICompatLLM]:
         )
 
     elif provider == "vllm":
-        # Local vLLM server
+        # Local vLLM server（Structured Outputs で JSON 安定化）
         vllm_cfg = llm_config.get("vllm", {})
         base_url = os.getenv("LLM_BASE_URL", vllm_cfg.get("base_url"))
         model = os.getenv("LLM_MODEL", vllm_cfg.get("model"))
@@ -115,6 +115,7 @@ def get_llm(config: dict) -> Optional[OpenAICompatLLM]:
             model=model,
             api_key=api_key,
             timeout_s=vllm_cfg.get("timeout_s", 60.0),
+            is_vllm=True,  # vLLM の Structured Outputs を有効化
         )
 
     else:

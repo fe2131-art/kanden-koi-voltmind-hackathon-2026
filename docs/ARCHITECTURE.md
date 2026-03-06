@@ -159,20 +159,43 @@ Input: Observation (image_path + audio_text)
    └─ END
 ```
 
-## LLM フォールバック
+## LLM フォールバック＆ Structured Outputs
+
+### LLM 初期化
 
 ```
 LLM = get_llm(config)
-  ├─ OPENAI_API_KEY + "openai" → OpenAI API
-  ├─ LLM_BASE_URL + "vllm" → ローカルサーバー
+  ├─ OPENAI_API_KEY + "openai" → OpenAI API（json_object フォーマット）
+  ├─ LLM_BASE_URL + "vllm" → ローカルサーバー（Structured Outputs で JSON スキーマ指定）
   └─ なし → None
+```
 
+### JSON 生成の安定化
+
+**vLLM（推奨）**: Structured Outputs で JSON スキーマを指定
+- `response_format` に `json_schema` 型で SafetyAssessment スキーマを指定
+- LLM が厳密にスキーマに従う出力を生成（フォーマット違反なし）
+- JSON パースエラーを事実上排除
+
+**OpenAI API**: json_object フォーマット + プロンプト指示
+- `response_format: {"type": "json_object"}` を指定
+- プロンプトで JSON 形式を明確に指示
+- `_robust_json_loads()` で複数フォーマットに対応
+
+### SafetyAssessment 生成フロー
+
+```
 determine_next_action_llm:
-  ├─ llm is not None → LLM で SafetyAssessment 生成
+  ├─ llm is not None:
+  │  ├─ vLLM → Structured Outputs で確実に JSON 取得
+  │  └─ OpenAI → json_object フォーマット + 抽出
+  │      → SafetyAssessment 検証 → ir 更新 → world 更新
   └─ llm is None → _heuristic_assessment で代替
 ```
 
-**ヒューリスティック**:
+### ヒューリスティック判定
+
+LLM 未設定時のフォールバック：
 - 高リスク未確認領域あり → focus_region（観測指示）
 - 低信度ハザード存在 → increase_safety（安全強化指示）
 - その他 → continue_observation（継続観測指示）

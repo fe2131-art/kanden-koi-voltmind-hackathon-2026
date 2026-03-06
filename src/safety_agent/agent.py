@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 from typing import Any, Dict, List, Optional
 
@@ -28,6 +29,69 @@ from .schema import (
     WorldModel,
 )
 
+logger = logging.getLogger(__name__)
+
+
+def _get_json_schema_for_vllm() -> Dict[str, Any]:
+    """vLLM の Structured Outputs 用 JSON スキーマを生成。"""
+    return {
+        "type": "object",
+        "properties": {
+            "perceived_hazards": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "hazard_type": {"type": "string"},
+                        "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+                        "reason": {"type": "string"},
+                        "related_objects": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "default": [],
+                        },
+                    },
+                    "required": ["hazard_type", "confidence", "reason"],
+                },
+            },
+            "estimated_unobserved": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "region_id": {"type": "string"},
+                        "description": {"type": "string"},
+                        "risk": {"type": "number", "minimum": 0, "maximum": 1},
+                        "reason": {"type": "string"},
+                    },
+                    "required": ["region_id", "risk"],
+                },
+            },
+            "safety_assessment": {
+                "type": "object",
+                "properties": {
+                    "risk_level": {"type": "string", "enum": ["high", "medium", "low"]},
+                    "safety_status": {"type": "string"},
+                    "detected_hazards": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "default": [],
+                    },
+                    "action_type": {
+                        "type": "string",
+                        "enum": ["focus_region", "increase_safety", "continue_observation"],
+                    },
+                    "target_region": {"type": ["string", "null"]},
+                    "reason": {"type": "string"},
+                    "priority": {"type": "number", "minimum": 0, "maximum": 1},
+                },
+                "required": ["risk_level", "safety_status", "action_type", "reason", "priority"],
+            },
+        },
+        "required": ["perceived_hazards", "estimated_unobserved", "safety_assessment"],
+    }
+
+
 # =========================
 # LLM クライアント（OpenAI互換）
 # =========================
@@ -35,12 +99,13 @@ from .schema import (
 
 class OpenAICompatLLM:
     def __init__(
-        self, base_url: str, model: str, api_key: str = "EMPTY", timeout_s: float = 60.0
+        self, base_url: str, model: str, api_key: str = "EMPTY", timeout_s: float = 60.0, is_vllm: bool = False
     ):
         self.base_url = base_url.rstrip("/")
         self.model = model
         self.api_key = api_key
         self.timeout_s = timeout_s
+        self.is_vllm = is_vllm or "localhost" in base_url  # ローカルサーバーなら vLLM と判定
         # GPT-5 系モデルは max_tokens ではなく max_completion_tokens を使用
         self._use_max_completion_tokens = "gpt-5" in model.lower()
 
@@ -76,8 +141,23 @@ class OpenAICompatLLM:
             {"role": "system", "content": system},
             {"role": "user", "content": user},
         ]
-        # 最初に response_format を試す（gpt-5-nano はサポート）
-        if not self._use_max_completion_tokens:
+
+        # vLLM: Structured Outputs で JSON スキーマを指定（安定化）
+        if self.is_vllm:
+            payload = self._build_payload(
+                messages,
+                max_tokens,
+                {
+                    "type": "json_schema",
+                    "json_schema": {
+                        "name": "SafetyAssessmentOutput",
+                        "schema": _get_json_schema_for_vllm(),
+                        "strict": True,
+                    },
+                },
+            )
+        # OpenAI: json_object フォーマットを試す（gpt-5-nano はサポートしない可能性）
+        elif not self._use_max_completion_tokens:
             payload = self._build_payload(messages, max_tokens, {"type": "json_object"})
         else:
             # gpt-5-nano は response_format をサポートしないためスキップ
@@ -92,7 +172,28 @@ class OpenAICompatLLM:
             r.raise_for_status()
             data = r.json()
             content = data["choices"][0]["message"]["content"]
-            return _robust_json_loads(content)
+
+            # デバッグ: 空応答を確認
+            if not content or content.strip() == "":
+                print(f"\n⚠️  LLMから空応答\n{'='*60}")
+                print(f"ステータスコード: {r.status_code}")
+                print(f"APIレスポンス全体: {data}")
+                print(f"送信されたメッセージ（user部分の最初500文字）:")
+                print(f"  {user[:500]}...")
+                print(f"\n{'='*60}\n")
+                raise ValueError("LLMが空の応答を返しました")
+
+            try:
+                return _robust_json_loads(content)
+            except ValueError as e:
+                # JSON パースエラーの場合、LLM 出力の詳細を表示（デバッグ用）
+                print(f"\n⚠️  LLM出力解析失敗\n{'='*60}")
+                print(f"エラー: {str(e)}")
+                print(f"\nLLM生出力（最初の3000文字）:\n{content[:3000]}")
+                print(f"\n{'='*60}\n")
+                logger.error(f"LLM JSON パースエラー: {str(e)}")
+                logger.debug(f"LLM raw output:\n{content}")
+                raise
 
     def chat_text(self, system: str, user: str, max_tokens: int = 500) -> str:
         """チャットリクエストを送信してプレーンテキストの応答を返す。"""
@@ -112,19 +213,51 @@ class OpenAICompatLLM:
 
 
 def _robust_json_loads(text: str) -> Dict[str, Any]:
+    """LLM 出力から JSON を抽出・パース。複数の形式に対応。"""
     # 1) 直接パース
     try:
         return json.loads(text)
     except Exception:
         pass
-    # 2) 最初の JSON オブジェクトを抽出
+
+    # 2) markdown コードブロック（```json ... ```）を抽出
+    m = re.search(r"```(?:json)?\s*\n(.*?)\n```", text, flags=re.DOTALL)
+    if m:
+        try:
+            return json.loads(m.group(1))
+        except Exception:
+            pass
+
+    # 3) ネストを考慮した JSON 抽出（最初の { から最後の } まで）
+    text = text.strip()
+    if text.startswith("{"):
+        # 最初の開き括弧から始まる
+        depth = 0
+        end_idx = -1
+        for i, ch in enumerate(text):
+            if ch == "{":
+                depth += 1
+            elif ch == "}":
+                depth -= 1
+                if depth == 0:
+                    end_idx = i + 1
+                    break
+
+        if end_idx > 0:
+            try:
+                return json.loads(text[:end_idx])
+            except Exception:
+                pass
+
+    # 4) 簡易的な正規表現で { から } を抽出（最後の手段）
     m = re.search(r"\{.*\}", text, flags=re.DOTALL)
     if m:
         try:
             return json.loads(m.group(0))
         except Exception:
             pass
-    raise ValueError(f"LLM出力からJSONを解析できませんでした: {text[:300]}...")
+
+    raise ValueError(f"LLM出力からJSONを解析できませんでした: {text[:500]}...")
 
 
 # =========================
@@ -299,15 +432,21 @@ def vlm_node(state: AgentState, runtime: Runtime[ContextSchema]) -> Command:
     if obs and obs.image_path and analyzer:
         try:
             description = analyzer.analyze(obs.image_path)
+            # VisionAnalyzer がエラー文字列を返す場合（"Vision API error ..." など）
+            if description and description.startswith("Vision API error"):
+                error = description
+                # エラー時はデフォルトメッセージを設定（JSON 入力が文字列になるよう）
+                description = "Vision API is temporarily unavailable. Using heuristic analysis."
         except Exception as e:
             error = f"vlm: {e}"
+            description = "Vision API request failed. Using heuristic analysis."
 
     result = ModalityResult(modality_name="vlm", description=description, error=error)
     return Command(
         update={
             "modality_results": {"vlm": result},
             "received_modalities": ["vlm"],
-            "messages": [{"role": "assistant", "content": f"[vlm] {'ok' if description else 'none'}"}],
+            "messages": [{"role": "assistant", "content": f"[vlm] {'ok' if description and not description.startswith('Vision API') else 'error'}"}],
         },
         goto="join_modalities",
     )
@@ -402,16 +541,24 @@ def fuse_modalities(
     description = (vlm.description if vlm else None)
     modality_errors = [r.error for r in results.values() if r.error]
 
-    # Perceiver（ハザード推定専用）を呼び出す
-    ir = runtime.context["perceiver"].estimate(obs, objects, audio_cues, description)
-    ir = ir.model_copy(update={"modality_errors": modality_errors})
+    # PerceptionIR を作成（Perceiver 推論は determine_next_action_llm で統合実行）
+    ir = PerceptionIR(
+        obs_id=obs.obs_id,
+        camera_pose=obs.camera_pose,
+        objects=objects,
+        hazards=[],  # Perceiver 推論は determine_next_action_llm で実行
+        unobserved=[],  # Perceiver 推論は determine_next_action_llm で実行
+        audio=audio_cues,
+        vision_description=description,
+        modality_errors=modality_errors,
+    )
 
     return {
         "ir": ir,
         "messages": [
             {
                 "role": "assistant",
-                "content": f"[fuse] hazards={len(ir.hazards)} unobserved={len(ir.unobserved)} errors={len(modality_errors)}",
+                "content": f"[fuse] ok (perception inference in determine_next_action_llm)",
             }
         ],
     }
@@ -501,9 +648,20 @@ def determine_next_action_llm(
         estimated_unobserved = raw.get("estimated_unobserved", [])
         safety_assessment_dict = raw.get("safety_assessment", raw)  # フォールバック: 旧フォーマット対応
 
-        # ir を LLM 推論結果で更新
+        # ir を LLM 推論結果で更新（vision_description は保持）
+        original_vision_description = ir.vision_description
         ir.hazards = [Hazard(**h) for h in perceived_hazards]
-        ir.unobserved = [UnobservedRegion(**u) for u in estimated_unobserved]
+
+        # estimated_unobserved のデフォルト値補完（description など不足フィールド）
+        completed_unobserved = []
+        for u in estimated_unobserved:
+            if "description" not in u:
+                u["description"] = f"Unobserved region: {u.get('region_id', 'unknown')}"
+            completed_unobserved.append(UnobservedRegion(**u))
+        ir.unobserved = completed_unobserved
+
+        # vision_description を元の値で復元（LLM 更新後も保持）
+        ir.vision_description = original_vision_description
 
         # SafetyAssessment を検証・生成
         assessment = SafetyAssessment.model_validate(safety_assessment_dict)
@@ -634,9 +792,9 @@ def build_agent():
     # エッジ設定
     builder.add_edge(START, "ingest_observation")
     # fan-out: yolo/vlm/audio ノードは Command で goto="join_modalities" するため静的エッジは不要
-    builder.add_edge("fuse_modalities", "update_world_model")
-    builder.add_edge("update_world_model", "determine_next_action_llm")
-    builder.add_edge("determine_next_action_llm", "emit_output")
+    builder.add_edge("fuse_modalities", "determine_next_action_llm")  # PerceptionIR 生成 → Perceiver 推論 + 安全判断
+    builder.add_edge("determine_next_action_llm", "update_world_model")  # ir を LLM で更新 → world 融合
+    builder.add_edge("update_world_model", "emit_output")
     builder.add_edge("emit_output", "bump_step")
     builder.add_conditional_edges("bump_step", should_continue)
 
