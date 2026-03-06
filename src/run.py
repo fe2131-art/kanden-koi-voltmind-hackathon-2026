@@ -729,6 +729,12 @@ def main():
     # Setup data directory
     os.makedirs("data", exist_ok=True)
 
+    # Clean up data/frames before processing
+    frames_dir = "data/frames"
+    if os.path.exists(frames_dir):
+        shutil.rmtree(frames_dir)
+    os.makedirs(frames_dir, exist_ok=True)
+
     # Load video/audio formats from config
     video_formats_cfg = video_cfg.get("formats", {})
     video_extensions = set(video_formats_cfg.get("extensions", [".mp4", ".avi", ".mov", ".mkv", ".webm"]))

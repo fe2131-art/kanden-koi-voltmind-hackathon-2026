@@ -42,7 +42,7 @@ vlm:
 
 # Data input mode
 data:
-  mode: "manual"  # "manual" | "inspesafe"
+  mode: "inspesafe"  # "manual" | "inspesafe"
 
   # manual モード: data/videos/ の動画を使用（デフォルト）
 
