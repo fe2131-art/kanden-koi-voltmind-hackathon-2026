@@ -135,7 +135,7 @@ class OpenAICompatLLM:
     def chat_json(
         self, system: str, user: str, max_tokens: int = 800
     ) -> Dict[str, Any]:
-        url = f"{self.base_url}/v1/chat/completions"
+        url = f"{self.base_url}/chat/completions"
         headers = {"Authorization": f"Bearer {self.api_key}"}
         messages = [
             {"role": "system", "content": system},
@@ -175,24 +175,19 @@ class OpenAICompatLLM:
 
             # デバッグ: 空応答を確認
             if not content or content.strip() == "":
-                print(f"\n⚠️  LLMから空応答\n{'='*60}")
-                print(f"ステータスコード: {r.status_code}")
-                print(f"APIレスポンス全体: {data}")
-                print(f"送信されたメッセージ（user部分の最初500文字）:")
-                print(f"  {user[:500]}...")
-                print(f"\n{'='*60}\n")
+                logger.warning(
+                    f"LLM returned empty response | Status: {r.status_code} | "
+                    f"User message (first 500 chars): {user[:500]}..."
+                )
+                logger.debug(f"Full API response: {data}")
                 raise ValueError("LLMが空の応答を返しました")
 
             try:
                 return _robust_json_loads(content)
             except ValueError as e:
-                # JSON パースエラーの場合、LLM 出力の詳細を表示（デバッグ用）
-                print(f"\n⚠️  LLM出力解析失敗\n{'='*60}")
-                print(f"エラー: {str(e)}")
-                print(f"\nLLM生出力（最初の3000文字）:\n{content[:3000]}")
-                print(f"\n{'='*60}\n")
+                # JSON パースエラーの場合、詳細をログに記録
                 logger.error(f"LLM JSON パースエラー: {str(e)}")
-                logger.debug(f"LLM raw output:\n{content}")
+                logger.debug(f"LLM raw output (first 3000 chars):\n{content[:3000]}")
                 raise
 
     def chat_text(self, system: str, user: str, max_tokens: int = 500) -> str:
@@ -667,8 +662,7 @@ def determine_next_action_llm(
         assessment = SafetyAssessment.model_validate(safety_assessment_dict)
 
     except Exception as e:
-        import traceback
-        print(f"⚠️  LLM Error Details:\n{traceback.format_exc()}")
+        logger.error("LLM assess+perceiver failed, using heuristic fallback", exc_info=True)
         assessment = _heuristic_assessment(world)
         return {
             "assessment": assessment,

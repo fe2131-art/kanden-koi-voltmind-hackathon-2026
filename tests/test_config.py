@@ -20,21 +20,6 @@ def test_config_loading():
     assert llm_cfg["provider"] in ["openai", "vllm"]
 
 
-def test_llm_initialization_without_env():
-    """Test LLM initialization without environment variables (should return None)."""
-    from run import get_llm, load_config
-
-    # Ensure env vars are not set
-    os.environ.pop("OPENAI_API_KEY", None)
-    os.environ.pop("LLM_BASE_URL", None)
-
-    config = load_config("configs/default.yaml")
-    llm = get_llm(config)
-
-    # Without env vars, should return None (fallback to heuristic)
-    assert llm is None
-
-
 def test_llm_initialization_openai_missing_key():
     """Test OpenAI initialization without API key (should return None)."""
 
@@ -82,7 +67,7 @@ def test_config_openai_defaults():
     # Check defaults
     assert "base_url" in openai_cfg
     assert "model" in openai_cfg
-    assert openai_cfg["base_url"] == "https://api.openai.com"
+    assert openai_cfg["base_url"] == "https://api.openai.com/v1"
 
 
 def test_thresholds_config():

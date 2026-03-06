@@ -189,9 +189,10 @@ def get_vlm(config: dict, prompts: dict) -> Optional[VisionAnalyzer]:
             base_url=base_url,
             model=model,
             api_key=api_key,
-            timeout_s=timeout_s,
+            timeout=timeout_s,
             default_prompt=vision_prompt.strip(),
             max_tokens=vision_max_tokens,
+            provider="openai",
         )
 
     elif provider == "vllm":
@@ -228,9 +229,10 @@ def get_vlm(config: dict, prompts: dict) -> Optional[VisionAnalyzer]:
             base_url=base_url,
             model=model,
             api_key=api_key,
-            timeout_s=timeout_s,
+            timeout=timeout_s,
             default_prompt=vision_prompt.strip(),
             max_tokens=vision_max_tokens,
+            provider="vllm",
         )
 
     else:

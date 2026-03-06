@@ -11,18 +11,18 @@ agent:
 # LLM configuration
 llm:
   # Provider: "vllm" (local) or "openai" (API)
-  provider: "openai"
+  provider: "vllm"
 
   # vLLM settings (local server)
   vllm:
-    base_url: "http://localhost:8000"  # Override via LLM_BASE_URL
+    base_url: "http://localhost:8000/v1"  # Override via LLM_BASE_URL
     model: "your-local-model"          # Override via LLM_MODEL
     api_key: "EMPTY"
     timeout_s: 60.0
 
   # OpenAI settings (API)
   openai:
-    base_url: "https://api.openai.com"
+    base_url: "https://api.openai.com/v1"
     model: "gpt-5-nano"    # Vision-capable model (Override via OPENAI_MODEL)
     api_key: null                      # Must be set via OPENAI_API_KEY
     timeout_s: 60.0
@@ -30,13 +30,13 @@ llm:
 # VLM 設定（Vision Language Model / 画像分析専用）
 # model: null の場合 → llm.openai.model を自動参照（共有設定）
 vlm:
-  provider: "openai"     # "openai" | "vllm"（ローカル vLLM サーバー）
+  provider: "vllm"     # "openai" | "vllm"（ローカル vLLM サーバー）
   openai:
-    base_url: "https://api.openai.com"
+    base_url: "https://api.openai.com/v1"
     model: "gpt-5-nano"    # null → llm.openai.model を流用
     timeout_s: 60.0
   vllm:
-    base_url: "http://localhost:8000"  # vLLM サーバーのベースURL（provider: "vllm" の場合のみ使用）
+    base_url: "http://localhost:8000/v1"  # vLLM サーバーのベースURL（provider: "vllm" の場合のみ使用）
     model: null    # null → llm.vllm.model を流用
     timeout_s: 60.0
 
