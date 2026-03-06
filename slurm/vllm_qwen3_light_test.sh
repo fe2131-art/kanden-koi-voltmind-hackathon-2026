@@ -1,10 +1,10 @@
 #!/bin/bash
-#SBATCH -J vllm-qwen3-light
+#SBATCH -J vllm-qwen25-vl
 #SBATCH -p gpu
 #SBATCH --gres=gpu:1
 #SBATCH -c 8
 #SBATCH --mem=32G
-#SBATCH -t 00:20:00
+#SBATCH -t 00:60:00
 #SBATCH -o slurm-%j.out
 
 set -euo pipefail
@@ -54,7 +54,7 @@ mkdir -p "$UV_CACHE_DIR" "$HF_HOME"
 # 依存を揃える
 uv sync --frozen || uv sync
 
-MODEL="Qwen/Qwen3-4B-Instruct-2507"
+MODEL="Qwen/Qwen2.5-VL-7B-Instruct"
 PORT=8000
 
 echo

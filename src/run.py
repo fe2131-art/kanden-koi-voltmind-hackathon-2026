@@ -430,6 +430,140 @@ def save_analysis_results(
     logger.info(f"Results appended to {results_file} ({frame_count} frames, {agent_count} agent execution)")
 
 
+def _parse_py_slice(slice_str: str) -> slice:
+    """'[start:stop]' 形式の文字列を slice オブジェクトに変換。"""
+    import re
+    s = slice_str.strip().lstrip("[").rstrip("]")
+    if not s or s == ":":
+        return slice(None)
+    parts = s.split(":")
+    if len(parts) != 2:
+        return slice(None)
+    start = int(parts[0]) if parts[0] else None
+    stop = int(parts[1]) if parts[1] else None
+    return slice(start, stop)
+
+
+def load_hf_dataset_frames(
+    dataset_name: str,
+    split: str,
+    cache_dir: str,
+    frames_dir: str,
+    scene: Optional[str] = None,
+    split_slice: str = "[:]",
+    max_frames: int = 10,
+    frame_output_format: str = "frame_{timestamp}s.jpg",
+    clear_frames: bool = False,
+) -> list[Path]:
+    """HuggingFace データセットから指定シーン（1本の動画）のフレームを抽出して保存。
+
+    __key__ フィールドの '{scene}_frame_{番号}' パターンでシーンをフィルタし、
+    フレーム番号順にソートした後、split_slice と max_frames を適用します。
+    split_video_to_frames() の fps/max_frames の考え方に対応:
+      - scene      → 対象動画（シーン名）の指定
+      - split_slice → シーン内フレームへの Python スライス（ソート後に適用）
+      - max_frames  → 抽出フレーム数の上限（stride で均等サンプリング）
+
+    Args:
+        dataset_name: HuggingFace データセット名（例: "Tetrabot2026/InspecSafe-V1"）
+        split: データセットのスプリット（例: "train", "test"）
+        cache_dir: HuggingFace キャッシュディレクトリ
+        frames_dir: フレーム出力ディレクトリ
+        scene: 処理対象シーン名（例: "fire"）。None または "" で全シーン混合
+        split_slice: シーン内フレームへの Python スライス（例: "[:]", "[:10]", "[5:15]"）
+        max_frames: 抽出するフレーム数の上限（0 = 無制限、stride で均等サンプリング）
+        frame_output_format: フレームファイル名テンプレート（例: "frame_{timestamp}s.jpg"）
+        clear_frames: True の場合、抽出前に既存フレームを削除
+
+    Returns:
+        保存したフレーム画像のパスリスト
+    """
+    import re as _re
+
+    try:
+        from datasets import load_dataset
+    except ImportError:
+        logger.warning("datasets library not installed. Run: uv sync")
+        return []
+
+    cache_dir_path = Path(cache_dir).expanduser()
+    frames_dir_path = Path(frames_dir)
+    frames_dir_path.mkdir(parents=True, exist_ok=True)
+
+    if clear_frames:
+        for f in frames_dir_path.glob("frame_*.jpg"):
+            try:
+                f.unlink()
+            except OSError:
+                pass
+
+    logger.info(f"Loading HF dataset '{dataset_name}' (split='{split}') from {cache_dir_path}")
+    try:
+        dataset = load_dataset(
+            dataset_name,
+            split=split,
+            cache_dir=str(cache_dir_path),
+        )
+    except Exception as e:
+        logger.warning(f"Failed to load HF dataset: {e}")
+        return []
+
+    # __key__ 列のみ取得してインデックスを構築（効率的な列アクセス）
+    key_pattern = _re.compile(r".*/(\w+)_frame_(\d+)/")
+    indexed: list[tuple[int, int]] = []  # (frame_number, dataset_index)
+    all_keys: list[str] = dataset["__key__"]
+    for ds_idx, key in enumerate(all_keys):
+        m = key_pattern.search(key)
+        if not m:
+            continue
+        scene_name, frame_num = m.group(1), int(m.group(2))
+        if scene and scene_name != scene:
+            continue
+        indexed.append((frame_num, ds_idx))
+
+    if not indexed:
+        logger.warning(f"No frames found for scene='{scene}' in {dataset_name}/{split}")
+        return []
+
+    # フレーム番号順にソート（動画の時系列順）
+    indexed.sort(key=lambda x: x[0])
+
+    # split_slice を Python slice として適用
+    py_slice = _parse_py_slice(split_slice)
+    indexed = indexed[py_slice]
+
+    # stride で均等サンプリング（split_video_to_frames の frame_interval 相当）
+    total = len(indexed)
+    stride = max(1, total // max_frames) if max_frames > 0 and total > max_frames else 1
+
+    logger.info(
+        f"Scene '{scene}': {total} frames after slice '{split_slice}', "
+        f"stride={stride}, extracting up to {max_frames if max_frames > 0 else 'all'}"
+    )
+
+    frame_paths = []
+    frame_count = 0
+    for i in range(0, total, stride):
+        if max_frames > 0 and frame_count >= max_frames:
+            break
+        frame_num, ds_idx = indexed[i]
+        img = dataset[ds_idx].get("jpg")
+        if img is None:
+            continue
+        # split_video_to_frames と同じ命名規則: timestamp を ".3f" でフォーマットして末尾ゼロ除去
+        timestamp_str = f"{float(frame_num):.3f}".rstrip("0").rstrip(".")
+        frame_filename = frame_output_format.format(timestamp=timestamp_str)
+        frame_path = frames_dir_path / frame_filename
+        img.save(str(frame_path))
+        frame_paths.append(frame_path)
+        frame_count += 1
+
+    logger.info(
+        f"Extracted {len(frame_paths)} frames from scene '{scene}' to {frames_dir}/"
+    )
+    return frame_paths
+
+
 def prepare_observations(
     config: dict,
     video_extensions: set,
@@ -454,6 +588,33 @@ def prepare_observations(
     audio_channels = audio_config.get("channels", 1)
 
     video_timestamps_map = {}
+
+    # HuggingFace dataset からの読み込み
+    dataset_cfg = config.get("dataset", {})
+    if dataset_cfg.get("type") == "hf_dataset":
+        hf_cfg = dataset_cfg.get("hf", {})
+        hf_frames = load_hf_dataset_frames(
+            dataset_name=hf_cfg.get("name", "Tetrabot2026/InspecSafe-V1"),
+            split=hf_cfg.get("split", "test"),
+            cache_dir=hf_cfg.get("cache_dir", "~/data/hf_cache/"),
+            frames_dir="data/frames",
+            scene=hf_cfg.get("scene") or None,
+            split_slice=hf_cfg.get("split_slice", "[:]"),
+            max_frames=hf_cfg.get("max_frames", 10),
+            frame_output_format=frame_output_format,
+            clear_frames=video_cfg.get("clear_frames", False),
+        )
+        if hf_frames:
+            obs_list = [
+                Observation(
+                    obs_id=f"img_{i}",
+                    image_path=str(fp.absolute()),
+                    audio_text=None,
+                    camera_pose=CameraPose(pan_deg=0, tilt_deg=0, zoom=1),
+                )
+                for i, fp in enumerate(hf_frames)
+            ]
+            return obs_list, video_timestamps_map
 
     # Process video
     video_path = find_video(["data/videos", "data"], video_extensions)

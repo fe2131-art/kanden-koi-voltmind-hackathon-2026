@@ -81,7 +81,7 @@ class VisionAnalyzer:
         ext = Path(image_path).suffix.lower()
         image_type = "image/jpeg" if ext in [".jpg", ".jpeg"] else "image/png"
 
-        url = f"{self.base_url}/chat/completions"
+        url = f"{self.base_url}/v1/chat/completions"
         headers = {"Authorization": f"Bearer {self.api_key}"}
 
         # モデル固有のパラメータでペイロードを構築

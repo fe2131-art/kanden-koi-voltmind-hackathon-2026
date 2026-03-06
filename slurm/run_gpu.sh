@@ -59,6 +59,21 @@ set +a
 echo "---- Syncing dependencies ----"
 uv sync --frozen || uv sync
 
+# vLLM サーバー起動待機（起動まで少し時間を要するので、最大5分待機する）
+VLLM_URL="${LLM_BASE_URL:-http://127.0.0.1:8000}"
+echo "---- Waiting for vLLM server at ${VLLM_URL} ----"
+for i in $(seq 1 60); do
+  if curl -fsS "${VLLM_URL}/v1/models" >/dev/null 2>&1; then
+    echo "vLLM server is ready! (attempt ${i})"
+    break
+  fi
+  if [ "$i" -eq 60 ]; then
+    echo "ERROR: vLLM server did not become ready after 60 attempts (5 min). Aborting."
+    exit 1
+  fi
+  sleep 5
+done
+
 # スクリプト実行
 echo "---- Starting Agent ----"
 uv run python src/run.py

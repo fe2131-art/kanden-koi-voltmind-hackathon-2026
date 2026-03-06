@@ -2,7 +2,7 @@
 
 # Agent parameters
 agent:
-  max_steps: 1    # デフォルト：1フレーム実行
+  max_steps: -1   # -1 = 全フレームを処理
   enable_yolo: false
 
 # LLM configuration
@@ -13,7 +13,7 @@ llm:
   # vLLM settings (local server)
   vllm:
     base_url: "http://localhost:8000"  # Override via LLM_BASE_URL
-    model: "your-local-model"          # Override via LLM_MODEL
+    model: "Qwen/Qwen2.5-VL-7B-Instruct"  # Override via LLM_MODEL
     api_key: "EMPTY"
     timeout_s: 60.0
 
@@ -89,8 +89,22 @@ view_planning:
 
 # Dataset/adapter
 dataset:
-  type: "stub"  # or "inspesafe_v1" in future
+  # "stub": サンプル観測データを使用
+  # "hf_dataset": HuggingFace キャッシュから画像を読み込む
+  type: "hf_dataset"
   num_samples: 3
+  hf:
+    name: "Tetrabot2026/InspecSafe-V1"
+    split: "test"             # "train" or "test"
+    scene: "fire"             # 処理対象シーン名（1本の動画に相当）
+                              # 利用可能: fire, nonmask, smog, fall, cigarette,
+                              #           nonautomobile, head, hand, phone, liquid, others, dooropen
+                              # null または "" → 全シーン混合（シーン名でソートされない）
+    split_slice: "[:]"        # シーン内フレームへの Python スライス（フレーム番号順ソート後に適用）
+                              # 例: "[:]"=全件, "[:10]"=先頭10件, "[5:15]"=5〜14番目
+    max_frames: 10            # 抽出フレーム数の上限（video.max_frames に相当）
+                              # split_slice の範囲を stride で均等サンプリングして max_frames 枚抽出
+    cache_dir: "~/data/hf_cache/"
 
 # Evaluation
 evaluation:
