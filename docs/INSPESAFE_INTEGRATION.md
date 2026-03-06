@@ -23,7 +23,7 @@ InspecSafe-V1 は合計 **23GB（圧縮）→ 29GB（展開済み）** のデー
 
 ```bash
 # ディスク空き容量確認（50GB 以上推奨）
-df -h /home/tetsutani/work/
+df -h /home/{username}/work/
 
 # 出力例:
 # Filesystem      Size  Used Avail Use% Mounted on
@@ -35,7 +35,7 @@ df -h /home/tetsutani/work/
 ```bash
 # HuggingFace Hub からデータセットをダウンロード
 # （認証不要 - 公開データセット）
-cd /home/tetsutani/work
+cd /home/{username}/work
 
 hf download Tetrabot2026/InspecSafe-V1 \
   --repo-type dataset \
@@ -45,7 +45,7 @@ hf download Tetrabot2026/InspecSafe-V1 \
 **ダウンロード完了後の構造:**
 
 ```
-/home/tetsutani/work/
+/home/{username}/work/
 ├── kanden-koi-voltmind-hackathon-2026/  ← Safety View Agent
 └── InspecSafe-V1/
     ├── test.tar          (5.4 GB)
@@ -72,7 +72,7 @@ echo "✅ 展開完了"
 
 ```bash
 # 別ターミナルで実行（5秒ごとに更新）
-watch -n 5 'du -sh /home/tetsutani/work/InspecSafe-V1/DATA_PATH/'
+watch -n 5 'du -sh /home/{username}/work/InspecSafe-V1/DATA_PATH/'
 ```
 
 ### ステップ 4: 展開完了の確認
@@ -271,11 +271,11 @@ hf download Tetrabot2026/InspecSafe-V1 --repo-type dataset --local-dir ../Inspec
 
 ```bash
 # 利用可能な容量を確認
-df -h /home/tetsutani/work/
+df -h /home/{username}/work/
 
 # 不要なファイルを削除（キャッシュなど）
 rm -rf ~/.cache/
-du -sh /home/tetsutani/work/* | sort -h
+du -sh /home/{username}/work/* | sort -h
 ```
 
 ### ❌ ファイルアクセス権限エラー
