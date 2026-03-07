@@ -77,11 +77,11 @@ def get_llm(config: dict) -> Optional[OpenAICompatLLM]:
             return None
 
         openai_cfg = llm_config.get("openai", {})
-        model = os.getenv("OPENAI_MODEL") or openai_cfg.get("model")
+        model = openai_cfg.get("model")
         if not model:
             raise ValueError(
                 "LLM モデル名が未設定です。"
-                "configs/default.yaml の llm.openai.model または環境変数 OPENAI_MODEL を設定してください。"
+                "configs/default.yaml の llm.openai.model を設定してください。"
             )
         base_url = openai_cfg.get("base_url")
         if not base_url:
@@ -101,11 +101,14 @@ def get_llm(config: dict) -> Optional[OpenAICompatLLM]:
     elif provider == "vllm":
         # Local vLLM server（Structured Outputs で JSON 安定化）
         vllm_cfg = llm_config.get("vllm", {})
-        base_url = os.getenv("LLM_BASE_URL", vllm_cfg.get("base_url"))
-        model = os.getenv("LLM_MODEL", vllm_cfg.get("model"))
+        base_url = vllm_cfg.get("base_url")
+        model = vllm_cfg.get("model")
 
         if not base_url:
-            logger.warning("LLM_BASE_URL not set, using heuristic fallback")
+            logger.warning("LLM base_url not set in configs/default.yaml, using heuristic fallback")
+            return None
+        if not model:
+            logger.warning("LLM model not set in configs/default.yaml, using heuristic fallback")
             return None
 
         api_key = vllm_cfg.get("api_key", "EMPTY")

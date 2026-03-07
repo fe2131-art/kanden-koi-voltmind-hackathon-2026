@@ -15,15 +15,15 @@ llm:
 
   # vLLM settings (local server)
   vllm:
-    base_url: "http://localhost:8000/v1"  # Override via LLM_BASE_URL
-    model: "your-local-model"          # Override via LLM_MODEL
+    base_url: "http://localhost:8000/v1"
+    model: "Qwen/Qwen3-4B-Instruct-2507"
     api_key: "EMPTY"
     timeout_s: 60.0
 
   # OpenAI settings (API)
   openai:
     base_url: "https://api.openai.com/v1"
-    model: "gpt-5-nano"    # Vision-capable model (Override via OPENAI_MODEL)
+    model: "gpt-5-nano"    # Vision-capable model
     api_key: null                      # Must be set via OPENAI_API_KEY
     timeout_s: 60.0
 
@@ -37,7 +37,7 @@ vlm:
     timeout_s: 60.0
   vllm:
     base_url: "http://localhost:8000/v1"  # vLLM サーバーのベースURL（provider: "vllm" の場合のみ使用）
-    model: null    # null → llm.vllm.model を流用
+    model: "Qwen/Qwen2.5-VL-3B-Instruct"    # null → llm.vllm.model を流用
     timeout_s: 60.0
 
 # Data input mode
@@ -48,9 +48,8 @@ data:
 
   # inspesafe モード: InspecSafe-V1 のセッションを指定
   inspesafe:
-    dataset_path: "../InspecSafe-V1"  # プロジェクトルートからの相対パス
+    dataset_path: "/home/team-005/data/hf_cache/hub/datasets--Tetrabot2026--InspecSafe-V1/snapshots/6d58d012079ba6441c474be54d7a93dd9d70c01c"
     session: "train/Other_modalities/58132919535743_20251118_session_1400_2#bowenguanshang-you"
-    # 注: session は DATA_PATH/ 以降の相対パスを指定
 
 # Video and Audio processing
 video:

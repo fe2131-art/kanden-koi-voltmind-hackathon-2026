@@ -39,7 +39,7 @@ cd /home/{username}/work
 
 hf download Tetrabot2026/InspecSafe-V1 \
   --repo-type dataset \
-  --local-dir ../InspecSafe-V1
+  --local-dir ../../InspecSafe-V1
 ```
 
 **ダウンロード完了後の構造:**

@@ -84,11 +84,13 @@ python src/run.py
 
 #### 2. OpenAI API で実行
 ```bash
-# 1. OpenAI APIキーを環境変数に設定
+# 1. APIキーを環境変数に設定
 export OPENAI_API_KEY="sk-your-api-key-here"
-export OPENAI_MODEL="gpt-4o"
 
-# 2. configs/default.yaml の llm.provider を "openai" に設定
+# 2. configs/default.yaml を設定
+# llm.provider: "openai"
+# llm.openai.model: "gpt-4o"  （または任意の Vision 対応モデル）
+
 # 3. エージェント実行
 python src/run.py
 ```
@@ -100,16 +102,16 @@ python -m vllm.entrypoints.openai.api_server \
   --model meta-llama/Llama-2-7b-hf \
   --port 8000
 
-# 2. LLM 環境変数を設定
-export LLM_BASE_URL="http://localhost:8000"
-export LLM_MODEL="meta-llama/Llama-2-7b-hf"
+# 2. configs/default.yaml を設定
+# llm.provider: "vllm"
+# llm.vllm.base_url: "http://localhost:8000/v1"
+# llm.vllm.model: "meta-llama/Llama-2-7b-hf"
 
-# 3. configs/default.yaml の llm.provider を "vllm" に設定
-# 4. エージェント実行
+# 3. エージェント実行
 python src/run.py
 ```
 
-**注**: `.env` ファイルを作成することで、環境変数を一度に読み込むこともできます：
+**注**: `.env` ファイルを作成することで、環境変数（OPENAI_API_KEY など）を一度に読み込むこともできます：
 ```bash
 # .env を作成（.env.example を参考）
 cp .env.example .env
