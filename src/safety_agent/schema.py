@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import List, Literal, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 # =========================
 # Schemas (Pydantic)
@@ -31,13 +31,23 @@ class AudioCue(BaseModel):
 
 
 class UnobservedRegion(BaseModel):
+    """未確認領域（ブラインドスポット）"""
+    model_config = ConfigDict(
+        exclude_none=False,  # None 値も含める
+        # JSON 出力時、内部用フィールドを除外
+    )
+
     region_id: str
     description: str
     risk: float = Field(
         ge=0, le=1
     )  # heuristic risk that something hazardous may be there
-    suggested_pan_deg: Optional[float] = None
-    suggested_tilt_deg: Optional[float] = None
+    suggested_pan_deg: Optional[float] = Field(
+        default=None, exclude=True
+    )  # システム内部用（JSON出力から除外）
+    suggested_tilt_deg: Optional[float] = Field(
+        default=None, exclude=True
+    )  # システム内部用（JSON出力から除外）
 
 
 class Hazard(BaseModel):
@@ -69,35 +79,24 @@ class WorldModel(BaseModel):
     # Minimal world model: fused hazards + outstanding unobserved regions
     fused_hazards: List[Hazard] = Field(default_factory=list)
     outstanding_unobserved: List[UnobservedRegion] = Field(default_factory=list)
-    last_selected_view: Optional["ViewCommand"] = None
+    last_assessment: Optional["SafetyAssessment"] = None
 
 
-class ViewCandidate(BaseModel):
-    view_id: str
-    pan_deg: float
-    tilt_deg: float
-    zoom: float = 1.0
-    target_region_id: Optional[str] = None
-    expected_info_gain: float = Field(ge=0, le=1)
-    safety_priority: float = Field(ge=0, le=1)
-    rationale: str
+class SafetyAssessment(BaseModel):
+    """LLM による総合安全判断"""
+    # 現在の危険状態
+    risk_level: Literal["high", "medium", "low"]  # 総合リスク度
+    safety_status: str  # 状態説明（例: "フォークリフトが人に接近中"）
+    detected_hazards: List[str] = Field(default_factory=list)  # 検出された危険のリスト
+
+    # 行動指示
+    action_type: Literal["focus_region", "increase_safety", "continue_observation"]
+    target_region: Optional[str] = None  # 注視すべき領域ID（focus_region 時）
+    reason: str  # 行動の根拠
+    priority: float = Field(ge=0, le=1)  # 行動の優先度（0=低, 1=高）
 
 
-class NextViewPlan(BaseModel):
-    candidates: List[ViewCandidate]
-    stop: bool = False
-    stop_reason: Optional[str] = None
-
-
-class ViewCommand(BaseModel):
-    view_id: str
-    pan_deg: float
-    tilt_deg: float
-    zoom: float = 1.0
-    why: str
-
-
-WorldModel.model_rebuild()  # needed because of forward reference to ViewCommand
+WorldModel.model_rebuild()  # needed because of forward reference to SafetyAssessment
 
 
 # =========================

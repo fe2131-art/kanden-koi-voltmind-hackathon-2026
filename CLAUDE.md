@@ -84,11 +84,13 @@ python src/run.py
 
 #### 2. OpenAI API で実行
 ```bash
-# 1. OpenAI APIキーを環境変数に設定
+# 1. APIキーを環境変数に設定
 export OPENAI_API_KEY="sk-your-api-key-here"
-export OPENAI_MODEL="gpt-4o"
 
-# 2. configs/default.yaml の llm.provider を "openai" に設定
+# 2. configs/default.yaml を設定
+# llm.provider: "openai"
+# llm.openai.model: "gpt-4o"  （または任意の Vision 対応モデル）
+
 # 3. エージェント実行
 python src/run.py
 ```
@@ -100,16 +102,16 @@ python -m vllm.entrypoints.openai.api_server \
   --model meta-llama/Llama-2-7b-hf \
   --port 8000
 
-# 2. LLM 環境変数を設定
-export LLM_BASE_URL="http://localhost:8000"
-export LLM_MODEL="meta-llama/Llama-2-7b-hf"
+# 2. configs/default.yaml を設定
+# llm.provider: "vllm"
+# llm.vllm.base_url: "http://localhost:8000/v1"
+# llm.vllm.model: "meta-llama/Llama-2-7b-hf"
 
-# 3. configs/default.yaml の llm.provider を "vllm" に設定
-# 4. エージェント実行
+# 3. エージェント実行
 python src/run.py
 ```
 
-**注**: `.env` ファイルを作成することで、環境変数を一度に読み込むこともできます：
+**注**: `.env` ファイルを作成することで、環境変数（OPENAI_API_KEY など）を一度に読み込むこともできます：
 ```bash
 # .env を作成（.env.example を参考）
 cp .env.example .env
@@ -127,7 +129,7 @@ python finetuning/train_dummy.py --epochs 3
 ## 重要なコードパス
 
 ### スキーマ定義（`src/safety_agent/schema.py`）
-- **Pydantic モデル**: `BoundingBox`, `Hazard`, `PerceptionIR`, `ViewCandidate` など
+- **Pydantic モデル**: `BoundingBox`, `Hazard`, `PerceptionIR`, `SafetyAssessment` など
 - **Observation / ObservationProvider**: データソース抽象化
 
 ### モダリティ処理ノード（`src/safety_agent/modality_nodes.py`）
@@ -140,13 +142,16 @@ python finetuning/train_dummy.py --epochs 3
 - **`OpenAICompatLLM`**: OpenAI互換 LLM クライアント（httpx 使用）
 - **グラフノード関数（fan-out/fan-in パイプライン）**:
   - `ingest_observation`: 観測データ取得 + fan-out 並列送信（Command + Send）
-  - `vision_node`: VLM + YOLO 物体検出（並列実行）
+  - `yolo_node`: 物体検出（並列実行）
+  - `vlm_node`: 画像分析（並列実行）
   - `audio_node`: 音声キュー抽出（並列実行）
-  - `fuse_modalities`: モダリティ結果の統合（fan-in）
+  - `join_modalities`: fan-in バリア（ラッチ機構）
+  - `fuse_modalities`: モダリティ結果の統合
   - `update_world_model`: 世界モデル更新
-  - `propose_next_view_llm`: 次ビュー提案（**LLM がない場合は `_heuristic_plan` にフォールバック**）
-  - `validate_and_guardrails`: ガードレール適用
-  - `select_view`: 最適ビュー選択
+  - `determine_next_action_llm`: 知覚推論 + 総合安全判断を統合実行（**LLM がない場合は `_heuristic_assessment` にフォールバック**）
+    * ステップ1: YOLO/VLM/音声からハザード推定 → ir.hazards, ir.unobserved を LLM 出力で上書き
+    * ステップ2: 推定ハザード + 世界モデル + 前回判断から SafetyAssessment 生成
+  - `emit_output`: フレーム出力
   - `bump_step`: ステップカウント
 - **`build_agent()`**: LangGraph グラフ構築（fan-out/fan-in 実装、状態拡張）
 
@@ -164,12 +169,14 @@ python finetuning/train_dummy.py --epochs 3
    - provider = "vllm": LLM_BASE_URL が必須
    - どちらも設定なし → llm = None
 
-2. agent.py#propose_next_view_llm():
-   - runtime.context["llm"] が None → 例外キャッチ
-   - → _heuristic_plan(state) へフォールバック
+2. agent.py#determine_next_action_llm():
+   - runtime.context["llm"] が None → _heuristic_assessment(state) へフォールバック
+   - LLM 実行エラー → 例外キャッチして _heuristic_assessment へ降格
 
-3. ヒューリスティック: 未確認領域のリスク順で次ビュー候補を生成
-4. validate_and_guardrails(), select_view() で通常通り処理
+3. ヒューリスティック: 世界モデルから SafetyAssessment を生成
+   - 高リスク未確認領域あり → focus_region（観測指示）
+   - 低信度ハザード存在 → increase_safety（安全強化指示）
+   - その他 → continue_observation（継続観測指示）
 ```
 
 ### OpenAI vs vLLM

@@ -4,44 +4,52 @@
 agent:
   max_steps: 1    # デフォルト：1フレーム実行
   enable_yolo: false
+  enable_audio: false
+  max_outstanding_regions: 6        # 次に観測すべき候補領域の検討数上限
+  context_history_size: 1           # LLM に渡す前回結果の数（0=なし, 1=前回のみ）
 
 # LLM configuration
 llm:
   # Provider: "vllm" (local) or "openai" (API)
-  provider: "openai"
+  provider: "vllm"
 
   # vLLM settings (local server)
   vllm:
-    base_url: "http://localhost:8000"  # Override via LLM_BASE_URL
-    model: "your-local-model"          # Override via LLM_MODEL
+    base_url: "http://localhost:8000/v1"
+    model: "Qwen/Qwen3-4B-Instruct-2507"
     api_key: "EMPTY"
     timeout_s: 60.0
 
   # OpenAI settings (API)
   openai:
     base_url: "https://api.openai.com/v1"
-    model: "gpt-5-nano-2025-08-07"    # Vision-capable model (Override via OPENAI_MODEL)
+    model: "gpt-5-nano"    # Vision-capable model
     api_key: null                      # Must be set via OPENAI_API_KEY
     timeout_s: 60.0
 
 # VLM 設定（Vision Language Model / 画像分析専用）
 # model: null の場合 → llm.openai.model を自動参照（共有設定）
 vlm:
-  provider: "openai"
+  provider: "vllm"     # "openai" | "vllm"（ローカル vLLM サーバー）
   openai:
     base_url: "https://api.openai.com/v1"
-    model: null    # null → llm.openai.model を流用（gpt-5-nano-2025-08-07）
+    model: "gpt-5-nano"    # null → llm.openai.model を流用
+    timeout_s: 60.0
+  vllm:
+    base_url: "http://localhost:8001/v1"  # vLLM サーバーのベースURL（provider: "vllm" の場合のみ使用）
+    model: "Qwen/Qwen3-VL-4B-Instruct"    # null → llm.vllm.model を流用
     timeout_s: 60.0
 
-# Modalities configuration (LangGraph fan-out)
-modalities:
-  vision:
-    enabled: true          # VLM による画像分析
-    yolo_enabled: false    # YOLO 物体検出（ultralytics が必要）
-  audio:
-    enabled: true          # 音声テキスト解析
-  # lidar:                 # 将来の拡張例
-  #   enabled: false
+# Data input mode
+data:
+  mode: "inspesafe"  # "manual" | "inspesafe"
+
+  # manual モード: data/videos/ の動画を使用（デフォルト）
+
+  # inspesafe モード: InspecSafe-V1 のセッションを指定
+  inspesafe:
+    dataset_path: "/home/team-005/data/hf_cache/hub/datasets--Tetrabot2026--InspecSafe-V1/snapshots/6d58d012079ba6441c474be54d7a93dd9d70c01c"
+    session: "train/Other_modalities/58132919535743_20251118_session_1400_2#bowenguanshang-you"
 
 # Video and Audio processing
 video:
@@ -61,46 +69,9 @@ audio:
 # LLM トークン設定
 tokens:
   vision_max_completion_tokens: 5000  # Vision API: 推論 + 応答用（gpt-5-nano は推論に 4000+ 使用）
-  chat_max_tokens: 2000               # テキスト生成用
+  chat_max_tokens: 4000               # テキスト生成用（推論トークンを考慮して 2000 から増加）
 
 # Thresholds
 thresholds:
   risk_stop_threshold: 0.2      # Stop if max unobserved risk <= this
   hazard_focus_threshold: 0.6   # Enforce high-risk unobserved coverage
-
-# View Planning (ビュー選択戦略のパラメータ)
-view_planning:
-  # 次に観測すべき候補領域の検討数上限
-  # より多くの領域を検討するほど計算負荷が増加します
-  max_outstanding_regions: 6
-
-  # ビュー選択スコア: スコア = (安全性優先度の重み × 安全性) + (情報利得の重み × 情報利得)
-  # 安全性を重視する場合は 0.7 以上、バランス重視は 0.5、情報重視は 0.3 以下に設定
-  safety_priority_weight: 0.7
-
-  # 情報利得（新しい視点から見える未確認領域の多さ）の重み
-  # 安全性との合計は 1.0 になります
-  info_gain_weight: 0.3
-
-  # ハザード検出時の安全性優先度の基本値
-  # リスクを加算: safety_priority = min(1.0, base + detected_risk)
-  # 値が大きいほど積極的にハザード領域を観測します
-  safety_priority_base: 0.7
-
-# Dataset/adapter
-dataset:
-  type: "stub"  # or "inspesafe_v1" in future
-  num_samples: 3
-
-# Evaluation
-evaluation:
-  metrics:
-    - coverage_score
-    - hazard_detection_rate
-  output_dir: "outputs/eval"
-
-# Finetuning (if applicable)
-finetuning:
-  enabled: false
-  config: "dummy"  # "dummy" or "lora"
-  output_dir: "finetuning/outputs"

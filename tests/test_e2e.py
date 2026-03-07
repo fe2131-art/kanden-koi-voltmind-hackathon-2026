@@ -47,8 +47,7 @@ def test_e2e_agent_no_llm():
         "barrier_obs_id": None,  # ラッチ（同フレーム内で fuse は1回だけ）
         "latest_output": None,  # PR3: 統合出力
         "world": WorldModel(),
-        "plan": None,
-        "selected": None,
+        "assessment": None,
         "done": False,
         "errors": [],
     }
@@ -61,13 +60,17 @@ def test_e2e_agent_no_llm():
         "vision_analyzer": None,
         "yolo_detector": None,
         "audio_analyzer": AudioAnalyzer(),
-        "risk_stop_threshold": 0.2,
-        "hazard_focus_threshold": 0.6,
+        "prompts": {
+            "vision_analysis": {
+                "default_prompt": "テスト用プロンプト（LLM 未使用のため内容は問わない）"
+            },
+            "next_view_proposal": {
+                "system": "テスト用：知覚推論+安全判断統合プロンプト（LLMなしで実行）",
+            },
+        },
         "chat_max_tokens": 2000,
         "max_outstanding_regions": 6,
-        "safety_priority_weight": 0.7,
-        "info_gain_weight": 0.3,
-        "safety_priority_base": 0.7,
+        "context_history_size": 1,
         "expected_modalities": ["yolo", "vlm", "audio"],  # yolo/vlm に分割
         "run_mode": "until_provider_ends",  # provider が None を返すまで継続
     }
@@ -76,15 +79,16 @@ def test_e2e_agent_no_llm():
     out = agent.invoke(initial_state, context=context)
 
     # Verify basic output structure
-    assert "selected" in out
+    assert "assessment" in out
     assert "world" in out
     assert "errors" in out
     assert "messages" in out
     assert "modality_results" in out
 
-    # Verify selected view is not None
-    assert out["selected"] is not None
-    assert out["selected"].view_id is not None
+    # Verify assessment is not None
+    assert out["assessment"] is not None
+    assert out["assessment"].action_type in ["focus_region", "increase_safety", "continue_observation"]
+    assert out["assessment"].risk_level in ["high", "medium", "low"]
 
     # Verify world model is updated
     assert out["world"] is not None
@@ -110,13 +114,13 @@ def test_e2e_agent_no_llm():
     assert "latest_output" in out
     assert out["latest_output"] is not None
     assert out["latest_output"]["obs_id"] is not None
-    assert out["latest_output"]["selected_view"] is not None
+    assert out["latest_output"]["assessment"] is not None
     assert "step" in out["latest_output"]
     assert "ir" in out["latest_output"]
     assert "world" in out["latest_output"]
 
     print("✅ E2E test passed")
-    print(f"Selected view: {out['selected'].view_id}")
+    print(f"Assessment: {out['assessment'].action_type}")
     print(f"Messages: {len(out['messages'])}")
     print(f"Errors: {out['errors']}")
     print(f"Received modalities: {out['received_modalities']}")

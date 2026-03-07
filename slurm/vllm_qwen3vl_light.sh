@@ -1,10 +1,10 @@
 #!/bin/bash
-#SBATCH -J vllm-qwen3-light
+#SBATCH -J vllm-qwen3vl-light
 #SBATCH -p gpu
 #SBATCH --gres=gpu:1
 #SBATCH -c 8
 #SBATCH --mem=32G
-#SBATCH -t 00:20:00
+#SBATCH -t 01:00:00
 #SBATCH -o slurm-%j.out
 
 set -euo pipefail
@@ -46,16 +46,16 @@ echo "=========================================="
 cd "$WORK_DIR"
 
 # キャッシュ（作業者単位で永続化）
-export UV_CACHE_DIR="/home/team-005/work/${WORK_USER}/.cache/uv"
-export HF_HOME="/home/team-005/work/${WORK_USER}/.cache/huggingface"
+export UV_CACHE_DIR="$HOME/.cache/uv"
+export HF_HOME="$HOME/data/hf_cache"
 export TRANSFORMERS_CACHE="$HF_HOME"
 mkdir -p "$UV_CACHE_DIR" "$HF_HOME"
 
 # 依存を揃える
 uv sync --frozen || uv sync
 
-MODEL="Qwen/Qwen3-4B-Instruct-2507"
-PORT=8000
+MODEL="Qwen/Qwen3-VL-4B-Instruct"
+PORT=8001
 
 echo
 echo "---- Starting vLLM server ----"
@@ -66,8 +66,8 @@ uv run vllm serve "$MODEL" \
   --max-model-len 8192 \
   --gpu-memory-utilization 0.90 \
   --enable-prefix-caching \
-  --reasoning-parser qwen3 \
   > "vllm_${SLURM_JOB_ID}.log" 2>&1 &
+# --reasoning-parser qwen3 は Qwen3 thinking モデル用。必要なら上記に追加。
 
 VLLM_PID=$!
 echo "vLLM PID=$VLLM_PID"

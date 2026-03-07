@@ -78,14 +78,15 @@ def build_agent() -> CompiledStateGraph:
     """Build Safety View Agent graph"""
     graph = StateGraph(AgentState)
     
-    # ノード追加
-    graph.add_node("ingest_observation", ingest_observation)
-    graph.add_node("vision_node", vision_node)
-    graph.add_node("audio_node", audio_node)
+    # ノード追加（fan-out/fan-in パイプラインに新規モダリティを追加）
+    # 注: 既存のノード（yolo_node, vlm_node, audio_node）は ingest_observation から fan-out で並列送信される
+    # 新規 lidar_node も同様に join_modalities へ参加
+
     graph.add_node("lidar_node", lidar_node)  # 新規
-    
-    # fan-in: fuse_modalities へのエッジ
-    graph.add_edge("lidar_node", "fuse_modalities")
+
+    # fan-in: join_modalities への参加（他の modality_node と同様に）
+    # ingest_observation から fan-out で lidar_node へも Send() で送信するよう修正が必要
+    # その後、lidar_node の出力は join_modalities へ到達
 ```
 
 #### Step 4: Context に analyzer を追加

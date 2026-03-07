@@ -20,21 +20,6 @@ def test_config_loading():
     assert llm_cfg["provider"] in ["openai", "vllm"]
 
 
-def test_llm_initialization_without_env():
-    """Test LLM initialization without environment variables (should return None)."""
-    from run import get_llm, load_config
-
-    # Ensure env vars are not set
-    os.environ.pop("OPENAI_API_KEY", None)
-    os.environ.pop("LLM_BASE_URL", None)
-
-    config = load_config("configs/default.yaml")
-    llm = get_llm(config)
-
-    # Without env vars, should return None (fallback to heuristic)
-    assert llm is None
-
-
 def test_llm_initialization_openai_missing_key():
     """Test OpenAI initialization without API key (should return None)."""
 
@@ -111,3 +96,68 @@ def test_agent_config():
     assert "enable_yolo" in agent_cfg
     assert isinstance(agent_cfg["max_steps"], int)
     assert isinstance(agent_cfg["enable_yolo"], bool)
+
+
+def test_data_mode_config():
+    """Test data mode configuration (manual/inspesafe)."""
+    from run import load_config
+
+    config = load_config("configs/default.yaml")
+    data_cfg = config.get("data", {})
+
+    # Check data config exists
+    assert "mode" in data_cfg
+    assert data_cfg["mode"] in ["manual", "inspesafe"]
+
+    # Check inspesafe configuration
+    inspesafe_cfg = data_cfg.get("inspesafe", {})
+    assert "dataset_path" in inspesafe_cfg
+    assert "session" in inspesafe_cfg
+
+
+def test_prepare_observations_mode_selection():
+    """Test that prepare_observations selects the correct implementation based on mode."""
+    from unittest.mock import patch
+    from run import prepare_observations
+
+    # Test manual mode (default) - should raise FileNotFoundError if no frames
+    config = {
+        "data": {"mode": "manual"},
+        "video": {"fps": 1.0, "max_frames": 30, "clear_frames": False},
+        "audio": {"output_filename": "audio.wav", "sample_rate": 16000, "channels": 1, "codec": "pcm_s16le"},
+    }
+
+    # Mock find_video to return None and load_frames to return empty list
+    import pytest
+    with patch("run.find_video", return_value=None):
+        with patch("run.load_frames", return_value=[]):
+            with pytest.raises(FileNotFoundError, match="フレームが見つかりません"):
+                prepare_observations(
+                    config,
+                    {".mp4", ".avi"},
+                    "frame_{timestamp}s.jpg",
+                    config["audio"]
+                )
+
+    # Test inspesafe mode selection (should raise FileNotFoundError due to nonexistent path)
+    config_inspesafe = {
+        "data": {
+            "mode": "inspesafe",
+            "inspesafe": {
+                "dataset_path": "/nonexistent/InspecSafe-V1",
+                "session": "test/session"
+            }
+        },
+        "video": {"fps": 1.0, "max_frames": 30, "clear_frames": False},
+        "audio": {"output_filename": "audio.wav", "sample_rate": 16000, "channels": 1, "codec": "pcm_s16le"},
+    }
+
+    # Should attempt to use inspesafe path and raise FileNotFoundError
+    import pytest
+    with pytest.raises(FileNotFoundError, match="セッションが見つかりません"):
+        prepare_observations(
+            config_inspesafe,
+            {".mp4", ".avi"},
+            "frame_{timestamp}s.jpg",
+            config_inspesafe["audio"]
+        )
