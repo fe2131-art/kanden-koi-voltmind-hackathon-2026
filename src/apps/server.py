@@ -24,7 +24,7 @@ def normalize_detection(obj: dict) -> dict:
 async def monitor_and_stream(websocket):
     """Monitor data/perception_results.json and stream changes to client."""
     print("client connected")
-    last_count = 0  # 前回送信した perception_results 数をトラッキング
+    last_count = 0  # 前回送信した frames 数をトラッキング
     server_start_time = time.time()  # サーバー起動時刻（基準点）
 
     try:
@@ -35,13 +35,13 @@ async def monitor_and_stream(websocket):
                     with open(PERCEPTION_RESULTS, 'r', encoding='utf-8') as f:
                         data = json.load(f)
 
-                    # Extract perception results
-                    perception_results = data.get('perception_results', [])
-                    current_count = len(perception_results)
+                    # Extract frames
+                    frames = data.get('frames', [])
+                    current_count = len(frames)
 
                     # 新しいフレームのみを送信（増分ストリーミング）
                     if current_count > last_count:
-                        for result in perception_results[last_count:]:
+                        for result in frames[last_count:]:
                             objects = result.get('objects', [])
                             normalized_dets = [normalize_detection(obj) for obj in objects]
 
@@ -52,13 +52,13 @@ async def monitor_and_stream(websocket):
                             msg = {
                                 't': video_ts if video_ts is not None else frame_timestamp,
                                 'video_timestamp': video_ts,  # 動画内秒数（あれば）
-                                'text': result.get('vision_analysis', 'Analysis complete'),
+                                'text': result.get('vision_summary', 'Analysis complete'),
                                 'detections': normalized_dets,
-                                'obs_id': result.get('obs_id', 'unknown')
+                                'frame_id': result.get('frame_id', 'unknown')
                             }
 
                             await websocket.send(json.dumps(msg, ensure_ascii=False))
-                            print(f"  → Frame {result.get('obs_id')} sent (t={frame_timestamp:.2f})")
+                            print(f"  → Frame {result.get('frame_id')} sent (t={frame_timestamp:.2f})")
 
                         last_count = current_count
 

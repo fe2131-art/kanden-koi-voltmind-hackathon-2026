@@ -2,7 +2,6 @@
 
 from src.safety_agent.agent import AgentState, build_agent
 from src.safety_agent.modality_nodes import AudioAnalyzer
-from src.safety_agent.perceiver import Perceiver
 from src.safety_agent.schema import (
     CameraPose,
     Observation,
@@ -19,18 +18,16 @@ def test_e2e_agent_no_llm():
             obs_id="t0",
             image_path=None,
             audio_text="I hear a car approach from the right",
-            camera_pose=CameraPose(pan_deg=0, tilt_deg=0, zoom=1),
+            camera_pose=None,
         ),
         Observation(
             obs_id="t1",
             image_path=None,
             audio_text=None,
-            camera_pose=CameraPose(pan_deg=30, tilt_deg=0, zoom=1),
+            camera_pose=None,
         ),
     ]
     provider = ObservationProvider(obs_list)
-
-    perceiver = Perceiver()
 
     # Build agent
     agent = build_agent()
@@ -55,7 +52,6 @@ def test_e2e_agent_no_llm():
     # Context with NO LLM (llm=None forces heuristic fallback)
     context = {
         "provider": provider,
-        "perceiver": perceiver,
         "llm": None,
         "vision_analyzer": None,
         "yolo_detector": None,
@@ -110,18 +106,18 @@ def test_e2e_agent_no_llm():
     assert "received_modalities" in out
     assert isinstance(out["received_modalities"], list)
 
-    # PR3: Verify latest_output is properly populated
+    # PR3: Verify latest_output is properly populated (flattened structure)
     assert "latest_output" in out
     assert out["latest_output"] is not None
-    assert out["latest_output"]["obs_id"] is not None
+    assert out["latest_output"]["frame_id"] is not None
     assert out["latest_output"]["assessment"] is not None
-    assert "step" in out["latest_output"]
-    assert "ir" in out["latest_output"]
-    assert "world" in out["latest_output"]
+    assert "objects" in out["latest_output"]
+    assert "audio" in out["latest_output"]
+    assert "vision_summary" in out["latest_output"]
 
     print("✅ E2E test passed")
     print(f"Assessment: {out['assessment'].action_type}")
     print(f"Messages: {len(out['messages'])}")
     print(f"Errors: {out['errors']}")
     print(f"Received modalities: {out['received_modalities']}")
-    print(f"Latest output obs_id: {out['latest_output']['obs_id']}")
+    print(f"Latest output frame_id: {out['latest_output']['frame_id']}")
