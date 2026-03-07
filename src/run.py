@@ -15,13 +15,13 @@ load_dotenv()
 
 from safety_agent.agent import AgentState, OpenAICompatLLM, build_agent
 from safety_agent.modality_nodes import AudioAnalyzer, VisionAnalyzer, YOLODetector
-from safety_agent.perceiver import Perceiver
 from safety_agent.schema import CameraPose, Observation, ObservationProvider, WorldModel
 from util.logger import setup_logger
 from util.serializers import serialize_pydantic_or_dict
 
-# ロガーを設定
-logger = setup_logger("safety_view_agent")
+# ロガーを設定（デバッグモード有効化）
+import logging
+logger = setup_logger("safety_view_agent", level=logging.DEBUG)
 
 # ==========================================
 # 注: ビデオ・音声定数は configs/default.yaml から読み込まれます
@@ -436,14 +436,14 @@ def save_analysis_results(
 
     Args:
         output_dir: 出力ディレクトリパス
-        analysis_results: 結果リストを含む 'perception_results' キーの辞書
+        analysis_results: 結果リストを含む 'frames' キーの辞書
         video_timestamps: obs_id をビデオタイムスタンプ（秒単位）にマッピングする辞書（オプション）
-        agent_output: エージェント実行結果の辞書（selected、world、plan、messages）（オプション）
+        agent_output: 使用されていません（互換性のため保持）
     """
     os.makedirs(output_dir, exist_ok=True)
 
     results_file = Path(output_dir) / "perception_results.json"
-    default_data = {"perception_results": [], "agent_execution": []}
+    default_data = {"frames": []}
 
     # 既存データを読み込む（追記式）
     if results_file.exists():
@@ -455,62 +455,28 @@ def save_analysis_results(
     else:
         existing_data = default_data
 
-    # Initialize agent_execution if it doesn't exist
-    if "agent_execution" not in existing_data:
-        existing_data["agent_execution"] = []
+    # Ensure frames key exists (migration support)
+    if "frames" not in existing_data:
+        existing_data["frames"] = []
 
     # タイムスタンプを付与して新しいフレームを追加
     current_timestamp = time.time()
-    for result in analysis_results.get("perception_results", []):
+    for result in analysis_results.get("frames", []):
         result["timestamp"] = current_timestamp  # Unix timestamp（秒単位）
 
         # Add video_timestamp if available
         if video_timestamps:
-            obs_id = result.get("obs_id")
-            if obs_id and obs_id in video_timestamps:
-                result["video_timestamp"] = video_timestamps[obs_id]
+            frame_id = result.get("frame_id")
+            if frame_id and frame_id in video_timestamps:
+                result["video_timestamp"] = video_timestamps[frame_id]
 
-        existing_data["perception_results"].append(result)
-
-    # Agent 実行結果を保存（提供されている場合）
-    if agent_output:
-        # Serialize messages (handle both dict and LangChain message objects)
-        messages_list = []
-        for msg in agent_output.get("messages", []):
-            if isinstance(msg, dict):
-                messages_list.append(msg)
-            elif hasattr(msg, "content"):
-                # LangChain message object
-                messages_list.append({
-                    "role": msg.__class__.__name__,
-                    "content": getattr(msg, "content", str(msg))
-                })
-            else:
-                messages_list.append({"content": str(msg)})
-
-        agent_record = {
-            "timestamp": current_timestamp,
-            "step": agent_output.get("step", 0),
-            "selected_view": None,
-            "world_model": None,
-            "plan": None,
-            "messages": messages_list,
-            "errors": agent_output.get("errors", []),
-        }
-
-        # Serialize agent output objects (using unified serializer)
-        agent_record["selected_view"] = serialize_pydantic_or_dict(agent_output.get("selected"))
-        agent_record["world_model"] = serialize_pydantic_or_dict(agent_output.get("world"))
-        agent_record["plan"] = serialize_pydantic_or_dict(agent_output.get("plan"))
-
-        existing_data["agent_execution"].append(agent_record)
+        existing_data["frames"].append(result)
 
     # ファイルに保存
     with open(results_file, "w", encoding="utf-8") as f:
         json.dump(existing_data, f, ensure_ascii=False, indent=2)
-    frame_count = len(analysis_results.get('perception_results', []))
-    agent_count = 1 if agent_output else 0
-    logger.info(f"Results appended to {results_file} ({frame_count} frames, {agent_count} agent execution)")
+    frame_count = len(analysis_results.get('frames', []))
+    logger.info(f"Results appended to {results_file} ({frame_count} frames)")
 
 
 def prepare_observations_inspesafe(
@@ -692,11 +658,11 @@ def run_and_log_agent(
     for state in agent.stream(initial_state, context=context, stream_mode="values"):
         latest = state.get("latest_output")
         if "latest_output" in state and latest:
-            obs_id = latest.get("obs_id")
+            frame_id = latest.get("frame_id")
             # フレームが更新されたときのみ追加（重複回避）
-            if obs_id != prev_latest_obs_id:
+            if frame_id != prev_latest_obs_id:
                 all_frame_outputs.append(latest)
-                prev_latest_obs_id = obs_id
+                prev_latest_obs_id = frame_id
         final_state = state
 
     # Log agent results
@@ -706,11 +672,8 @@ def run_and_log_agent(
             f"(pan={final_state['selected'].pan_deg}°, tilt={final_state['selected'].tilt_deg}°)"
         )
 
-    hazard_count = len(final_state["world"].fused_hazards) if final_state.get("world") and final_state["world"].fused_hazards else 0
-    logger.info(f"Hazards detected: {hazard_count}")
-
-    unobs_count = len(final_state["world"].outstanding_unobserved) if final_state.get("world") and final_state["world"].outstanding_unobserved else 0
-    logger.info(f"Outstanding unobserved regions: {unobs_count}")
+    if final_state.get("assessment"):
+        logger.info(f"Assessment: {final_state['assessment'].action_type} risk={final_state['assessment'].risk_level}")
 
     if final_state.get("errors"):
         logger.warning(f"Errors: {len(final_state['errors'])}")
@@ -764,7 +727,6 @@ def main():
 
     # Initialize agent components
     provider = ObservationProvider(obs_list)
-    perceiver = Perceiver()
     llm = get_llm(config)
     vision_analyzer = get_vlm(config, prompts)
 
@@ -808,7 +770,6 @@ def main():
     # Context (with modality analyzers for fan-out nodes)
     context = {
         "provider": provider,
-        "perceiver": perceiver,
         "llm": llm,
         "vision_analyzer": vision_analyzer,
         "yolo_detector": yolo_detector,
@@ -827,9 +788,8 @@ def main():
     # Save all frame results from agent's emit_output node
     save_analysis_results(
         "data",
-        {"perception_results": all_frame_outputs},
+        {"frames": all_frame_outputs},
         video_timestamps_map,
-        agent_output=out,
     )
 
     # Save Mermaid diagram

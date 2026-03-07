@@ -18,14 +18,11 @@ from .modality_nodes import (
     VisionAnalyzer,
     YOLODetector,
 )
-from .perceiver import Perceiver
 from .schema import (
-    Hazard,
     SafetyAssessment,
     Observation,
     ObservationProvider,
     PerceptionIR,
-    UnobservedRegion,
     WorldModel,
 )
 
@@ -37,58 +34,22 @@ def _get_json_schema_for_vllm() -> Dict[str, Any]:
     return {
         "type": "object",
         "properties": {
-            "perceived_hazards": {
+            "risk_level": {"type": "string", "enum": ["high", "medium", "low"]},
+            "safety_status": {"type": "string"},
+            "detected_hazards": {
                 "type": "array",
-                "items": {
-                    "type": "object",
-                    "properties": {
-                        "hazard_type": {"type": "string"},
-                        "confidence": {"type": "number", "minimum": 0, "maximum": 1},
-                        "reason": {"type": "string"},
-                        "related_objects": {
-                            "type": "array",
-                            "items": {"type": "string"},
-                            "default": [],
-                        },
-                    },
-                    "required": ["hazard_type", "confidence", "reason"],
-                },
+                "items": {"type": "string"},
+                "default": [],
             },
-            "estimated_unobserved": {
-                "type": "array",
-                "items": {
-                    "type": "object",
-                    "properties": {
-                        "region_id": {"type": "string"},
-                        "description": {"type": "string"},
-                        "risk": {"type": "number", "minimum": 0, "maximum": 1},
-                        "reason": {"type": "string"},
-                    },
-                    "required": ["region_id", "risk"],
-                },
+            "action_type": {
+                "type": "string",
+                "enum": ["focus_region", "increase_safety", "continue_observation"],
             },
-            "safety_assessment": {
-                "type": "object",
-                "properties": {
-                    "risk_level": {"type": "string", "enum": ["high", "medium", "low"]},
-                    "safety_status": {"type": "string"},
-                    "detected_hazards": {
-                        "type": "array",
-                        "items": {"type": "string"},
-                        "default": [],
-                    },
-                    "action_type": {
-                        "type": "string",
-                        "enum": ["focus_region", "increase_safety", "continue_observation"],
-                    },
-                    "target_region": {"type": ["string", "null"]},
-                    "reason": {"type": "string"},
-                    "priority": {"type": "number", "minimum": 0, "maximum": 1},
-                },
-                "required": ["risk_level", "safety_status", "action_type", "reason", "priority"],
-            },
+            "target_region": {"type": ["string", "null"]},
+            "reason": {"type": "string"},
+            "priority": {"type": "number", "minimum": 0, "maximum": 1},
         },
-        "required": ["perceived_hazards", "estimated_unobserved", "safety_assessment"],
+        "required": ["risk_level", "safety_status", "action_type", "reason", "priority"],
     }
 
 
@@ -190,21 +151,6 @@ class OpenAICompatLLM:
                 logger.debug(f"LLM raw output (first 3000 chars):\n{content[:3000]}")
                 raise
 
-    def chat_text(self, system: str, user: str, max_tokens: int = 500) -> str:
-        """チャットリクエストを送信してプレーンテキストの応答を返す。"""
-        url = f"{self.base_url}/v1/chat/completions"
-        headers = {"Authorization": f"Bearer {self.api_key}"}
-        messages = [
-            {"role": "system", "content": system},
-            {"role": "user", "content": user},
-        ]
-        payload = self._build_payload(messages, max_tokens)
-        with httpx.Client(timeout=self.timeout_s) as client:
-            r = client.post(url, headers=headers, json=payload)
-            r.raise_for_status()
-            data = r.json()
-            content = data["choices"][0]["message"]["content"]
-            return content
 
 
 def _robust_json_loads(text: str) -> Dict[str, Any]:
@@ -332,7 +278,6 @@ class AgentState(TypedDict):
 
 class ContextSchema(TypedDict):
     provider: ObservationProvider
-    perceiver: Perceiver
     llm: Optional[OpenAICompatLLM]
     vision_analyzer: Optional[VisionAnalyzer]
     yolo_detector: Optional[YOLODetector]
@@ -536,13 +481,11 @@ def fuse_modalities(
     description = (vlm.description if vlm else None)
     modality_errors = [r.error for r in results.values() if r.error]
 
-    # PerceptionIR を作成（Perceiver 推論は determine_next_action_llm で統合実行）
+    # PerceptionIR を作成
     ir = PerceptionIR(
         obs_id=obs.obs_id,
         camera_pose=obs.camera_pose,
         objects=objects,
-        hazards=[],  # Perceiver 推論は determine_next_action_llm で実行
-        unobserved=[],  # Perceiver 推論は determine_next_action_llm で実行
         audio=audio_cues,
         vision_description=description,
         modality_errors=modality_errors,
@@ -554,41 +497,6 @@ def fuse_modalities(
             {
                 "role": "assistant",
                 "content": f"[fuse] ok (perception inference in determine_next_action_llm)",
-            }
-        ],
-    }
-
-
-def update_world_model(
-    state: AgentState, runtime: Runtime[ContextSchema]
-) -> Dict[str, Any]:
-    ir = state.get("ir")
-    world = state["world"]
-    if ir is None:
-        return {"errors": ["No IR to update world"], "done": True}
-
-    # シンプルな融合：ハザードタイプごとに最大信度を保持
-    fused: Dict[str, Any] = {h.hazard_type: h for h in world.fused_hazards}
-    for h in ir.hazards:
-        prev = fused.get(h.hazard_type)
-        if prev is None or h.confidence > prev.confidence:
-            fused[h.hazard_type] = h
-
-    # Outstanding unobserved: take top risks; in a real system: track coverage over time
-    max_regions = runtime.context["max_outstanding_regions"]
-    outstanding = sorted(ir.unobserved, key=lambda r: r.risk, reverse=True)[:max_regions]
-
-    new_world = WorldModel(
-        fused_hazards=sorted(fused.values(), key=lambda x: x.confidence, reverse=True),
-        outstanding_unobserved=outstanding,
-        last_assessment=world.last_assessment,
-    )
-    return {
-        "world": new_world,
-        "messages": [
-            {
-                "role": "assistant",
-                "content": f"[world] fused_hazards={len(new_world.fused_hazards)} outstanding_unobserved={len(new_world.outstanding_unobserved)}",
             }
         ],
     }
@@ -606,7 +514,7 @@ def determine_next_action_llm(
     llm = runtime.context.get("llm")
     if llm is None:
         # ヒューリスティックフォールバック
-        assessment = _heuristic_assessment(world)
+        assessment = _heuristic_assessment()
         return {
             "assessment": assessment,
             "world": world.model_copy(update={"last_assessment": assessment}),
@@ -615,16 +523,11 @@ def determine_next_action_llm(
 
     # コンテキスト構築
     context_history_size = runtime.context.get("context_history_size", 1)
-    max_regions = runtime.context["max_outstanding_regions"]
 
     context_data = {
-        # 現在フレームの知覚結果
         "vision_description": ir.vision_description,
         "detected_objects": [o.model_dump() for o in ir.objects[:10]],
         "audio_cues": [a.model_dump() for a in ir.audio],
-        "fused_hazards": [h.model_dump() for h in world.fused_hazards[:5]],
-        "outstanding_unobserved": [r.model_dump() for r in world.outstanding_unobserved[:max_regions]],
-        # 前回の判断結果（context_history_size >= 1 の場合のみ）
         "previous_assessment": (
             world.last_assessment.model_dump() if context_history_size >= 1 and world.last_assessment else None
         ),
@@ -638,78 +541,35 @@ def determine_next_action_llm(
         chat_max_tokens = runtime.context["chat_max_tokens"]
         raw = llm.chat_json(system=system, user=json.dumps(context_data, ensure_ascii=False), max_tokens=chat_max_tokens)
 
-        # 新フォーマット: 知覚推論（perceived_hazards, estimated_unobserved）+ 安全判断（safety_assessment）
-        perceived_hazards = raw.get("perceived_hazards", [])
-        estimated_unobserved = raw.get("estimated_unobserved", [])
-        safety_assessment_dict = raw.get("safety_assessment", raw)  # フォールバック: 旧フォーマット対応
-
-        # ir を LLM 推論結果で更新（vision_description は保持）
-        original_vision_description = ir.vision_description
-        ir.hazards = [Hazard(**h) for h in perceived_hazards]
-
-        # estimated_unobserved のデフォルト値補完（description など不足フィールド）
-        completed_unobserved = []
-        for u in estimated_unobserved:
-            if "description" not in u:
-                u["description"] = f"Unobserved region: {u.get('region_id', 'unknown')}"
-            completed_unobserved.append(UnobservedRegion(**u))
-        ir.unobserved = completed_unobserved
-
-        # vision_description を元の値で復元（LLM 更新後も保持）
-        ir.vision_description = original_vision_description
-
-        # SafetyAssessment を検証・生成
-        assessment = SafetyAssessment.model_validate(safety_assessment_dict)
+        # SafetyAssessment を直接取得
+        assessment = SafetyAssessment.model_validate(raw)
 
     except Exception as e:
-        logger.error("LLM assess+perceiver failed, using heuristic fallback", exc_info=True)
-        assessment = _heuristic_assessment(world)
+        logger.error("LLM assessment failed, using heuristic fallback", exc_info=True)
+        assessment = _heuristic_assessment()
         return {
             "assessment": assessment,
-            "ir": ir,
             "world": world.model_copy(update={"last_assessment": assessment}),
-            "errors": [f"LLM assess+perceiver fallback: {e}"],
+            "errors": [f"LLM assessment fallback: {e}"],
             "messages": [{"role": "assistant", "content": f"[assess] LLM failed -> heuristic. err={e}"}],
         }
 
     new_world = world.model_copy(update={"last_assessment": assessment})
     return {
         "assessment": assessment,
-        "ir": ir,
         "world": new_world,
-        "messages": [{"role": "assistant", "content": f"[assess] {assessment.action_type} risk={assessment.risk_level} priority={assessment.priority:.2f} (perceiver+llm)"}],
+        "messages": [{"role": "assistant", "content": f"[assess] {assessment.action_type} risk={assessment.risk_level} priority={assessment.priority:.2f} (llm)"}],
     }
 
 
-def _heuristic_assessment(world: WorldModel) -> SafetyAssessment:
+def _heuristic_assessment() -> SafetyAssessment:
     """LLM 不使用時のフォールバック。"""
-    if world.outstanding_unobserved:
-        top = world.outstanding_unobserved[0]
-        return SafetyAssessment(
-            risk_level="high" if top.risk >= 0.7 else "medium",
-            safety_status=f"未確認領域({top.region_id})にリスクあり",
-            detected_hazards=[top.description],
-            action_type="focus_region",
-            target_region=top.region_id,
-            reason=f"高リスク未確認領域({top.region_id})を優先観測",
-            priority=min(1.0, top.risk),
-        )
-    if world.fused_hazards and any(h.confidence < 0.7 for h in world.fused_hazards):
-        low = [h for h in world.fused_hazards if h.confidence < 0.7]
-        return SafetyAssessment(
-            risk_level="medium",
-            safety_status=f"低信度ハザード {len(low)} 件を確認中",
-            detected_hazards=[h.hazard_type for h in low],
-            action_type="increase_safety",
-            reason=f"ハザード信度が低い: {len(low)} 件",
-            priority=0.8,
-        )
     return SafetyAssessment(
         risk_level="low",
-        safety_status="環境は安全",
+        safety_status="継続観測中（LLM なし）",
         detected_hazards=[],
         action_type="continue_observation",
-        reason="環境は安全と判断",
+        reason="LLM 未設定のためヒューリスティックで継続観測",
         priority=0.0,
     )
 
@@ -717,25 +577,27 @@ def _heuristic_assessment(world: WorldModel) -> SafetyAssessment:
 def emit_output(state: AgentState) -> Dict[str, Any]:
     """
     フレームごとに latest_output を更新し、統合出力を生成。
+    新しいフラット構造で出力（ir をフラット展開）。
     """
     obs = state.get("observation")
     ir = state.get("ir")
-    world = state.get("world")
     assessment = state.get("assessment")
 
+    # ir からエラーと不要フィールドを除去
+    ir_dump = ir.model_dump(exclude_none=True) if ir else {}
+    modality_errors = ir_dump.pop("modality_errors", [])
+
+    errors = list(state.get("errors", [])) + modality_errors
+
     output = {
-        "obs_id": obs.obs_id if obs else None,
+        "frame_id": obs.obs_id if obs else None,
+        "timestamp": None,  # save_analysis_results() で付与
         "video_timestamp": obs.video_timestamp if obs else None,
-        "ir": ir.model_dump() if ir else None,
-        "world": {
-            "fused_hazards": [h.model_dump() for h in (world.fused_hazards if world else [])],
-            "outstanding_unobserved": [
-                r.model_dump() for r in (world.outstanding_unobserved if world else [])
-            ],
-        },
-        "assessment": assessment.model_dump() if assessment else None,
-        "frame_errors": list(state.get("errors", [])),
-        "step": state.get("step", 0),
+        "vision_summary": ir_dump.get("vision_description"),
+        "objects": ir_dump.get("objects", []),
+        "audio": ir_dump.get("audio", []),
+        "assessment": assessment.model_dump(exclude_none=True) if assessment else None,
+        "errors": errors,
     }
 
     return {
@@ -743,7 +605,7 @@ def emit_output(state: AgentState) -> Dict[str, Any]:
         "messages": [
             {
                 "role": "assistant",
-                "content": f"[emit] step={state.get('step', 0)} obs={obs.obs_id if obs else 'none'}",
+                "content": f"[emit] frame={obs.obs_id if obs else 'none'}",
             }
         ],
     }
@@ -778,7 +640,6 @@ def build_agent():
     builder.add_node("audio_node", audio_node)
     builder.add_node("join_modalities", join_modalities)  # ラッチ付き fan-in バリア
     builder.add_node("fuse_modalities", fuse_modalities)
-    builder.add_node("update_world_model", update_world_model)
     builder.add_node("determine_next_action_llm", determine_next_action_llm)
     builder.add_node("emit_output", emit_output)
     builder.add_node("bump_step", bump_step)
@@ -786,9 +647,8 @@ def build_agent():
     # エッジ設定
     builder.add_edge(START, "ingest_observation")
     # fan-out: yolo/vlm/audio ノードは Command で goto="join_modalities" するため静的エッジは不要
-    builder.add_edge("fuse_modalities", "determine_next_action_llm")  # PerceptionIR 生成 → Perceiver 推論 + 安全判断
-    builder.add_edge("determine_next_action_llm", "update_world_model")  # ir を LLM で更新 → world 融合
-    builder.add_edge("update_world_model", "emit_output")
+    builder.add_edge("fuse_modalities", "determine_next_action_llm")  # PerceptionIR 生成 → 安全判断
+    builder.add_edge("determine_next_action_llm", "emit_output")
     builder.add_edge("emit_output", "bump_step")
     builder.add_conditional_edges("bump_step", should_continue)
 

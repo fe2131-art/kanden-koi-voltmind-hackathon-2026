@@ -1,7 +1,6 @@
 """Safety View Agent: LangGraph-based agent for safety assessment."""
 
 from .agent import AgentState, ContextSchema, OpenAICompatLLM, build_agent
-from .perceiver import Perceiver
 from .schema import (
     AudioCue,
     BoundingBox,
@@ -30,7 +29,6 @@ __all__ = [
     "SafetyAssessment",
     "Observation",
     "ObservationProvider",
-    "Perceiver",
     "OpenAICompatLLM",
     "build_agent",
     "AgentState",
