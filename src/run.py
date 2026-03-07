@@ -206,13 +206,11 @@ def get_vlm(config: dict, prompts: dict) -> Optional[VisionAnalyzer]:
         # ベースURL: VLM設定 > 環境変数 > LLM設定
         _vlm_url = vlm_vllm.get("base_url")
         _llm_url = llm_vllm.get("base_url")
-        base_url = os.getenv(
-            "LLM_BASE_URL",
-            _vlm_url if _vlm_url is not None else _llm_url,
-        )
+        base_url = _vlm_url if _vlm_url is not None else _llm_url
+
 
         # モデル: VLM設定 > 環境変数 > LLM設定
-        model = os.getenv("VLM_MODEL") or vlm_vllm.get("model") or llm_vllm.get("model")
+        model = vlm_vllm.get("model") or llm_vllm.get("model")
 
         if not base_url:
             logger.warning("LLM_BASE_URL not set, VLM disabled")

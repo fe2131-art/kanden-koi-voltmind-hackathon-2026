@@ -14,8 +14,10 @@ import threading
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Optional
-
 from openai import OpenAI
+from pathlib import Path
+from typing import Optional
+import base64
 
 from .schema import (
     AudioCue,
@@ -44,9 +46,9 @@ class ModalityResult:
 # ─── VisionAnalyzer（VLM） ─────────────────────────────────────
 
 
-class VisionAnalyzer:
-    """OpenAI SDK を使用した Vision API（gpt-5 + vLLM 対応）。"""
 
+
+class VisionAnalyzer:
     def __init__(
         self,
         model: str,
@@ -55,12 +57,23 @@ class VisionAnalyzer:
         timeout: float = 3600.0,
         default_prompt: Optional[str] = None,
         max_tokens: Optional[int] = None,
-        provider: str = "openai",  # "openai" | "vllm"
+        provider: str = "openai",
     ):
         self.model = model
         self.provider = provider
         self.default_prompt = default_prompt
         self.max_tokens = max_tokens
+
+        # vLLM 用に base_url を正規化
+        if provider == "vllm":
+            base_url = base_url.rstrip("/")
+            if base_url.endswith("/chat/completions"):
+                raise ValueError(
+                    f"base_url にはフル endpoint ではなく /v1 までを渡してください: {base_url}"
+                )
+            if not base_url.endswith("/v1"):
+                base_url = f"{base_url}/v1"
+
         self.client = OpenAI(
             api_key=api_key,
             base_url=base_url,
@@ -68,71 +81,61 @@ class VisionAnalyzer:
         )
 
     def analyze(
-        self, image_path: str, prompt: Optional[str] = None, max_tokens: Optional[int] = None
+        self,
+        image_path: str,
+        prompt: Optional[str] = None,
+        max_tokens: Optional[int] = None,
     ) -> str:
-        """画像を分析してテキスト結果を返す（gpt-5 + vLLM 対応）。"""
         if not Path(image_path).exists():
             return f"Image not found: {image_path}"
 
-        # デフォルトプロンプト
         if prompt is None:
             prompt = self.default_prompt or "この画像を詳しく説明してください。"
 
-        # デフォルト max_tokens
         if max_tokens is None:
             max_tokens = self.max_tokens or 2048
 
-        # 画像を base64 エンコード
         with open(image_path, "rb") as f:
-            image_data = base64.standard_b64encode(f.read()).decode("utf-8")
+            image_data = base64.b64encode(f.read()).decode("utf-8")
 
-        # 画像タイプ判定
         ext = Path(image_path).suffix.lower()
         image_type = "image/jpeg" if ext in [".jpg", ".jpeg"] else "image/png"
         image_url = f"data:{image_type};base64,{image_data}"
 
         try:
-            # プロバイダーに応じた API を使い分け
             if self.provider == "vllm":
-                # vLLM: chat.completions.create API（OpenAI 互換）
                 response = self.client.chat.completions.create(
                     model=self.model,
                     messages=[
                         {
                             "role": "user",
                             "content": [
-                                {"type": "image_url", "image_url": {"url": image_url, "detail": "high"}},
                                 {"type": "text", "text": prompt},
+                                {"type": "image_url", "image_url": {"url": image_url}},
                             ],
                         }
                     ],
                     max_tokens=max_tokens,
                 )
-                return response.choices[0].message.content or ""
             else:
-                # OpenAI (gpt-5): chat.completions.create API（max_completion_tokens 対応）
                 response = self.client.chat.completions.create(
                     model=self.model,
                     messages=[
                         {
                             "role": "user",
                             "content": [
-                                {"type": "image_url", "image_url": {"url": image_url, "detail": "high"}},
                                 {"type": "text", "text": prompt},
+                                {"type": "image_url", "image_url": {"url": image_url, "detail": "high"}},
                             ],
                         }
                     ],
-                    max_completion_tokens=max_tokens,  # gpt-5-nano は max_completion_tokens を使用
+                    max_completion_tokens=max_tokens,
                 )
-                return response.choices[0].message.content or ""
+
+            return response.choices[0].message.content or ""
+
         except Exception as e:
-            import traceback
-            error_msg = f"Vision API error: {str(e)}"
-            logger.error(
-                f"VisionAnalyzer Error | Model: {self.model} | Provider: {self.provider} | Error: {str(e)[:500]}",
-                exc_info=True,
-            )
-            return error_msg
+            return f"Vision API error: {e}"
 
 
 # ─── YOLODetector ──────────────────────────────────────────────
