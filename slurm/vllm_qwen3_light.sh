@@ -54,7 +54,7 @@ mkdir -p "$UV_CACHE_DIR" "$HF_HOME"
 # 依存を揃える
 uv sync --frozen || uv sync
 
-MODEL="Qwen/Qwen3-4B-Instruct-2507"
+MODEL="Qwen/Qwen3.5-9B"
 PORT=8000
 
 echo
