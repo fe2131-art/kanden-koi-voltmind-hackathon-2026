@@ -16,7 +16,7 @@ llm:
   # vLLM settings (local server)
   vllm:
     base_url: "http://localhost:8000/v1"
-    model: "Qwen/Qwen3-4B-Instruct-2507"
+    model: "Qwen/Qwen3.5-9B"
     api_key: "EMPTY"
     timeout_s: 60.0
 
@@ -27,7 +27,7 @@ llm:
     api_key: null                      # Must be set via OPENAI_API_KEY
     timeout_s: 60.0
 
-# VLM 設定（Vision Language Model / 画像分析専用）
+# VLM 設定（Vision Language Model / 音声分析専用）
 # model: null の場合 → llm.openai.model を自動参照（共有設定）
 vlm:
   provider: "vllm"     # "openai" | "vllm"（ローカル vLLM サーバー）
@@ -36,8 +36,8 @@ vlm:
     model: "gpt-5-nano"    # null → llm.openai.model を流用
     timeout_s: 60.0
   vllm:
-    base_url: "http://localhost:8001/v1"  # vLLM サーバーのベースURL（provider: "vllm" の場合のみ使用）
-    model: "Qwen/Qwen3-VL-4B-Instruct"    # null → llm.vllm.model を流用
+    base_url: null  # null → llm.vllm.base_url を流用（Qwen3.5-9B-Instruct と共有）
+    model: null     # null → llm.vllm.model を流用（将来的に音声モデルに置き換え予定）
     timeout_s: 60.0
 
 # Data input mode
