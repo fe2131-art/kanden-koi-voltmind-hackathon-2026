@@ -371,8 +371,10 @@ def extract_video_frame_from_path(video_path: Path, frame_idx: int = 0) -> np.nd
 def _read_frame(path: str, frame_idx: int) -> np.ndarray | None:
     cap = cv2.VideoCapture(path)
     total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-    if total > 0:
-        cap.set(cv2.CAP_PROP_POS_FRAMES, min(frame_idx, total - 1))
+    # total==0 はコンテナにフレーム数メタデータがない場合（H.264/H.265 で頻発）。
+    # その場合でも cap.set() を呼ぶことでシークを試みる。
+    seek_to = min(frame_idx, total - 1) if total > 0 else frame_idx
+    cap.set(cv2.CAP_PROP_POS_FRAMES, seek_to)
     ok, frame = cap.read()
     cap.release()
     if not ok:
@@ -550,9 +552,12 @@ def build_ui() -> gr.Blocks:
                 with gr.Row():
                     ses_prev_btn = gr.Button("◀ 前へ", scale=1)
                     ses_frame_idx = gr.Slider(
-                        minimum=0, maximum=30, step=1, value=0, label="フレーム番号", scale=5
+                        minimum=0, maximum=300, step=1, value=0, label="フレーム番号", scale=5
                     )
                     ses_next_btn = gr.Button("次へ ▶", scale=1)
+                ses_frame_info = gr.Textbox(
+                    label="フレーム情報 (可視光 / 赤外線)", value="", interactive=False
+                )
 
                 with gr.Row():
                     ses_vis_img = gr.Image(label="可視光 (RGB)", type="numpy", scale=1)
@@ -562,6 +567,8 @@ def build_ui() -> gr.Blocks:
                     ses_sensor = gr.Markdown(label="環境センサデータ", value="(セッションを選択してください)")
 
                 ses_load_btn = gr.Button("セッション一覧を読み込む", variant="primary")
+                # 動画の最大フレーム数をセッション間で保持するステート
+                ses_frame_max = gr.State(value=300)
 
                 # --- コールバック ---
                 def on_ses_split_change(split: str):
@@ -571,10 +578,16 @@ def build_ui() -> gr.Blocks:
                         return gr.update(choices=sessions, value=sessions[0])
                     return gr.update(choices=[], value=None)
 
+                def _video_frame_count(path: Path) -> int:
+                    cap = cv2.VideoCapture(str(path))
+                    total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+                    cap.release()
+                    return total
+
                 def on_session_select(split: str, session: str | None, frame_idx: int):
                     blank = np.zeros((360, 640, 3), dtype=np.uint8)
                     if not session:
-                        return blank, blank, "(セッションを選択してください)"
+                        return blank, blank, "(セッションを選択してください)", "", gr.update(maximum=300), 300
 
                     idx = _get_session_index(split)
                     # 一括抽出（初回のみ tar を 1 回スキャン、以降はキャッシュから即時返却）
@@ -583,6 +596,14 @@ def build_ui() -> gr.Blocks:
                     vis_frame: np.ndarray | None = None
                     ir_frame: np.ndarray | None = None
                     sensor_md = "(センサデータなし)"
+
+                    # フレーム数を取得して対応ズレを検出
+                    vis_total = _video_frame_count(cached_files["visible"]) if "visible" in cached_files else 0
+                    ir_total = _video_frame_count(cached_files["infrared"]) if "infrared" in cached_files else 0
+                    max_frames = max(vis_total, ir_total, 1) - 1
+                    frame_info = f"可視光: {vis_total} フレーム / 赤外線: {ir_total} フレーム"
+                    if vis_total > 0 and ir_total > 0 and vis_total != ir_total:
+                        frame_info += f"  ⚠️ フレーム数が異なります（差: {abs(vis_total - ir_total)} フレーム）"
 
                     # 可視光 mp4
                     if "visible" in cached_files:
@@ -614,7 +635,12 @@ def build_ui() -> gr.Blocks:
                         vis_frame if vis_frame is not None else blank,
                         ir_frame if ir_frame is not None else blank,
                         sensor_md,
+                        frame_info,
+                        gr.update(maximum=max_frames),
+                        max_frames,
                     )
+
+                _ses_outputs = [ses_vis_img, ses_ir_img, ses_sensor, ses_frame_info, ses_frame_idx, ses_frame_max]
 
                 ses_load_btn.click(
                     on_ses_split_change,
@@ -623,17 +649,17 @@ def build_ui() -> gr.Blocks:
                 ).then(
                     on_session_select,
                     inputs=[ses_split, ses_session, ses_frame_idx],
-                    outputs=[ses_vis_img, ses_ir_img, ses_sensor],
+                    outputs=_ses_outputs,
                 )
                 ses_session.change(
                     on_session_select,
                     inputs=[ses_split, ses_session, ses_frame_idx],
-                    outputs=[ses_vis_img, ses_ir_img, ses_sensor],
+                    outputs=_ses_outputs,
                 )
                 ses_frame_idx.change(
                     on_session_select,
                     inputs=[ses_split, ses_session, ses_frame_idx],
-                    outputs=[ses_vis_img, ses_ir_img, ses_sensor],
+                    outputs=_ses_outputs,
                 )
                 ses_prev_btn.click(
                     lambda idx: max(0, idx - 1),
@@ -642,16 +668,16 @@ def build_ui() -> gr.Blocks:
                 ).then(
                     on_session_select,
                     inputs=[ses_split, ses_session, ses_frame_idx],
-                    outputs=[ses_vis_img, ses_ir_img, ses_sensor],
+                    outputs=_ses_outputs,
                 )
                 ses_next_btn.click(
-                    lambda idx: idx + 1,
-                    inputs=ses_frame_idx,
+                    lambda idx, fmax: min(idx + 1, fmax),
+                    inputs=[ses_frame_idx, ses_frame_max],
                     outputs=ses_frame_idx,
                 ).then(
                     on_session_select,
                     inputs=[ses_split, ses_session, ses_frame_idx],
-                    outputs=[ses_vis_img, ses_ir_img, ses_sensor],
+                    outputs=_ses_outputs,
                 )
 
             # ================================================================
@@ -747,6 +773,6 @@ def main() -> None:
 
 if __name__ == "__main__":
     '''
-    uv run python src/vis/viewer.py --port 7860
+    uv run python src/vis/viewer.py --port 7860 --share
     '''    
     main()
