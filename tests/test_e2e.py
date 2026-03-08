@@ -59,7 +59,7 @@ def test_e2e_agent_no_llm():
             "vision_analysis": {
                 "default_prompt": "テスト用プロンプト（LLM 未使用のため内容は問わない）"
             },
-            "next_view_proposal": {
+            "safety_assessment": {
                 "system": "テスト用：知覚推論+安全判断統合プロンプト（LLMなしで実行）",
             },
         },
@@ -82,7 +82,7 @@ def test_e2e_agent_no_llm():
 
     # Verify assessment is not None
     assert out["assessment"] is not None
-    assert out["assessment"].action_type in ["focus_region", "increase_safety", "continue_observation"]
+    assert out["assessment"].action_type in ["emergency_stop", "inspect_region", "mitigate", "monitor"]
     assert out["assessment"].risk_level in ["high", "medium", "low"]
 
     # Verify world model is updated

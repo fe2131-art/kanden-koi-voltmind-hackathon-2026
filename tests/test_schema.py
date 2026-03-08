@@ -1,16 +1,15 @@
 """Test schema validation."""
 
 from src.safety_agent.schema import (
+    AssessmentEvidence,
     AudioCue,
     BoundingBox,
     CameraPose,
     DetectedObject,
-    Hazard,
-    SafetyAssessment,
     Observation,
     ObservationProvider,
     PerceptionIR,
-    UnobservedRegion,
+    SafetyAssessment,
     VisionAnalysisResult,
     VisionBlindSpot,
     VisionOverallAssessment,
@@ -41,22 +40,6 @@ def test_audio_cue():
     assert cue.direction == "right"
 
 
-def test_unobserved_region():
-    region = UnobservedRegion(
-        region_id="blind_left", description="Left blind spot", risk=0.4
-    )
-    assert region.region_id == "blind_left"
-    assert region.risk == 0.4
-
-
-def test_hazard():
-    hazard = Hazard(
-        hazard_type="human_present", confidence=0.6, related_objects=["person"]
-    )
-    assert hazard.hazard_type == "human_present"
-    assert len(hazard.related_objects) == 1
-
-
 def test_camera_pose():
     pose = CameraPose(pan_deg=45.0, tilt_deg=10.0, zoom=1.5)
     assert pose.pan_deg == 45.0
@@ -84,14 +67,37 @@ def test_safety_assessment():
         risk_level="high",
         safety_status="フォークリフトが人に接近中",
         detected_hazards=["forklift_proximity"],
-        action_type="focus_region",
+        action_type="inspect_region",
         target_region="zone_A",
         reason="高リスク未確認領域を優先観測",
         priority=0.85,
+        temporal_status="worsening",
+        evidence=AssessmentEvidence(
+            vision=["フォークリフトが接近中"],
+            yolo=["forklift confidence=0.92"],
+        ),
     )
     assert assessment.risk_level == "high"
-    assert assessment.action_type == "focus_region"
+    assert assessment.action_type == "inspect_region"
     assert assessment.priority == 0.85
+    assert assessment.temporal_status == "worsening"
+    assert assessment.evidence is not None
+    assert len(assessment.evidence.vision) == 1
+    assert assessment.evidence.audio == []
+
+
+def test_safety_assessment_defaults():
+    """temporal_status と evidence のデフォルト値を確認。"""
+    assessment = SafetyAssessment(
+        risk_level="low",
+        safety_status="異常なし",
+        action_type="monitor",
+        reason="継続監視",
+        priority=0.1,
+    )
+    assert assessment.temporal_status == "unknown"
+    assert assessment.evidence is None
+    assert assessment.detected_hazards == []
 
 
 def test_observation():
@@ -157,7 +163,6 @@ def test_perception_ir_with_vision_analysis():
     assert ir.vision_analysis is not None
     assert ir.vision_analysis.summary == "テスト分析結果"
 
-    # vision_description は削除されているはず
     assert not hasattr(ir, "vision_description")
 
 

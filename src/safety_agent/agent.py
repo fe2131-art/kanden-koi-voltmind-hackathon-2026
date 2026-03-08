@@ -43,13 +43,35 @@ def _get_json_schema_for_vllm() -> Dict[str, Any]:
             },
             "action_type": {
                 "type": "string",
-                "enum": ["focus_region", "increase_safety", "continue_observation"],
+                "enum": ["emergency_stop", "inspect_region", "mitigate", "monitor"],
             },
             "target_region": {"type": ["string", "null"]},
             "reason": {"type": "string"},
             "priority": {"type": "number", "minimum": 0, "maximum": 1},
+            "temporal_status": {
+                "type": "string",
+                "enum": ["new", "persistent", "worsening", "improving", "resolved", "unknown"],
+            },
+            "evidence": {
+                "type": ["object", "null"],  # Optional: null の場合あり
+                "properties": {
+                    "vision":    {"type": "array", "items": {"type": "string"}},
+                    "yolo":      {"type": "array", "items": {"type": "string"}},
+                    "audio":     {"type": "array", "items": {"type": "string"}},
+                    "previous":  {"type": "array", "items": {"type": "string"}},
+                },
+                "required": ["vision", "yolo", "audio", "previous"],
+            },
         },
-        "required": ["risk_level", "safety_status", "action_type", "reason", "priority"],
+        "required": [
+            "risk_level",
+            "safety_status",
+            "detected_hazards",
+            "action_type",
+            "reason",
+            "priority",
+            "temporal_status",
+        ],
     }
 
 
@@ -537,8 +559,8 @@ def determine_next_action_llm(
         ),
     }
 
-    # prompt.yaml の next_view_proposal セクションから取得
-    next_action_cfg = runtime.context["prompts"].get("next_view_proposal", {})
+    # prompt.yaml の safety_assessment セクションから取得
+    next_action_cfg = runtime.context["prompts"].get("safety_assessment", {})
     system = next_action_cfg.get("system", "").strip()
 
     try:
@@ -572,9 +594,11 @@ def _heuristic_assessment() -> SafetyAssessment:
         risk_level="low",
         safety_status="継続観測中（LLM なし）",
         detected_hazards=[],
-        action_type="continue_observation",
-        reason="LLM 未設定のためヒューリスティックで継続観測",
+        action_type="monitor",
+        reason="LLM 未設定のためヒューリスティックで継続監視",
         priority=0.0,
+        temporal_status="unknown",
+        evidence=None,
     )
 
 
