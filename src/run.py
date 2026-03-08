@@ -429,7 +429,7 @@ def save_analysis_results(
     output_dir: str,
     analysis_results: dict,
     video_timestamps: Optional[dict[str, float]] = None,
-    agent_output: Optional[dict] = None,
+    _agent_output: Optional[dict] = None,
 ) -> None:
     """分析結果を出力ディレクトリに保存（追記モードで履歴を保持）。
 
@@ -437,7 +437,7 @@ def save_analysis_results(
         output_dir: 出力ディレクトリパス
         analysis_results: 結果リストを含む 'frames' キーの辞書
         video_timestamps: obs_id をビデオタイムスタンプ（秒単位）にマッピングする辞書（オプション）
-        agent_output: 使用されていません（互換性のため保持）
+        _agent_output: 使用されていません（互換性のため保持）
     """
     os.makedirs(output_dir, exist_ok=True)
 
@@ -783,7 +783,7 @@ def main():
     }
 
     # Run and log agent
-    out, all_frame_outputs = run_and_log_agent(agent, initial_state, context)
+    _, all_frame_outputs = run_and_log_agent(agent, initial_state, context)
 
     # Save all frame results from agent's emit_output node
     save_analysis_results(

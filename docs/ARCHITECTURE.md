@@ -79,7 +79,7 @@ Observation Input (image + audio)
 モダリティ結果からハザードと未確認領域を推定：
 
 ```python
-Perceiver.estimate(obs, objects, audio_cues, vision_description) 
+Perceiver.estimate(obs, objects, audio_cues, vision_description)
 → PerceptionIR (objects, hazards, unobserved, audio, vision_description)
 ```
 
@@ -230,7 +230,7 @@ vision_analysis:
   default_prompt: |
     この画像の安全性を分析してください...
 
-next_view_proposal:
+safety_assessment:
   system: |
     あなたは安全支援エージェントです...
     （知覚推論 + 安全判断を統合的に実行）
@@ -307,7 +307,7 @@ YOLODetector で Lock を使用：
 class YOLODetector:
     def __init__(self):
         self._lock = threading.Lock()
-    
+
     def detect(self, image_path):
         with self._lock:
             return self.model.predict(...)
