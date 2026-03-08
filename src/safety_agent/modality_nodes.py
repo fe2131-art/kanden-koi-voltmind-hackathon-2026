@@ -18,7 +18,6 @@ from openai import OpenAI
 from pathlib import Path
 from typing import Optional
 import base64
-import librosa
 
 from .schema import (
     AudioCue,
