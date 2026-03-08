@@ -18,6 +18,7 @@ from openai import OpenAI
 from pathlib import Path
 from typing import Optional
 import base64
+import librosa
 
 from .schema import (
     AudioCue,
@@ -229,10 +230,41 @@ class YOLODetector:
 
 
 class AudioAnalyzer:
-    """音声テキストから AudioCue リストを抽出するヒューリスティック。"""
+    
+    def __init__(
+        self,
+        model: str,
+        base_url: str = "https://api.openai.com/v1",
+        api_key: str = "EMPTY",
+        timeout: float = 3600.0,
+        default_prompt: Optional[str] = None,
+        max_tokens: Optional[int] = None,
+    ):
+        self.model = model
+        self.default_prompt = default_prompt
+        self.max_tokens = max_tokens
 
-    def analyze(self, audio_text: Optional[str]) -> list[AudioCue]:
-        """音声テキストを解析して AudioCue リストを返す。"""
+        # LLM 用に base_url を正規化
+        base_url = base_url.rstrip("/")
+        if base_url.endswith("/chat/completions"):
+            raise ValueError(
+                f"base_url にはフル endpoint ではなく /v1 までを渡してください: {base_url}"
+            )
+        if not base_url.endswith("/v1"):
+            base_url = f"{base_url}/v1"
+
+        self.client = OpenAI(
+            api_key=api_key,
+            base_url=base_url,
+            timeout=timeout,
+        )
+
+    def encode_audio(self, audio_path):
+        with open(audio_path, "rb") as audio_file:
+            return base64.b64encode(audio_file.read()).decode('utf-8')
+
+    def analyze_heuristic(self, audio_text: Optional[str]) -> list[AudioCue]:
+        """音声テキストから AudioCue リストを抽出するヒューリスティック。"""
         if not audio_text:
             return []
 
@@ -258,4 +290,44 @@ class AudioAnalyzer:
                     evidence=audio_text,
                 )
             )
+        return cues
+
+    def analyze(
+        self,
+        audio_text: str,
+        prompt: Optional[str] = None,
+        max_tokens: Optional[int] = None,
+    ) -> str:
+        if not Path(audio_text).exists():
+            return self.analyze_heuristic(audio_text=None)
+
+        cues: list[AudioCue] = []
+        if prompt is None:
+            prompt = "この音声データで何が起きているか教えてください"
+
+        if max_tokens is None:
+            max_tokens = self.max_tokens or 2048
+
+        audio_base64 = self.encode_audio("data/audio/crash.wav")
+        response = self.client.chat.completions.create(
+            model="Qwen/Qwen2-Audio-7B",
+            messages=[
+                # {"role": "system",
+                #  "content": "Your task is what happens in the audio."},
+                {"role": "user",
+                 "content": [{"type": "text", "text": "What happens in the audio do you think?"},
+                             {"type": "input_audio", "input_audio": {"data": audio_base64, "format": "wav"}}]}
+                ],
+            max_tokens=max_tokens,
+        )
+
+        cues.append(
+            AudioCue(
+                cue=response.choices[0].message.content,
+                confidence=0.5,
+                direction="None",
+                evidence=audio_text,
+            )
+        )
+
         return cues

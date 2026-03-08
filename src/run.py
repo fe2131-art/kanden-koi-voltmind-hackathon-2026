@@ -582,7 +582,7 @@ def prepare_observations_inspesafe(
         Observation(
             obs_id=f"img_{i}",
             image_path=str(fp.resolve()),
-            audio_text=None,
+            audio_text="data/audio/audio.wav",
             camera_pose=CameraPose(pan_deg=0, tilt_deg=0, zoom=1),
         )
         for i, fp in enumerate(frame_paths)
@@ -652,7 +652,7 @@ def prepare_observations(
             Observation(
                 obs_id=f"img_{i}",
                 image_path=str(frame_path.absolute()),
-                audio_text=None,
+                audio_text="data/audio/audio.wav",
                 camera_pose=CameraPose(pan_deg=0, tilt_deg=0, zoom=1),
             )
             for i, frame_path in enumerate(frame_files)
@@ -774,7 +774,16 @@ def main():
     # Initialize modality analyzers for fan-out nodes
     audio_analyzer = None
     if agent_cfg.get("enable_audio", False):
-        audio_analyzer = AudioAnalyzer()
+        vlm_config = config.get("vlm", {})
+        vlm_vllm = vlm_config.get("vllm", {})
+
+        # ベースURL: VLM設定 > 環境変数 > LLM設定
+        _vlm_url = vlm_vllm.get("base_url")
+        base_url = _vlm_url
+
+        # モデル: VLM設定 > 環境変数 > LLM設定
+        model = vlm_vllm.get("model")
+        audio_analyzer = AudioAnalyzer(model=model, base_url=base_url, timeout=600, provider="llm")
 
     yolo_detector = None
     if agent_cfg.get("enable_yolo", False):

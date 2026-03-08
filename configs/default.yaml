@@ -4,7 +4,7 @@
 agent:
   max_steps: 1    # デフォルト：1フレーム実行
   enable_yolo: false
-  enable_audio: false
+  enable_audio: true
   max_outstanding_regions: 6        # 次に観測すべき候補領域の検討数上限
   context_history_size: 1           # LLM に渡す前回結果の数（0=なし, 1=前回のみ）
 

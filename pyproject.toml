@@ -23,8 +23,8 @@ dependencies = [
     "huggingface_hub>=0.34.0,<1.0",
     "torch==2.10.0",
     "vllm>=0.11.0",
-    "qwen-vl-utils>=0.0.14"
-
+    "qwen-vl-utils>=0.0.14",
+    "librosa"
 ]
 
 [tool.uv.sources]
