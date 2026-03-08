@@ -63,8 +63,6 @@ def test_perception_ir():
         obs_id="t0",
         camera_pose=CameraPose(),
         objects=[],
-        hazards=[],
-        unobserved=[],
         audio=[],
     )
     assert ir.obs_id == "t0"
@@ -73,8 +71,6 @@ def test_perception_ir():
 
 def test_world_model():
     world = WorldModel()
-    assert len(world.fused_hazards) == 0
-    assert len(world.outstanding_unobserved) == 0
     assert world.last_assessment is None
 
 

@@ -15,9 +15,6 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Optional
 from openai import OpenAI
-from pathlib import Path
-from typing import Optional
-import base64
 
 from .schema import (
     AudioCue,

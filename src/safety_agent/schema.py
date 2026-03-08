@@ -45,9 +45,6 @@ class UnobservedRegion(BaseModel):
     suggested_pan_deg: Optional[float] = Field(
         default=None, exclude=True
     )  # システム内部用（JSON出力から除外）
-    suggested_tilt_deg: Optional[float] = Field(
-        default=None, exclude=True
-    )  # システム内部用（JSON出力から除外）
 
 
 class Hazard(BaseModel):
@@ -55,30 +52,24 @@ class Hazard(BaseModel):
     confidence: float = Field(ge=0, le=1)
     related_objects: List[str] = Field(default_factory=list)
     evidence: Optional[str] = None
-    region_hint: Optional[str] = None  # region_id etc.
 
 
 class CameraPose(BaseModel):
-    pan_deg: float = 0.0
-    tilt_deg: float = 0.0
-    zoom: float = 1.0
+    pan_deg: Optional[float] = None
+    tilt_deg: Optional[float] = None
+    zoom: Optional[float] = None
 
 
 class PerceptionIR(BaseModel):
     obs_id: str
-    camera_pose: CameraPose
+    camera_pose: Optional[CameraPose] = None
     objects: List[DetectedObject] = Field(default_factory=list)
-    hazards: List[Hazard] = Field(default_factory=list)
-    unobserved: List[UnobservedRegion] = Field(default_factory=list)
     audio: List[AudioCue] = Field(default_factory=list)
     vision_description: Optional[str] = None  # VLM による画像分析結果
     modality_errors: List[str] = Field(default_factory=list)  # モダリティ処理エラー（vision/audio など）
 
 
 class WorldModel(BaseModel):
-    # Minimal world model: fused hazards + outstanding unobserved regions
-    fused_hazards: List[Hazard] = Field(default_factory=list)
-    outstanding_unobserved: List[UnobservedRegion] = Field(default_factory=list)
     last_assessment: Optional["SafetyAssessment"] = None
 
 
@@ -109,7 +100,7 @@ class Observation:
     obs_id: str
     image_path: Optional[str] = None
     audio_text: Optional[str] = None
-    camera_pose: CameraPose = field(default_factory=CameraPose)
+    camera_pose: Optional[CameraPose] = None
     video_timestamp: Optional[float] = None  # 動画内の秒数
 
 
