@@ -363,30 +363,31 @@ def yolo_node(state: AgentState, runtime: Runtime[ContextSchema]) -> Command:
 
 
 def vlm_node(state: AgentState, runtime: Runtime[ContextSchema]) -> Command:
-    """VLM ノード：画像テキスト分析を実行。"""
+    """VLM ノード：2枚画像を比較分析し構造化 JSON を返す。"""
     obs = state.get("observation")
     analyzer = runtime.context.get("vision_analyzer")
-    description = None
+    vision_analysis = None
     error = None
 
     if obs and obs.image_path and analyzer:
         try:
-            description = analyzer.analyze(obs.image_path)
-            # VisionAnalyzer がエラー文字列を返す場合（"Vision API error ..." など）
-            if description and description.startswith("Vision API error"):
-                error = description
-                # エラー時はデフォルトメッセージを設定（JSON 入力が文字列になるよう）
-                description = "Vision API is temporarily unavailable. Using heuristic analysis."
+            vision_analysis = analyzer.analyze(
+                image_path=obs.image_path,
+                prev_image_path=obs.prev_image_path,
+            )
         except Exception as e:
             error = f"vlm: {e}"
-            description = "Vision API request failed. Using heuristic analysis."
 
-    result = ModalityResult(modality_name="vlm", description=description, error=error)
+    result = ModalityResult(
+        modality_name="vlm",
+        extra={"vision_analysis": vision_analysis},
+        error=error,
+    )
     return Command(
         update={
             "modality_results": {"vlm": result},
             "received_modalities": ["vlm"],
-            "messages": [{"role": "assistant", "content": f"[vlm] {'ok' if description and not description.startswith('Vision API') else 'error'}"}],
+            "messages": [{"role": "assistant", "content": f"[vlm] {'ok' if vision_analysis else 'none'}"}],
         },
         goto="join_modalities",
     )
@@ -478,7 +479,7 @@ def fuse_modalities(
 
     objects = (yolo.objects if yolo and yolo.objects else [])
     audio_cues = (audio.audio_cues if audio and audio.audio_cues else [])
-    description = (vlm.description if vlm else None)
+    vision_analysis = vlm.extra.get("vision_analysis") if vlm else None
     modality_errors = [r.error for r in results.values() if r.error]
 
     # PerceptionIR を作成
@@ -487,7 +488,7 @@ def fuse_modalities(
         camera_pose=obs.camera_pose,
         objects=objects,
         audio=audio_cues,
-        vision_description=description,
+        vision_analysis=vision_analysis,
         modality_errors=modality_errors,
     )
 
@@ -525,7 +526,10 @@ def determine_next_action_llm(
     context_history_size = runtime.context.get("context_history_size", 1)
 
     context_data = {
-        "vision_description": ir.vision_description,
+        "vision_analysis": (
+            ir.vision_analysis.model_dump(exclude_none=True, by_alias=True)
+            if ir.vision_analysis else None
+        ),
         "detected_objects": [o.model_dump() for o in ir.objects[:10]],
         "audio_cues": [a.model_dump() for a in ir.audio],
         "previous_assessment": (
@@ -593,7 +597,10 @@ def emit_output(state: AgentState) -> Dict[str, Any]:
         "frame_id": obs.obs_id if obs else None,
         "timestamp": None,  # save_analysis_results() で付与
         "video_timestamp": obs.video_timestamp if obs else None,
-        "vision_summary": ir_dump.get("vision_description"),
+        "vision_analysis": (
+            ir.vision_analysis.model_dump(exclude_none=True, by_alias=True)
+            if ir and ir.vision_analysis else None
+        ),
         "objects": ir_dump.get("objects", []),
         "audio": ir_dump.get("audio", []),
         "assessment": assessment.model_dump(exclude_none=True) if assessment else None,

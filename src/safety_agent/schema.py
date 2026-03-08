@@ -10,6 +10,63 @@ from pydantic import BaseModel, ConfigDict, Field
 # =========================
 
 
+# ─── VLM 構造化出力モデル ─────────────────────────────────────
+
+
+class VisionElement(BaseModel):
+    label: str
+    position: str
+    note: Optional[str] = None
+
+
+class VisionRisk(BaseModel):
+    description: str
+    position: str
+    level: Literal["low", "medium", "high", "unknown"]
+
+
+class VisionBlindSpot(BaseModel):
+    description: str
+    position: str
+
+
+class VisionInspectionFinding(BaseModel):
+    description: str
+    position: str
+    severity: Literal["normal", "minor", "moderate", "critical", "unknown"]
+
+
+class VisionTemporalChange(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    target: str
+    change: Literal["moved", "appeared", "disappeared", "shifted", "state_changed", "unknown"]
+    from_state: str = Field(alias="from")  # "from" は Python 予約語のため alias
+    to_state: str = Field(alias="to")
+    note: Optional[str] = None
+
+
+class VisionNavigability(BaseModel):
+    status: Literal["clear", "partial", "blocked", "unknown"]
+    description: str
+
+
+class VisionOverallAssessment(BaseModel):
+    level: Literal["safe", "caution", "dangerous", "unknown"]
+    reason: str
+
+
+class VisionAnalysisResult(BaseModel):
+    summary: str
+    elements: List[VisionElement] = Field(default_factory=list)
+    risks: List[VisionRisk] = Field(default_factory=list)
+    blind_spots: List[VisionBlindSpot] = Field(default_factory=list)
+    inspection_findings: List[VisionInspectionFinding] = Field(default_factory=list)
+    temporal_changes: List[VisionTemporalChange] = Field(default_factory=list)
+    navigability: Optional[VisionNavigability] = None
+    overall_assessment: Optional[VisionOverallAssessment] = None
+
+
 class BoundingBox(BaseModel):
     x1: float
     y1: float
@@ -65,7 +122,7 @@ class PerceptionIR(BaseModel):
     camera_pose: Optional[CameraPose] = None
     objects: List[DetectedObject] = Field(default_factory=list)
     audio: List[AudioCue] = Field(default_factory=list)
-    vision_description: Optional[str] = None  # VLM による画像分析結果
+    vision_analysis: Optional[VisionAnalysisResult] = None  # VLM による構造化画像分析結果
     modality_errors: List[str] = Field(default_factory=list)  # モダリティ処理エラー（vision/audio など）
 
 
@@ -99,6 +156,7 @@ WorldModel.model_rebuild()  # needed because of forward reference to SafetyAsses
 class Observation:
     obs_id: str
     image_path: Optional[str] = None
+    prev_image_path: Optional[str] = None  # 前フレームの画像パス（2枚比較用）
     audio_text: Optional[str] = None
     camera_pose: Optional[CameraPose] = None
     video_timestamp: Optional[float] = None  # 動画内の秒数

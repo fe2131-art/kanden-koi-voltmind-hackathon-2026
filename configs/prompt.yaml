@@ -4,12 +4,74 @@
 vision_analysis:
   # VisionAnalyzer.analyze() が image_path のみで呼ばれたときのデフォルトプロンプト
   default_prompt: |
-    この画像の安全性を分析してください。以下に焦点を当ててください：
-    1. 人物や動く物体の有無
-    2. 潜在的な危険や危機的な状況
-    3. ブラインドスポットや注意が必要な領域
-    4. 総合的な安全性評価（安全/注意/危険）
-    簡潔に（100-200語程度）答えてください。
+    2枚の画像（1枚目=先の時刻、2枚目=1秒後）を、安全性評価・空間把握・工場/施設の点検の観点から比較分析してください。
+
+    次の点を見てください：
+    - 各画像にある人・物・設備・構造物・動きのありそうな要素
+    - 危険の可能性がある場所や状況
+    - 死角、見えにくい場所、注意が必要な領域
+    - 通行・移動のしやすさ
+    - 設備や施設の異常、不自然な状態、破損、漏れ、ずれ、散乱、劣化、異物など
+    - 2枚の間での変化（移動、出現、消失、位置ずれ、状態変化、異常の進行や解消）
+    - 全体として安全かどうか、および点検上の注意点
+
+    ルール：
+    - 画像から確認できることだけを述べてください
+    - 不明なことは推測せず、"unknown" を使ってください
+    - 物体や設備の種類は固定せず、見えた内容をそのまま短く記述してください
+    - 1枚目と2枚目の差分を明確にしてください
+    - 出力は JSON のみで返してください
+    - JSON以外の文字は出力しないでください
+
+    以下の形式で出力してください：
+
+    {
+      "summary": "全体の状況を簡潔に要約",
+      "elements": [
+        {
+          "label": "見えている要素",
+          "position": "位置や方向",
+          "note": "必要なら補足"
+        }
+      ],
+      "risks": [
+        {
+          "description": "危険の内容",
+          "position": "位置や方向",
+          "level": "low|medium|high|unknown"
+        }
+      ],
+      "blind_spots": [
+        {
+          "description": "死角や見えにくい場所",
+          "position": "位置や方向"
+        }
+      ],
+      "inspection_findings": [
+        {
+          "description": "設備・施設の異常または点検上の所見",
+          "position": "位置や方向",
+          "severity": "normal|minor|moderate|critical|unknown"
+        }
+      ],
+      "temporal_changes": [
+        {
+          "target": "変化した対象",
+          "change": "moved|appeared|disappeared|shifted|state_changed|unknown",
+          "from": "1枚目での位置や状態",
+          "to": "2枚目での位置や状態",
+          "note": "必要なら補足"
+        }
+      ],
+      "navigability": {
+        "status": "clear|partial|blocked|unknown",
+        "description": "移動しやすさの説明"
+      },
+      "overall_assessment": {
+        "level": "safe|caution|dangerous|unknown",
+        "reason": "判断理由"
+      }
+    }
 
 next_view_proposal:
   # determine_next_action_llm() のシステムプロンプト

@@ -8,8 +8,10 @@ vision_node / audio_node で並列実行され、fuse_modalities で統合され
 from __future__ import annotations
 
 import base64
+import json
 import logging
 import os
+import re
 import threading
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -20,6 +22,7 @@ from .schema import (
     AudioCue,
     BoundingBox,
     DetectedObject,
+    VisionAnalysisResult,
 )
 
 logger = logging.getLogger(__name__)
@@ -77,14 +80,63 @@ class VisionAnalyzer:
             timeout=timeout,
         )
 
+    @staticmethod
+    def _encode_image(image_path: str) -> tuple[str, str]:
+        """画像をBase64エンコードし、(image_url, media_type) を返す。"""
+        ext = Path(image_path).suffix.lower()
+        media_type = "image/jpeg" if ext in [".jpg", ".jpeg"] else "image/png"
+        with open(image_path, "rb") as f:
+            image_data = base64.b64encode(f.read()).decode("utf-8")
+        return f"data:{media_type};base64,{image_data}", media_type
+
+    @staticmethod
+    def _parse_vision_json(text: str) -> Optional[dict]:
+        """LLM テキスト出力から JSON を抽出・パース。"""
+        # 1) 直接パース
+        try:
+            return json.loads(text)
+        except Exception:
+            pass
+
+        # 2) markdown コードブロック抽出
+        m = re.search(r"```(?:json)?\s*\n(.*?)\n```", text, flags=re.DOTALL)
+        if m:
+            try:
+                return json.loads(m.group(1))
+            except Exception:
+                pass
+
+        # 3) { ... } 抽出（ネスト対応）
+        stripped = text.strip()
+        if stripped.startswith("{"):
+            depth = 0
+            for i, ch in enumerate(stripped):
+                if ch == "{":
+                    depth += 1
+                elif ch == "}":
+                    depth -= 1
+                    if depth == 0:
+                        try:
+                            return json.loads(stripped[: i + 1])
+                        except Exception:
+                            break
+
+        return None
+
     def analyze(
         self,
         image_path: str,
+        prev_image_path: Optional[str] = None,
         prompt: Optional[str] = None,
         max_tokens: Optional[int] = None,
-    ) -> str:
+    ) -> Optional[VisionAnalysisResult]:
+        """2枚の画像（現フレーム + 前フレーム）を VLM で分析し構造化結果を返す。
+
+        prev_image_path が None の場合は同じ画像を2枚送る（最初のフレーム対応）。
+        """
         if not Path(image_path).exists():
-            return f"Image not found: {image_path}"
+            logger.warning(f"Image not found: {image_path}")
+            return None
 
         if prompt is None:
             prompt = self.default_prompt or "この画像を詳しく説明してください。"
@@ -92,47 +144,55 @@ class VisionAnalyzer:
         if max_tokens is None:
             max_tokens = self.max_tokens or 2048
 
-        with open(image_path, "rb") as f:
-            image_data = base64.b64encode(f.read()).decode("utf-8")
+        # 現フレームをエンコード
+        current_url, _ = self._encode_image(image_path)
 
-        ext = Path(image_path).suffix.lower()
-        image_type = "image/jpeg" if ext in [".jpg", ".jpeg"] else "image/png"
-        image_url = f"data:{image_type};base64,{image_data}"
+        # 前フレーム（なければ同じ画像をフォールバック）
+        if prev_image_path and Path(prev_image_path).exists():
+            prev_url, _ = self._encode_image(prev_image_path)
+        else:
+            prev_url = current_url
+
+        # コンテンツブロック: テキスト + 1枚目（先の時刻）+ 2枚目（現在）
+        if self.provider == "vllm":
+            content = [
+                {"type": "text", "text": prompt},
+                {"type": "image_url", "image_url": {"url": prev_url}},
+                {"type": "image_url", "image_url": {"url": current_url}},
+            ]
+        else:
+            content = [
+                {"type": "text", "text": prompt},
+                {"type": "image_url", "image_url": {"url": prev_url, "detail": "high"}},
+                {"type": "image_url", "image_url": {"url": current_url, "detail": "high"}},
+            ]
 
         try:
             if self.provider == "vllm":
                 response = self.client.chat.completions.create(
                     model=self.model,
-                    messages=[
-                        {
-                            "role": "user",
-                            "content": [
-                                {"type": "text", "text": prompt},
-                                {"type": "image_url", "image_url": {"url": image_url}},
-                            ],
-                        }
-                    ],
+                    messages=[{"role": "user", "content": content}],
                     max_tokens=max_tokens,
                 )
             else:
                 response = self.client.chat.completions.create(
                     model=self.model,
-                    messages=[
-                        {
-                            "role": "user",
-                            "content": [
-                                {"type": "text", "text": prompt},
-                                {"type": "image_url", "image_url": {"url": image_url, "detail": "high"}},
-                            ],
-                        }
-                    ],
+                    messages=[{"role": "user", "content": content}],
                     max_completion_tokens=max_tokens,
                 )
 
-            return response.choices[0].message.content or ""
+            raw = response.choices[0].message.content or ""
+            parsed = self._parse_vision_json(raw)
+            if parsed is None:
+                logger.warning("VLM response could not be parsed as JSON; raw text returned")
+                # フォールバック: summary のみで VisionAnalysisResult を構築
+                return VisionAnalysisResult(summary=raw[:500] if raw else "No response")
+
+            return VisionAnalysisResult.model_validate(parsed)
 
         except Exception as e:
-            return f"Vision API error: {e}"
+            logger.error(f"Vision API error: {e}")
+            return None
 
 
 # ─── YOLODetector ──────────────────────────────────────────────
