@@ -98,3 +98,9 @@ reportOptionalSubscript = "information"
 reportArgumentType = "warning"
 reportMissingImports = "warning"
 reportInvalidTypeForm = "warning"
+
+[dependency-groups]
+dev = [
+    "datasets>=4.6.1",
+    "gradio>=6.9.0",
+]
