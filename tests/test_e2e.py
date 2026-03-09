@@ -3,7 +3,6 @@
 from src.safety_agent.agent import AgentState, build_agent
 from src.safety_agent.modality_nodes import AudioAnalyzer
 from src.safety_agent.schema import (
-    CameraPose,
     Observation,
     ObservationProvider,
     WorldModel,
@@ -60,7 +59,7 @@ def test_e2e_agent_no_llm():
             "vision_analysis": {
                 "default_prompt": "テスト用プロンプト（LLM 未使用のため内容は問わない）"
             },
-            "next_view_proposal": {
+            "safety_assessment": {
                 "system": "テスト用：知覚推論+安全判断統合プロンプト（LLMなしで実行）",
             },
         },
@@ -83,7 +82,7 @@ def test_e2e_agent_no_llm():
 
     # Verify assessment is not None
     assert out["assessment"] is not None
-    assert out["assessment"].action_type in ["focus_region", "increase_safety", "continue_observation"]
+    assert out["assessment"].action_type in ["emergency_stop", "inspect_region", "mitigate", "monitor"]
     assert out["assessment"].risk_level in ["high", "medium", "low"]
 
     # Verify world model is updated
@@ -113,7 +112,11 @@ def test_e2e_agent_no_llm():
     assert out["latest_output"]["assessment"] is not None
     assert "objects" in out["latest_output"]
     assert "audio" in out["latest_output"]
-    assert "vision_summary" in out["latest_output"]
+    # vision_analysis は LLM なしでは None（VisionAnalyzer なし）
+    assert "vision_analysis" in out["latest_output"]
+    assert out["latest_output"]["vision_analysis"] is None or isinstance(
+        out["latest_output"]["vision_analysis"], dict
+    )
 
     print("✅ E2E test passed")
     print(f"Assessment: {out['assessment'].action_type}")
