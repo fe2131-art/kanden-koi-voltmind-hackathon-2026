@@ -16,6 +16,10 @@ import tempfile
 from collections import defaultdict
 from pathlib import Path
 
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+
 import cv2
 import gradio as gr
 import numpy as np
@@ -405,6 +409,215 @@ def parse_sensor_txt(txt: str) -> str:
 
 
 # ---------------------------------------------------------------------------
+# LiDAR BEV 描画
+# ---------------------------------------------------------------------------
+
+# PointCloud2 datatype -> numpy dtype のマッピング (sensor_msgs/PointField 定数)
+_PC2_DTYPE: dict[int, type] = {
+    1: np.uint8, 2: np.int8, 3: np.uint16, 4: np.int16,
+    5: np.int32, 6: np.uint32, 7: np.float32, 8: np.float64,
+}
+
+# Livox/一般的な LiDAR トピック候補
+_LIDAR_TOPICS = [
+    "/livox/lidar", "/livox/lidar1", "/points", "/lidar_points",
+    "/velodyne_points", "/scan_3d", "/rslidar_points",
+]
+
+
+def _extract_xyz_from_pc2(msg) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """PointCloud2 メッセージから x, y, z の numpy 配列を返す。"""
+    field_map: dict[str, tuple[int, type]] = {}
+    for f in msg.fields:
+        dt = _PC2_DTYPE.get(int(f.datatype), np.float32)
+        field_map[f.name] = (int(f.offset), dt)
+
+    if "x" not in field_map or "y" not in field_map:
+        return np.array([]), np.array([]), np.array([])
+
+    n_points = int(msg.width) * int(msg.height)
+    step = int(msg.point_step)
+    raw = np.frombuffer(bytes(msg.data), dtype=np.uint8).reshape(n_points, step)
+
+    def _field(name: str) -> np.ndarray:
+        off, dt = field_map[name]
+        size = np.dtype(dt).itemsize
+        return np.frombuffer(raw[:, off : off + size].copy().tobytes(), dtype=dt)
+
+    xs = _field("x")
+    ys = _field("y")
+    zs = _field("z") if "z" in field_map else np.zeros(n_points, dtype=np.float32)
+    return xs, ys, zs
+
+
+# LiDAR フレーム数キャッシュ (bag_path -> total_frames)
+_lidar_frame_count_cache: dict[Path, int] = {}
+
+
+def _render_bev_from_points(
+    xs: np.ndarray,
+    ys: np.ndarray,
+    zs: np.ndarray,
+    max_range: float,
+    img_size: int,
+    frame_idx: int,
+    total_frames: int,
+) -> np.ndarray:
+    """点群から BEV 画像 (RGB numpy) を生成する。cv2 ベースで確実に描画される。
+
+    セル単位の平均高さをカラー、密度を輝度としてエンコードする。
+    """
+    bins = img_size
+    x_edges = np.linspace(-max_range, max_range, bins + 1)
+    y_edges = np.linspace(-max_range, max_range, bins + 1)
+
+    density, _, _ = np.histogram2d(xs, ys, bins=[x_edges, y_edges])
+    z_sum, _, _ = np.histogram2d(xs, ys, bins=[x_edges, y_edges], weights=zs)
+
+    # セルごとの平均高さ
+    with np.errstate(invalid="ignore", divide="ignore"):
+        z_mean = np.where(density > 0, z_sum / density, np.nan)
+
+    # 高さを [0, 255] に正規化
+    valid = np.isfinite(z_mean)
+    if valid.any():
+        z_min, z_max = float(np.nanmin(z_mean)), float(np.nanmax(z_mean))
+        if z_max > z_min:
+            z_norm = np.where(valid, (z_mean - z_min) / (z_max - z_min), 0.0)
+        else:
+            z_norm = np.where(valid, 0.5, 0.0)
+    else:
+        z_norm = np.zeros_like(z_mean)
+
+    # 輝度: log(density) で正規化
+    density_log = np.log1p(density)
+    bright = (density_log / density_log.max()) if density_log.max() > 0 else density_log
+
+    # 高さカラー × 密度輝度
+    # histogram2d の軸は (x_bins, y_bins)。画像座標に変換: 転置 + Y 反転（前方が上）
+    z_uint8 = (z_norm * 255).astype(np.uint8).T[::-1]
+    bright_2d = bright.T[::-1].astype(np.float32)
+
+    colored = cv2.applyColorMap(z_uint8, cv2.COLORMAP_INFERNO)  # H×W×BGR
+    result = np.clip(
+        colored.astype(np.float32) * bright_2d[:, :, np.newaxis], 0, 255
+    ).astype(np.uint8)
+    rgb = cv2.cvtColor(result, cv2.COLOR_BGR2RGB)
+
+    # テキストオーバーレイ
+    valid_pts = int(valid.sum())  # 有効セル数ではなく点数
+    cv2.putText(
+        rgb,
+        f"fr {frame_idx}/{total_frames - 1}  {len(xs):,} pts  z:[{zs.min():.1f},{zs.max():.1f}]m",
+        (6, 18), cv2.FONT_HERSHEY_SIMPLEX, 0.42, (220, 220, 220), 1, cv2.LINE_AA,
+    )
+    cv2.putText(
+        rgb,
+        f"range +/-{max_range:.0f}m",
+        (6, img_size - 6), cv2.FONT_HERSHEY_SIMPLEX, 0.38, (160, 160, 160), 1, cv2.LINE_AA,
+    )
+    _ = valid_pts  # suppress unused warning
+    return rgb
+
+
+def render_lidar_bev(
+    bag_path: Path,
+    frame_idx: int = 0,
+    max_range: float = 30.0,
+    img_size: int = 512,
+) -> tuple[np.ndarray | None, int]:
+    """ROS bag から LiDAR 点群を読み取り、鳥瞰図 (BEV) 画像と総フレーム数を返す。
+
+    フレーム数は初回スキャン後にキャッシュされ、2 回目以降は bag_path を最大
+    frame_idx まで走査するだけで済む。
+
+    Returns:
+        (image_array, total_frames) — 画像取得失敗時は (None, 0)
+    """
+    try:
+        from rosbags.rosbag1 import Reader as Reader1
+        from rosbags.typesys import Stores, get_typestore
+    except ImportError:
+        logger.warning("rosbags がインストールされていません")
+        return None, 0
+
+    cached_total = _lidar_frame_count_cache.get(bag_path)
+
+    try:
+        typestore = get_typestore(Stores.ROS1_NOETIC)
+
+        with Reader1(bag_path) as reader:
+            # LiDAR トピックを探す
+            lidar_conns: list = []
+            for topic, info in reader.topics.items():
+                if topic in _LIDAR_TOPICS or "PointCloud2" in (info.msgtype or ""):
+                    lidar_conns.extend(info.connections)
+
+            if not lidar_conns:
+                all_topics = {t: i.msgtype for t, i in reader.topics.items()}
+                logger.warning("LiDAR トピックなし: %s  利用可能: %s", bag_path.name, all_topics)
+                _lidar_frame_count_cache[bag_path] = 0
+                return None, 0
+
+            target_xs = target_ys = target_zs = np.array([])
+            found = False
+            total = 0
+
+            for connection, _ts, rawdata in reader.messages(connections=lidar_conns):
+                if total == frame_idx and not found:
+                    msg = typestore.deserialize_ros1(rawdata, connection.msgtype)
+                    target_xs, target_ys, target_zs = _extract_xyz_from_pc2(msg)
+                    found = True
+                    if cached_total is not None:
+                        # フレーム数はキャッシュ済み → 以降スキャン不要
+                        break
+                total += 1
+
+            if cached_total is None:
+                _lidar_frame_count_cache[bag_path] = total
+                cached_total = total
+
+    except Exception as exc:
+        logger.warning("LiDAR 読み込みエラー (ROS1): %s", exc)
+        return None, _lidar_frame_count_cache.get(bag_path, 0)
+
+    total_frames = cached_total or 0
+
+    if len(target_xs) == 0:
+        logger.info("LiDAR: frame_idx=%d に点群なし (total=%d)", frame_idx, total_frames)
+        return None, total_frames
+
+    # 有効点フィルタ（NaN・範囲外を除去）
+    mask = (
+        (np.abs(target_xs) < max_range)
+        & (np.abs(target_ys) < max_range)
+        & np.isfinite(target_xs)
+        & np.isfinite(target_ys)
+        & np.isfinite(target_zs)
+    )
+    xs_f, ys_f, zs_f = target_xs[mask], target_ys[mask], target_zs[mask]
+
+    if len(xs_f) == 0:
+        # 範囲外にすべての点がある場合 → max_range を実データに合わせて再計算
+        actual_range = float(np.nanpercentile(np.abs(target_xs[np.isfinite(target_xs)]), 95)) if np.any(np.isfinite(target_xs)) else max_range
+        logger.info("LiDAR: max_range=%.1f 内に点なし、実レンジ推定=%.1f m", max_range, actual_range)
+        mask2 = (
+            (np.abs(target_xs) < actual_range * 1.1)
+            & (np.abs(target_ys) < actual_range * 1.1)
+            & np.isfinite(target_xs)
+            & np.isfinite(target_ys)
+            & np.isfinite(target_zs)
+        )
+        xs_f, ys_f, zs_f = target_xs[mask2], target_ys[mask2], target_zs[mask2]
+        max_range = actual_range * 1.1
+        if len(xs_f) == 0:
+            return None, total_frames
+
+    img = _render_bev_from_points(xs_f, ys_f, zs_f, max_range, img_size, frame_idx, total_frames)
+    return img, total_frames
+
+
+# ---------------------------------------------------------------------------
 # Gradio UI
 # ---------------------------------------------------------------------------
 
@@ -537,10 +750,12 @@ def build_ui() -> gr.Blocks:
             # ================================================================
             # Tab 2: セッション閲覧 (可視光 + 赤外線)
             # ================================================================
-            with gr.Tab("セッション閲覧 (可視光 + 赤外線)"):
+            with gr.Tab("セッション閲覧 (可視光 + 赤外線 + LiDAR)"):
                 gr.Markdown(
-                    "点検セッションごとに **可視光カメラ** と **赤外線カメラ** の映像フレームを並べて閲覧します。\n\n"
+                    "点検セッションごとに **可視光カメラ**・**赤外線カメラ** の映像フレームと"
+                    " **LiDAR 鳥瞰図 (BEV)** を並べて閲覧します。\n\n"
                     "> **注意**: tar からのストリーミング読み出しのため、初回ロードに数秒かかります。"
+                    " LiDAR (.bag) は ROS1 形式で読み込まれます。"
                 )
                 with gr.Row():
                     ses_split = gr.Dropdown(
@@ -556,12 +771,13 @@ def build_ui() -> gr.Blocks:
                     )
                     ses_next_btn = gr.Button("次へ ▶", scale=1)
                 ses_frame_info = gr.Textbox(
-                    label="フレーム情報 (可視光 / 赤外線)", value="", interactive=False
+                    label="フレーム情報 (可視光 / 赤外線 / LiDAR)", value="", interactive=False
                 )
 
                 with gr.Row():
                     ses_vis_img = gr.Image(label="可視光 (RGB)", type="numpy", scale=1)
                     ses_ir_img = gr.Image(label="赤外線 (Infrared)", type="numpy", scale=1)
+                    ses_lidar_img = gr.Image(label="LiDAR 鳥瞰図 (BEV)", type="numpy", scale=1)
 
                 with gr.Row():
                     ses_sensor = gr.Markdown(label="環境センサデータ", value="(セッションを選択してください)")
@@ -586,8 +802,9 @@ def build_ui() -> gr.Blocks:
 
                 def on_session_select(split: str, session: str | None, frame_idx: int):
                     blank = np.zeros((360, 640, 3), dtype=np.uint8)
+                    lidar_blank = np.zeros((512, 512, 3), dtype=np.uint8)
                     if not session:
-                        return blank, blank, "(セッションを選択してください)", "", gr.update(maximum=300), 300
+                        return blank, blank, lidar_blank, "(セッションを選択してください)", "", gr.update(maximum=300), 300
 
                     idx = _get_session_index(split)
                     # 一括抽出（初回のみ tar を 1 回スキャン、以降はキャッシュから即時返却）
@@ -595,6 +812,7 @@ def build_ui() -> gr.Blocks:
 
                     vis_frame: np.ndarray | None = None
                     ir_frame: np.ndarray | None = None
+                    lidar_img: np.ndarray | None = None
                     sensor_md = "(センサデータなし)"
 
                     # フレーム数を取得して対応ズレを検出
@@ -623,6 +841,18 @@ def build_ui() -> gr.Blocks:
                         except Exception as e:
                             logger.warning("赤外線フレーム読み込みエラー: %s", e)
 
+                    # LiDAR bag
+                    if "point_cloud" in cached_files:
+                        try:
+                            lidar_img, lidar_total = render_lidar_bev(
+                                cached_files["point_cloud"], frame_idx
+                            )
+                            frame_info += f" / LiDAR: {lidar_total} フレーム"
+                            if lidar_total > 0:
+                                max_frames = max(max_frames, lidar_total - 1)
+                        except Exception as e:
+                            logger.warning("LiDAR フレーム読み込みエラー: %s", e)
+
                     # 環境センサ txt
                     if "sensor" in cached_files:
                         try:
@@ -634,13 +864,14 @@ def build_ui() -> gr.Blocks:
                     return (
                         vis_frame if vis_frame is not None else blank,
                         ir_frame if ir_frame is not None else blank,
+                        lidar_img if lidar_img is not None else lidar_blank,
                         sensor_md,
                         frame_info,
                         gr.update(maximum=max_frames),
                         max_frames,
                     )
 
-                _ses_outputs = [ses_vis_img, ses_ir_img, ses_sensor, ses_frame_info, ses_frame_idx, ses_frame_max]
+                _ses_outputs = [ses_vis_img, ses_ir_img, ses_lidar_img, ses_sensor, ses_frame_info, ses_frame_idx, ses_frame_max]
 
                 ses_load_btn.click(
                     on_ses_split_change,
