@@ -227,8 +227,8 @@ _MODALITY_EXT: dict[str, str] = {
     "_sensor_": ".txt",
 }
 
-# キャッシュディレクトリ
-_CACHE_ROOT = Path(tempfile.gettempdir()) / "inspec_safe_v1_cache"
+# 永続キャッシュディレクトリ（再起動後も保持される）
+_EXTRACT_ROOT = Path("/home/team-005/data/inspec_extracted")
 
 # セッション モダリティ CSV
 CSV_PATH = Path(__file__).parent.parent.parent / "data" / "session_modalities.csv"
@@ -239,22 +239,58 @@ _CSV_FIELDNAMES = [
 
 
 class SessionIndex:
-    """Arrow ファイルから Other_modalities セッション一覧を構築し、
-    システム tar コマンドで個別ファイルを抽出するクラス。"""
+    """Other_modalities セッション一覧を管理し、ファイルを永続キャッシュに抽出するクラス。
+
+    優先順位:
+      1. 永続キャッシュ (_EXTRACT_ROOT) のファイルをスキャンして高速構築
+      2. キャッシュが空なら Arrow シャードをスキャン（初回のみ）
+    """
 
     def __init__(self, split: str) -> None:
         self.split = split
         self.tar_path = TAR_PATHS[split]
-        self._cache_dir = _CACHE_ROOT / split
+        self._cache_dir = _EXTRACT_ROOT / split
         self._cache_dir.mkdir(parents=True, exist_ok=True)
-        # session_dir -> {modality_key: tar_member_path}
-        # 例: "visible" -> "DATA_PATH/train/Other_modalities/session/.../foo_visible_20251101.mp4"
+        # session_dir -> {modality: tar_member_path}
         self._sessions: dict[str, dict[str, str]] = defaultdict(dict)
         self._built = False
+
+    # ------------------------------------------------------------------ #
+    # セッション一覧構築
+    # ------------------------------------------------------------------ #
 
     def _build(self) -> None:
         if self._built:
             return
+        if not self._build_from_filesystem():
+            self._build_from_arrow()
+        self._built = True
+
+    def _build_from_filesystem(self) -> bool:
+        """永続キャッシュのサブディレクトリをスキャンしてセッション一覧を高速構築する。
+        構造: cache_dir/{session_dir}/{filename}
+        """
+        found = 0
+        for session_dir_path in self._cache_dir.iterdir():
+            if not session_dir_path.is_dir():
+                continue
+            session_dir = session_dir_path.name
+            for cached_file in session_dir_path.iterdir():
+                filename = cached_file.name
+                member_path = f"DATA_PATH/{self.split}/Other_modalities/{session_dir}/{filename}"
+                for mod_key in _MODALITY_EXT:
+                    if mod_key in filename:
+                        modality = mod_key.strip("_")
+                        self._sessions[session_dir][modality] = member_path
+                        found += 1
+                        break
+        if found > 0:
+            logger.info("[%s] キャッシュから %d セッション構築 (高速)", self.split, len(self._sessions))
+            return True
+        return False
+
+    def _build_from_arrow(self) -> None:
+        """Arrow シャードをスキャンしてセッション一覧を構築する（初回フォールバック）。"""
         logger.info("[%s] Arrow からセッション一覧を構築中...", self.split)
         for shard_name in SHARD_NAMES[self.split]:
             shard_path = CACHE_BASE / shard_name
@@ -269,14 +305,13 @@ class SessionIndex:
                 parts = key.split("/")
                 if len(parts) < 5:
                     continue
-                session_dir = parts[3]  # 例: "58132919742254_20251118_session_1000_..."
-                filename = parts[4]     # 例: "#0 biangaoyacechuxian_sensor_20251101"
+                session_dir = parts[3]
+                filename = parts[4]
                 for mod_key, ext in _MODALITY_EXT.items():
                     if mod_key in filename:
-                        modality = mod_key.strip("_")  # e.g. "visible"
+                        modality = mod_key.strip("_")
                         self._sessions[session_dir][modality] = key + ext
                         break
-        self._built = True
         logger.info("[%s] セッション数: %d", self.split, len(self._sessions))
 
     def session_list(self) -> list[str]:
@@ -289,7 +324,83 @@ class SessionIndex:
         return dict(self._sessions.get(session, {}))
 
     def _cache_path(self, member_path: str) -> Path:
-        return self._cache_dir / member_path.replace("/", "__")
+        # フラット名 (DATA_PATH__...) はファイル名長制限 (255 bytes) を超えるケースがある。
+        # サブディレクトリ構造 cache_dir/{session_dir}/{filename} に変更する。
+        parts = member_path.split("/", 4)
+        if len(parts) == 5:
+            session_dir, filename = parts[3], parts[4]
+        else:
+            session_dir, filename = "_misc", Path(member_path).name
+        path = self._cache_dir / session_dir / filename
+        path.parent.mkdir(parents=True, exist_ok=True)
+        return path
+
+    # ------------------------------------------------------------------ #
+    # 事前一括抽出
+    # ------------------------------------------------------------------ #
+
+    def preextract_all(self) -> str:
+        """tar から全モダリティファイルを一括抽出し永続キャッシュを完成させる。
+
+        tar はシーケンシャル読み出しのため、1 回のパスで全ファイルを抽出することで
+        セッションごとに何度もアーカイブを走査するコストをゼロにする。
+        """
+        if not self.tar_path.exists():
+            return f"[{self.split}] tar ファイルが見つかりません: {self.tar_path}"
+
+        # Arrow スキャンで全メンバーパスを取得
+        self._build_from_arrow()
+
+        all_members: list[str] = [
+            member_path
+            for modalities in self._sessions.values()
+            for member_path in modalities.values()
+        ]
+        missing = [
+            m for m in all_members
+            if not (self._cache_path(m).exists() and self._cache_path(m).stat().st_size > 0)
+        ]
+
+        if not missing:
+            return f"[{self.split}] 既にすべて抽出済みです ({len(self._sessions)} セッション)"
+
+        logger.info("[%s] 一括抽出開始: %d ファイル → %s", self.split, len(missing), self._cache_dir)
+        tmpdir = Path(tempfile.mkdtemp(prefix="inspec_preextract_"))
+        extracted = 0
+        try:
+            # stdin でメンバーリストを渡すことで ARG_MAX 制限を回避
+            proc = subprocess.run(
+                ["tar", "-xzf", str(self.tar_path), "-C", str(tmpdir), "-T", "-"],
+                input="\n".join(missing).encode(),
+                capture_output=True,
+                timeout=7200,  # 最大 2 時間
+            )
+            if proc.returncode != 0:
+                err = proc.stderr.decode(errors="replace")[:500]
+                logger.warning("[%s] tar 一括抽出の警告/エラー: %s", self.split, err)
+
+            for member_path in missing:
+                src = tmpdir / member_path
+                if src.exists() and src.stat().st_size > 0:
+                    cached = self._cache_path(member_path)
+                    shutil.move(str(src), cached)
+                    extracted += 1
+        finally:
+            shutil.rmtree(tmpdir, ignore_errors=True)
+
+        # キャッシュが更新されたのでインデックスを再構築
+        self._sessions.clear()
+        self._built = False
+        self._build()
+
+        return (
+            f"[{self.split}] 抽出完了: {extracted}/{len(missing)} ファイル\n"
+            f"キャッシュ: {self._cache_dir}"
+        )
+
+    # ------------------------------------------------------------------ #
+    # ファイル抽出（オンデマンド）
+    # ------------------------------------------------------------------ #
 
     def extract_bytes(self, member_path: str) -> bytes:
         """tar.gz から指定メンバーをキャッシュ込みで抽出する。"""
@@ -312,14 +423,10 @@ class SessionIndex:
         return data
 
     def extract_session(self, session: str) -> dict[str, Path]:
-        """セッションの全ファイルを 1 回の tar 呼び出しで一括抽出し、キャッシュパスを返す。
-
-        tar.gz はシーケンシャル読み出しのため、複数ファイルを別々に抽出すると
-        その都度アーカイブ全体をスキャンする。一括抽出で所要時間を 1/n に削減する。
-        """
+        """セッションの全ファイルをキャッシュから返す。未キャッシュ分のみ tar から抽出する。"""
         modalities = self.session_modalities(session)
         result: dict[str, Path] = {}
-        missing: list[tuple[str, str]] = []  # [(modality, member_path)]
+        missing: list[tuple[str, str]] = []
 
         for mod, member_path in modalities.items():
             cached = self._cache_path(member_path)
@@ -331,17 +438,16 @@ class SessionIndex:
         if not missing:
             return result
 
-        # 一括抽出: tar -xzf archive -C tmpdir file1 file2 ...
         tmpdir = Path(tempfile.mkdtemp(prefix="inspec_extract_"))
         try:
             member_names = [mp for _, mp in missing]
             logger.info("tar 一括抽出 (%d ファイル): session=%s", len(member_names), session)
             subprocess.run(
-                ["tar", "-xzf", str(self.tar_path), "-C", str(tmpdir)] + member_names,
+                ["tar", "-xzf", str(self.tar_path), "-C", str(tmpdir), "-T", "-"],
+                input="\n".join(member_names).encode(),
                 capture_output=True,
                 timeout=180,
             )
-            # 抽出されたファイルをキャッシュに移動
             for mod, member_path in missing:
                 extracted = tmpdir / member_path
                 if extracted.exists() and extracted.stat().st_size > 0:
@@ -847,9 +953,39 @@ def build_ui() -> gr.Blocks:
                 gr.Markdown(
                     "点検セッションごとに **可視光カメラ**・**赤外線カメラ** の映像フレームと"
                     " **LiDAR 鳥瞰図 (BEV)**・**音声** を並べて閲覧します。\n\n"
-                    "> **注意**: tar からのストリーミング読み出しのため、初回ロードに数秒かかります。"
-                    " LiDAR (.bag) は ROS1 形式で読み込まれます。"
+                    f"> **キャッシュ先**: `{_EXTRACT_ROOT}` — 初回は「全ファイルを事前抽出」を実行すると以降の読み込みが高速になります。"
                 )
+
+                # --- 事前一括抽出 ---
+                with gr.Accordion("全ファイルを事前抽出（初回のみ・時間がかかります）", open=False):
+                    gr.Markdown(
+                        "tar アーカイブから全モダリティファイルを永続ディレクトリに一括展開します。\n"
+                        "完了後はセッション切り替えが瞬時になります。"
+                    )
+                    with gr.Row():
+                        preextract_split = gr.CheckboxGroup(
+                            choices=["train", "test"], value=["test"],
+                            label="対象 Split", scale=1
+                        )
+                        preextract_btn = gr.Button("抽出開始", variant="secondary", scale=1)
+                    preextract_status = gr.Textbox(
+                        label="抽出ステータス", value="", interactive=False, lines=4
+                    )
+
+                    def on_preextract(splits: list[str]) -> str:
+                        if not splits:
+                            return "Split を選択してください"
+                        msgs = []
+                        for sp in splits:
+                            idx = _get_session_index(sp)
+                            msgs.append(idx.preextract_all())
+                        return "\n".join(msgs)
+
+                    preextract_btn.click(
+                        on_preextract,
+                        inputs=preextract_split,
+                        outputs=preextract_status,
+                    )
 
                 # --- モダリティ フィルタ チェックボックス ---
                 ses_modality_filter = gr.CheckboxGroup(
@@ -1165,7 +1301,20 @@ def main() -> None:
     parser.add_argument("--port", type=int, default=7860, help="起動ポート (デフォルト: 7860)")
     parser.add_argument("--share", action="store_true", help="Gradio share リンクを発行する")
     parser.add_argument("--host", default="0.0.0.0", help="バインドアドレス")
+    parser.add_argument(
+        "--preextract",
+        nargs="*",
+        metavar="SPLIT",
+        help="起動前に全ファイルを事前抽出して終了 (例: --preextract test train)。引数なしで両方を対象",
+    )
     args = parser.parse_args()
+
+    if args.preextract is not None:
+        splits = args.preextract if args.preextract else ["train", "test"]
+        for sp in splits:
+            idx = _get_session_index(sp)
+            print(idx.preextract_all())
+        return
 
     demo = build_ui()
     demo.launch(
@@ -1173,11 +1322,29 @@ def main() -> None:
         server_port=args.port,
         share=args.share,
         show_error=True,
+        allowed_paths=[str(_EXTRACT_ROOT)],
     )
 
 
 if __name__ == "__main__":
     '''
     uv run python src/vis/viewer.py --port 7860 --share
+
+    # 新しい tmux セッションを作成して起動
+    tmux new-session -d -s gradio_viewer -c /home/team-005/work/tanaka_y/10_dataset_viewer \
+    'uv run python src/vis/viewer.py --port 7860 --share'
+
+    # 状態確認
+    tmux ls
+
+    # セッションにアタッチ（ログを見たいとき）
+    tmux attach -t gradio_viewer
+
+    # アタッチ中に「デタッチ」して抜ける
+    Ctrl+b → d
+
+    # セッションを停止したいとき
+    tmux kill-session -t gradio_viewer
+
     '''    
     main()
