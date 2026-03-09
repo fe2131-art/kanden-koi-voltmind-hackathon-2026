@@ -2,33 +2,31 @@
 
 from .agent import AgentState, ContextSchema, OpenAICompatLLM, build_agent
 from .schema import (
+    AssessmentEvidence,
     AudioCue,
     BoundingBox,
     CameraPose,
     DetectedObject,
-    Hazard,
-    SafetyAssessment,
     Observation,
     ObservationProvider,
     PerceptionIR,
-    UnobservedRegion,
+    SafetyAssessment,
     WorldModel,
 )
 
 __version__ = "0.1.0"
 
 __all__ = [
-    "BoundingBox",
-    "DetectedObject",
+    "AssessmentEvidence",
     "AudioCue",
-    "UnobservedRegion",
-    "Hazard",
+    "BoundingBox",
     "CameraPose",
-    "PerceptionIR",
-    "WorldModel",
-    "SafetyAssessment",
+    "DetectedObject",
     "Observation",
     "ObservationProvider",
+    "PerceptionIR",
+    "SafetyAssessment",
+    "WorldModel",
     "OpenAICompatLLM",
     "build_agent",
     "AgentState",

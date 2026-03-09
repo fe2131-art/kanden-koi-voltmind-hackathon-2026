@@ -202,6 +202,92 @@ python src/run.py
 
 詳細は [DEMO_APP.md](DEMO_APP.md) を参照。
 
+## オプション: Depth-Anything-3 セットアップ
+
+深度推定機能を使用する場合は、Depth-Anything-3 をセットアップしてください。
+
+### セットアップ手順
+
+#### 1. Depth-Anything-3 をクローン
+
+```bash
+git clone https://github.com/DepthAnything/Depth-Anything-3.git external/Depth-Anything-3
+```
+
+#### 2. パッチを自動適用
+
+```bash
+# scripts/depth_anything_3/ 内のセットアップスクリプトを実行
+bash scripts/depth_anything_3/setup_external_deps.sh
+```
+
+このスクリプトは以下を自動実行します：
+- numpy バージョン制約を緩和（`numpy<2` → `numpy`）
+- pyproject.toml と requirements.txt を修正
+
+#### 3. 動作確認
+
+```bash
+# デモ画像を使用してテスト実行
+uv run python scripts/depth_anything_3/smoke_test_da3.py \
+  --image scripts/depth_anything_3/depth_anything_3_demo.png \
+  --model metric \
+  --focal-px 1000
+```
+
+### 使用方法
+
+```bash
+# Metric Depth（実メートル深度）
+uv run python scripts/depth_anything_3/smoke_test_da3.py \
+  --image path/to/your/image.jpg \
+  --model metric \
+  --focal-px 1000
+
+# Monocular Depth（相対深度）
+uv run python scripts/depth_anything_3/smoke_test_da3.py \
+  --image path/to/your/image.jpg \
+  --model mono
+```
+
+**詳細なオプション:**
+```bash
+uv run python scripts/depth_anything_3/smoke_test_da3.py --help
+```
+
+### 修正内容
+
+Depth-Anything-3 では以下の小規模な修正を適用しています：
+
+| ファイル | 修正内容 | 理由 |
+|--------|--------|------|
+| `pyproject.toml` | `numpy<2` → `numpy` | numpy 2.0+ との互換性 |
+| `requirements.txt` | `numpy<2` → `numpy` | numpy 2.0+ との互換性 |
+
+修正内容は `scripts/depth_anything_3/patches/da3-numpy-compatibility.patch` で管理されています。
+
+### トラブルシューティング
+
+**Patch 適用エラー**
+```bash
+# 既に適用済みの可能性がある場合、初期状態に戻す
+cd external/Depth-Anything-3
+git reset --hard HEAD
+cd ../..
+bash scripts/depth_anything_3/setup_external_deps.sh
+```
+
+**モデルダウンロードエラー**
+```bash
+# インターネット接続を確認し、Hugging Face キャッシュをクリア
+rm -rf ~/.cache/huggingface/hub
+
+# 再度実行
+uv run python scripts/depth_anything_3/smoke_test_da3.py \
+  --image scripts/depth_anything_3/depth_anything_3_demo.png \
+  --model metric
+```
+
 ## ヘルプが必要な場合
 
 - Issues: プロジェクトの GitHub Issues を確認

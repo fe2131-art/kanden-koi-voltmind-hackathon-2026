@@ -103,6 +103,13 @@ src/apps/dist/
 src/apps/.vite/
 
 # ==========================================
+# External Dependencies (Depth-Anything-3 など)
+# ==========================================
+# 外部リポジトリはローカルで管理（修正は scripts/patches/ で版管理）
+external/
+scripts/depth_anything_3/data
+
+# ==========================================
 # macOS
 # ==========================================
 .DS_Store

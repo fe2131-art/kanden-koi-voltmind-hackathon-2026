@@ -17,7 +17,6 @@ from safety_agent.agent import AgentState, OpenAICompatLLM, build_agent
 from safety_agent.modality_nodes import AudioAnalyzer, VisionAnalyzer, YOLODetector
 from safety_agent.schema import CameraPose, Observation, ObservationProvider, WorldModel
 from util.logger import setup_logger
-from util.serializers import serialize_pydantic_or_dict
 
 # ロガーを設定（デバッグモード有効化）
 import logging
@@ -430,7 +429,7 @@ def save_analysis_results(
     output_dir: str,
     analysis_results: dict,
     video_timestamps: Optional[dict[str, float]] = None,
-    agent_output: Optional[dict] = None,
+    _agent_output: Optional[dict] = None,
 ) -> None:
     """分析結果を出力ディレクトリに保存（追記モードで履歴を保持）。
 
@@ -438,7 +437,7 @@ def save_analysis_results(
         output_dir: 出力ディレクトリパス
         analysis_results: 結果リストを含む 'frames' キーの辞書
         video_timestamps: obs_id をビデオタイムスタンプ（秒単位）にマッピングする辞書（オプション）
-        agent_output: 使用されていません（互換性のため保持）
+        _agent_output: 使用されていません（互換性のため保持）
     """
     os.makedirs(output_dir, exist_ok=True)
 
@@ -548,6 +547,7 @@ def prepare_observations_inspesafe(
         Observation(
             obs_id=f"img_{i}",
             image_path=str(fp.resolve()),
+            prev_image_path=str(frame_paths[i - 1].resolve()) if i > 0 else None,
             audio_text=None,
             camera_pose=CameraPose(pan_deg=0, tilt_deg=0, zoom=1),
         )
@@ -618,6 +618,7 @@ def prepare_observations(
             Observation(
                 obs_id=f"img_{i}",
                 image_path=str(frame_path.absolute()),
+                prev_image_path=str(frame_files[i - 1].absolute()) if i > 0 else None,
                 audio_text=None,
                 camera_pose=CameraPose(pan_deg=0, tilt_deg=0, zoom=1),
             )
@@ -687,7 +688,6 @@ def main():
     config = load_config()
     prompts = load_prompts()
     agent_cfg = config.get("agent", {})
-    thresholds_cfg = config.get("thresholds", {})
     tokens_cfg = config.get("tokens", {})
     video_cfg = config.get("video", {})
     audio_cfg = config.get("audio", {})
@@ -783,7 +783,7 @@ def main():
     }
 
     # Run and log agent
-    out, all_frame_outputs = run_and_log_agent(agent, initial_state, context)
+    _, all_frame_outputs = run_and_log_agent(agent, initial_state, context)
 
     # Save all frame results from agent's emit_output node
     save_analysis_results(
