@@ -5,6 +5,7 @@ from src.safety_agent.schema import (
     AudioCue,
     BoundingBox,
     CameraPose,
+    DepthAnalysisResult,
     DetectedObject,
     Observation,
     ObservationProvider,
@@ -181,3 +182,45 @@ def test_observation_provider():
 
     o3 = provider.next()
     assert o3 is None
+
+
+def test_depth_analysis_result():
+    """DepthAnalysisResult の基本構築を検証。"""
+    depth = DepthAnalysisResult(
+        summary="近い領域に危険物あり",
+        depth_zones=[
+            "近い領域（0.5m以内）：フォークリフト",
+            "中距離領域（0.5-2m）：棚",
+            "遠い領域（2m以上）：壁",
+        ],
+        nearest_hazards=["フォークリフト（0.3m）"],
+        occlusions=["棚の背後"],
+        spatial_layout="深度が前から後ろへ段階的に深くなる配置",
+    )
+    assert depth.summary == "近い領域に危険物あり"
+    assert len(depth.depth_zones) == 3
+    assert len(depth.nearest_hazards) == 1
+    assert depth.spatial_layout is not None
+
+
+def test_perception_ir_with_depth_analysis():
+    """PerceptionIR が depth_analysis フィールドを持つことを確認。"""
+    depth = DepthAnalysisResult(summary="テスト深度分析")
+    ir = PerceptionIR(obs_id="t0", depth_analysis=depth)
+    assert ir.depth_analysis is not None
+    assert ir.depth_analysis.summary == "テスト深度分析"
+
+
+def test_perception_ir_full_modalities():
+    """PerceptionIR に vision_analysis と depth_analysis の両方を含めることを確認。"""
+    vision = VisionAnalysisResult(summary="ビジョン分析結果")
+    depth = DepthAnalysisResult(summary="深度分析結果")
+    ir = PerceptionIR(
+        obs_id="t0",
+        vision_analysis=vision,
+        depth_analysis=depth,
+    )
+    assert ir.vision_analysis is not None
+    assert ir.depth_analysis is not None
+    assert ir.vision_analysis.summary == "ビジョン分析結果"
+    assert ir.depth_analysis.summary == "深度分析結果"

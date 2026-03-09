@@ -162,6 +162,20 @@ class AudioCue(BaseModel):
     evidence: Optional[str] = None
 
 
+# ─── 深度解析結果 ──────────────────────────────────────────────────────────────
+# DepthEstimator.estimate() + VisionAnalyzer.analyze_bytes_raw() の出力。
+# PerceptionIR.depth_analysis に格納。
+
+
+class DepthAnalysisResult(BaseModel):
+    """Depth Anything 3 による深度解析結果。PerceptionIR.depth_analysis に格納。"""
+    summary: str
+    depth_zones: List[str] = Field(default_factory=list)  # 深度層別の領域説明
+    nearest_hazards: List[str] = Field(default_factory=list)  # 最も近い危険物
+    occlusions: List[str] = Field(default_factory=list)  # 隠れた領域・死角
+    spatial_layout: Optional[str] = None  # 空間的配置の整体的説明
+
+
 # ─── カメラ姿勢 ───────────────────────────────────────────────────────────────
 # Observation と PerceptionIR に付属するメタ情報。現在は値が入らないことが多い。
 
@@ -179,12 +193,13 @@ class CameraPose(BaseModel):
 
 
 class PerceptionIR(BaseModel):
-    """1フレーム分の知覚統合結果（YOLO + VLM + 音声）。AgentState.ir に格納。"""
+    """1フレーム分の知覚統合結果（YOLO + VLM + 音声 + 深度）。AgentState.ir に格納。"""
     obs_id: str
     camera_pose: Optional[CameraPose] = None
     objects: List[DetectedObject] = Field(default_factory=list)       # YOLO 出力
     audio: List[AudioCue] = Field(default_factory=list)               # 音声出力
     vision_analysis: Optional[VisionAnalysisResult] = None            # VLM 出力
+    depth_analysis: Optional[DepthAnalysisResult] = None              # 深度解析出力
     modality_errors: List[str] = Field(default_factory=list)          # 各モダリティのエラー
 
 
