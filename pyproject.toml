@@ -23,13 +23,16 @@ dependencies = [
     "huggingface_hub>=0.34.0,<1.0",
     "torch==2.10.0",
     "vllm>=0.11.0",
-    "qwen-vl-utils>=0.0.14"
-
+    "qwen-vl-utils>=0.0.14",
+    "xformers",
+    "depth-anything-3",
 ]
 
 [tool.uv.sources]
 torch = [{ index = "torch-cu129" }]
 vllm  = [{ index = "vllm-nightly" }]
+xformers  = [{ index = "xformers-cu128" }]
+depth-anything-3 = { path = "./external/Depth-Anything-3", editable = true }
 
 [[tool.uv.index]]
 name = "torch-cu129"
@@ -39,6 +42,11 @@ explicit = true
 [[tool.uv.index]]
 name = "vllm-nightly"
 url = "https://wheels.vllm.ai/nightly"
+explicit = true
+
+[[tool.uv.index]]
+name = "xformers-cu128"
+url = "https://download.pytorch.org/whl/cu128"
 explicit = true
 
 [project.optional-dependencies]
