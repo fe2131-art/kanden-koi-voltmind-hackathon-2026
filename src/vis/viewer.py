@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import argparse
+import csv
 import json
 import logging
 import os
@@ -229,6 +230,13 @@ _MODALITY_EXT: dict[str, str] = {
 # キャッシュディレクトリ
 _CACHE_ROOT = Path(tempfile.gettempdir()) / "inspec_safe_v1_cache"
 
+# セッション モダリティ CSV
+CSV_PATH = Path(__file__).parent.parent.parent / "data" / "session_modalities.csv"
+_CSV_FIELDNAMES = [
+    "split", "robot_id", "modality_dir_path",
+    "has_rgb_video", "has_infrared_video", "has_audio", "has_point_cloud", "has_sensor_log",
+]
+
 
 class SessionIndex:
     """Arrow ファイルから Other_modalities セッション一覧を構築し、
@@ -354,6 +362,91 @@ def _get_session_index(split: str) -> SessionIndex:
     if split not in _session_indices:
         _session_indices[split] = SessionIndex(split)
     return _session_indices[split]
+
+
+# ---------------------------------------------------------------------------
+# セッション モダリティ CSV 管理
+# ---------------------------------------------------------------------------
+
+def generate_session_csv(splits: list[str] | None = None) -> str:
+    """SessionIndex から CSV を生成/更新し、結果メッセージを返す。"""
+    if splits is None:
+        splits = ["train", "test"]
+
+    rows: list[dict[str, str]] = []
+    for split in splits:
+        idx = _get_session_index(split)
+        idx._build()
+        for session_dir, modalities in idx._sessions.items():
+            modality_dir_path = (
+                f"../InspecSafe-V1/DATA_PATH/{split}/Other_modalities/{session_dir}"
+            )
+            rows.append({
+                "split": split,
+                "robot_id": session_dir,
+                "modality_dir_path": modality_dir_path,
+                "has_rgb_video": "Yes" if "visible" in modalities else "No",
+                "has_infrared_video": "Yes" if "infrared" in modalities else "No",
+                "has_audio": "Yes" if "audio" in modalities else "No",
+                "has_point_cloud": "Yes" if "point_cloud" in modalities else "No",
+                "has_sensor_log": "Yes" if "sensor" in modalities else "No",
+            })
+
+    CSV_PATH.parent.mkdir(parents=True, exist_ok=True)
+    with open(CSV_PATH, "w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=_CSV_FIELDNAMES)
+        writer.writeheader()
+        writer.writerows(rows)
+
+    msg = f"CSV 生成完了: {len(rows)} セッション → {CSV_PATH}"
+    logger.info(msg)
+    return msg
+
+
+def load_session_csv() -> dict[tuple[str, str], dict[str, str]]:
+    """CSV を読み込み {(split, robot_id): row_dict} を返す。CSV がなければ空 dict。"""
+    result: dict[tuple[str, str], dict[str, str]] = {}
+    if not CSV_PATH.exists():
+        return result
+    with open(CSV_PATH, "r", encoding="utf-8") as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            key = (row["split"], row["robot_id"])
+            result[key] = dict(row)
+    logger.info("CSV 読み込み: %d 件", len(result))
+    return result
+
+
+def filter_sessions_by_modality(
+    split: str,
+    sessions: list[str],
+    csv_data: dict[tuple[str, str], dict[str, str]],
+    need_rgb: bool,
+    need_ir: bool,
+    need_audio: bool,
+    need_lidar: bool,
+) -> list[str]:
+    """CSV を参照してモダリティ条件に合うセッションだけ返す。
+    CSV が空の場合はフィルタせずそのまま返す。
+    """
+    if not csv_data:
+        return sessions
+
+    filtered: list[str] = []
+    for session in sessions:
+        row = csv_data.get((split, session))
+        if row is None:
+            continue
+        if need_rgb and row.get("has_rgb_video") != "Yes":
+            continue
+        if need_ir and row.get("has_infrared_video") != "Yes":
+            continue
+        if need_audio and row.get("has_audio") != "Yes":
+            continue
+        if need_lidar and row.get("has_point_cloud") != "Yes":
+            continue
+        filtered.append(session)
+    return filtered
 
 
 def extract_video_frame(video_bytes: bytes, frame_idx: int = 0) -> np.ndarray | None:
@@ -748,15 +841,23 @@ def build_ui() -> gr.Blocks:
                 )
 
             # ================================================================
-            # Tab 2: セッション閲覧 (可視光 + 赤外線)
+            # Tab 2: セッション閲覧 (可視光 + 赤外線 + LiDAR + 音声)
             # ================================================================
-            with gr.Tab("セッション閲覧 (可視光 + 赤外線 + LiDAR)"):
+            with gr.Tab("セッション閲覧 (可視光 + 赤外線 + LiDAR + 音声)"):
                 gr.Markdown(
                     "点検セッションごとに **可視光カメラ**・**赤外線カメラ** の映像フレームと"
-                    " **LiDAR 鳥瞰図 (BEV)** を並べて閲覧します。\n\n"
+                    " **LiDAR 鳥瞰図 (BEV)**・**音声** を並べて閲覧します。\n\n"
                     "> **注意**: tar からのストリーミング読み出しのため、初回ロードに数秒かかります。"
                     " LiDAR (.bag) は ROS1 形式で読み込まれます。"
                 )
+
+                # --- モダリティ フィルタ チェックボックス ---
+                ses_modality_filter = gr.CheckboxGroup(
+                    choices=["可視光 (RGB)", "赤外線 (IR)", "音声", "LiDAR"],
+                    value=["可視光 (RGB)", "赤外線 (IR)", "音声"],
+                    label="モダリティ フィルタ（ONのデータが存在するセッションのみ表示）",
+                )
+
                 with gr.Row():
                     ses_split = gr.Dropdown(
                         ["train", "test"], value="test", label="Split", scale=1
@@ -771,7 +872,7 @@ def build_ui() -> gr.Blocks:
                     )
                     ses_next_btn = gr.Button("次へ ▶", scale=1)
                 ses_frame_info = gr.Textbox(
-                    label="フレーム情報 (可視光 / 赤外線 / LiDAR)", value="", interactive=False
+                    label="フレーム情報 (可視光 / 赤外線 / LiDAR / 音声)", value="", interactive=False
                 )
 
                 with gr.Row():
@@ -780,16 +881,45 @@ def build_ui() -> gr.Blocks:
                     ses_lidar_img = gr.Image(label="LiDAR 鳥瞰図 (BEV)", type="numpy", scale=1)
 
                 with gr.Row():
+                    ses_audio = gr.Audio(label="音声", type="filepath", scale=1)
+
+                with gr.Row():
                     ses_sensor = gr.Markdown(label="環境センサデータ", value="(セッションを選択してください)")
 
-                ses_load_btn = gr.Button("セッション一覧を読み込む", variant="primary")
+                with gr.Row():
+                    ses_load_btn = gr.Button("セッション一覧を読み込む (CSV 生成)", variant="primary")
+                    ses_csv_status = gr.Textbox(
+                        label="CSV ステータス", value="", interactive=False, scale=3
+                    )
+
                 # 動画の最大フレーム数をセッション間で保持するステート
                 ses_frame_max = gr.State(value=300)
 
                 # --- コールバック ---
-                def on_ses_split_change(split: str):
+
+                def _modality_flags(selected: list[str]) -> tuple[bool, bool, bool, bool]:
+                    """CheckboxGroup の選択値をフラグに変換する。"""
+                    return (
+                        "可視光 (RGB)" in selected,
+                        "赤外線 (IR)" in selected,
+                        "音声" in selected,
+                        "LiDAR" in selected,
+                    )
+
+                def _filtered_session_list(
+                    split: str, selected_modalities: list[str]
+                ) -> list[str]:
                     idx = _get_session_index(split)
                     sessions = idx.session_list()
+                    csv_data = load_session_csv()
+                    need_rgb, need_ir, need_audio, need_lidar = _modality_flags(selected_modalities)
+                    return filter_sessions_by_modality(
+                        split, sessions, csv_data, need_rgb, need_ir, need_audio, need_lidar
+                    )
+
+                def on_filter_change(split: str, selected_modalities: list[str]):
+                    """チェックボックス / Split 変更時: セッション一覧を更新する。"""
+                    sessions = _filtered_session_list(split, selected_modalities)
                     if sessions:
                         return gr.update(choices=sessions, value=sessions[0])
                     return gr.update(choices=[], value=None)
@@ -804,7 +934,7 @@ def build_ui() -> gr.Blocks:
                     blank = np.zeros((360, 640, 3), dtype=np.uint8)
                     lidar_blank = np.zeros((512, 512, 3), dtype=np.uint8)
                     if not session:
-                        return blank, blank, lidar_blank, "(セッションを選択してください)", "", gr.update(maximum=300), 300
+                        return blank, blank, lidar_blank, None, "(セッションを選択してください)", "", gr.update(maximum=300), 300
 
                     idx = _get_session_index(split)
                     # 一括抽出（初回のみ tar を 1 回スキャン、以降はキャッシュから即時返却）
@@ -813,6 +943,7 @@ def build_ui() -> gr.Blocks:
                     vis_frame: np.ndarray | None = None
                     ir_frame: np.ndarray | None = None
                     lidar_img: np.ndarray | None = None
+                    audio_path: str | None = None
                     sensor_md = "(センサデータなし)"
 
                     # フレーム数を取得して対応ズレを検出
@@ -853,6 +984,11 @@ def build_ui() -> gr.Blocks:
                         except Exception as e:
                             logger.warning("LiDAR フレーム読み込みエラー: %s", e)
 
+                    # 音声 wav
+                    if "audio" in cached_files:
+                        audio_path = str(cached_files["audio"])
+                        frame_info += " / 音声: あり"
+
                     # 環境センサ txt
                     if "sensor" in cached_files:
                         try:
@@ -865,23 +1001,61 @@ def build_ui() -> gr.Blocks:
                         vis_frame if vis_frame is not None else blank,
                         ir_frame if ir_frame is not None else blank,
                         lidar_img if lidar_img is not None else lidar_blank,
+                        audio_path,
                         sensor_md,
                         frame_info,
                         gr.update(maximum=max_frames),
                         max_frames,
                     )
 
-                _ses_outputs = [ses_vis_img, ses_ir_img, ses_lidar_img, ses_sensor, ses_frame_info, ses_frame_idx, ses_frame_max]
+                _ses_outputs = [
+                    ses_vis_img, ses_ir_img, ses_lidar_img, ses_audio,
+                    ses_sensor, ses_frame_info, ses_frame_idx, ses_frame_max,
+                ]
+
+                # セッション一覧読み込み + CSV 生成
+                def on_load_btn(split: str, selected_modalities: list[str]):
+                    csv_msg = generate_session_csv()
+                    sessions = _filtered_session_list(split, selected_modalities)
+                    session_update = (
+                        gr.update(choices=sessions, value=sessions[0])
+                        if sessions
+                        else gr.update(choices=[], value=None)
+                    )
+                    return session_update, csv_msg
 
                 ses_load_btn.click(
-                    on_ses_split_change,
-                    inputs=ses_split,
+                    on_load_btn,
+                    inputs=[ses_split, ses_modality_filter],
+                    outputs=[ses_session, ses_csv_status],
+                ).then(
+                    on_session_select,
+                    inputs=[ses_split, ses_session, ses_frame_idx],
+                    outputs=_ses_outputs,
+                )
+
+                # チェックボックス変更 → セッション一覧を再フィルタ
+                ses_modality_filter.change(
+                    on_filter_change,
+                    inputs=[ses_split, ses_modality_filter],
                     outputs=ses_session,
                 ).then(
                     on_session_select,
                     inputs=[ses_split, ses_session, ses_frame_idx],
                     outputs=_ses_outputs,
                 )
+
+                # Split 変更 → セッション一覧を再フィルタ
+                ses_split.change(
+                    on_filter_change,
+                    inputs=[ses_split, ses_modality_filter],
+                    outputs=ses_session,
+                ).then(
+                    on_session_select,
+                    inputs=[ses_split, ses_session, ses_frame_idx],
+                    outputs=_ses_outputs,
+                )
+
                 ses_session.change(
                     on_session_select,
                     inputs=[ses_split, ses_session, ses_frame_idx],
