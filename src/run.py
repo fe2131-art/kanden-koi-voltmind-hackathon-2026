@@ -18,7 +18,7 @@ from safety_agent.modality_nodes import (
     VisionAnalyzer,
     YOLODetector,
 )
-from safety_agent.schema import CameraPose, Observation, ObservationProvider, WorldModel
+from safety_agent.schema import CameraPose, Observation, ObservationProvider
 from util.logger import setup_logger
 
 # .env ファイルから環境変数を読み込む
@@ -767,7 +767,7 @@ def main():
         "received_modalities": [],
         "barrier_obs_id": None,
         "latest_output": None,
-        "world": WorldModel(),
+        "last_assessment": None,
         "assessment": None,
         "done": False,
         "errors": [],

@@ -24,7 +24,6 @@ from .schema import (
     ObservationProvider,
     PerceptionIR,
     SafetyAssessment,
-    WorldModel,
 )
 
 logger = logging.getLogger(__name__)
@@ -304,9 +303,9 @@ class AgentState(TypedDict):
 
     latest_output: Optional[Dict[str, Any]]
 
-    # 世界モデル、安全判断
-    world: WorldModel
-    assessment: Optional[SafetyAssessment]
+    # 前フレーム、現フレームの安全判断
+    last_assessment: Optional[SafetyAssessment]  # フレーム間の引き継ぎ
+    assessment: Optional[SafetyAssessment]       # 現フレームの判断
 
     done: bool
     errors: Annotated[List[str], _sliding_window_errors]
@@ -674,9 +673,8 @@ def fuse_modalities(
 def determine_next_action_llm(
     state: AgentState, runtime: Runtime[ContextSchema]
 ) -> Dict[str, Any]:
-    """VLM/YOLO/音声+世界モデルの統合結果から、次に起こすべき行動を LLM で決定。"""
+    """VLM/YOLO/音声から、次に起こすべき行動を LLM で決定。前フレーム結果を参照。"""
     ir = state.get("ir")
-    world = state["world"]
     if ir is None:
         return {"errors": ["No IR for action determination"], "done": True}
 
@@ -686,7 +684,7 @@ def determine_next_action_llm(
         assessment = _heuristic_assessment()
         return {
             "assessment": assessment,
-            "world": world.model_copy(update={"last_assessment": assessment}),
+            "last_assessment": assessment,
             "messages": [
                 {
                     "role": "assistant",
@@ -698,6 +696,7 @@ def determine_next_action_llm(
     # コンテキスト構築
     context_history_size = runtime.context.get("context_history_size", 1)
 
+    last_assessment = state.get("last_assessment")
     context_data = {
         "vision_analysis": (
             ir.vision_analysis.model_dump(exclude_none=True, by_alias=True)
@@ -707,8 +706,8 @@ def determine_next_action_llm(
         "detected_objects": [o.model_dump() for o in ir.objects[:10]],
         "audio_cues": [a.model_dump() for a in ir.audio],
         "previous_assessment": (
-            world.last_assessment.model_dump()
-            if context_history_size >= 1 and world.last_assessment
+            last_assessment.model_dump()
+            if context_history_size >= 1 and last_assessment
             else None
         ),
     }
@@ -727,13 +726,23 @@ def determine_next_action_llm(
 
         # SafetyAssessment を直接取得
         assessment = SafetyAssessment.model_validate(raw)
+        return {
+            "assessment": assessment,
+            "last_assessment": assessment,
+            "messages": [
+                {
+                    "role": "assistant",
+                    "content": f"[assess] {assessment.action_type} risk={assessment.risk_level} priority={assessment.priority:.2f} (llm)",
+                }
+            ],
+        }
 
     except Exception as e:
         logger.error("LLM assessment failed, using heuristic fallback", exc_info=True)
         assessment = _heuristic_assessment()
         return {
             "assessment": assessment,
-            "world": world.model_copy(update={"last_assessment": assessment}),
+            "last_assessment": assessment,
             "errors": [f"LLM assessment fallback: {e}"],
             "messages": [
                 {
@@ -742,18 +751,6 @@ def determine_next_action_llm(
                 }
             ],
         }
-
-    new_world = world.model_copy(update={"last_assessment": assessment})
-    return {
-        "assessment": assessment,
-        "world": new_world,
-        "messages": [
-            {
-                "role": "assistant",
-                "content": f"[assess] {assessment.action_type} risk={assessment.risk_level} priority={assessment.priority:.2f} (llm)",
-            }
-        ],
-    }
 
 
 def _heuristic_assessment() -> SafetyAssessment:

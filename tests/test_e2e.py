@@ -5,7 +5,6 @@ from src.safety_agent.modality_nodes import AudioAnalyzer
 from src.safety_agent.schema import (
     Observation,
     ObservationProvider,
-    WorldModel,
 )
 
 
@@ -42,7 +41,7 @@ def test_e2e_agent_no_llm():
         "received_modalities": [],  # PR1: fan-in バリア
         "barrier_obs_id": None,  # ラッチ（同フレーム内で fuse は1回だけ）
         "latest_output": None,  # PR3: 統合出力
-        "world": WorldModel(),
+        "last_assessment": None,
         "assessment": None,
         "done": False,
         "errors": [],
@@ -76,7 +75,7 @@ def test_e2e_agent_no_llm():
 
     # Verify basic output structure
     assert "assessment" in out
-    assert "world" in out
+    assert "last_assessment" in out
     assert "errors" in out
     assert "messages" in out
     assert "modality_results" in out
@@ -86,8 +85,8 @@ def test_e2e_agent_no_llm():
     assert out["assessment"].action_type in ["emergency_stop", "inspect_region", "mitigate", "monitor"]
     assert out["assessment"].risk_level in ["high", "medium", "low"]
 
-    # Verify world model is updated
-    assert out["world"] is not None
+    # Verify last_assessment is carried over
+    assert out["last_assessment"] is not None
 
     # Verify modality_results is properly processed (fan-in) - now dict
     assert isinstance(out["modality_results"], dict)

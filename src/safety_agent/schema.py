@@ -50,9 +50,9 @@ from pydantic import BaseModel, ConfigDict, Field
 #  └─────────────────────────────────────────────────────────────────────────┘
 #
 #  ┌─ 状態管理 ──────────────────────────────────────────────────────────────┐
-#  │  WorldModel             AgentState.world （フレーム間の状態引き継ぎ）  │
-#  │    agent.py: update_world_model() で last_assessment を更新            │
-#  │    run.py: 初期化時に WorldModel() を作成                              │
+#  │  last_assessment        AgentState.last_assessment （前フレーム引き継ぎ） │
+#  │    agent.py: determine_next_action_llm() で更新                        │
+#  │    run.py: 初期化時に None を設定                                      │
 #  └─────────────────────────────────────────────────────────────────────────┘
 #
 #  ┌─ 観測入力 ──────────────────────────────────────────────────────────────┐
@@ -251,17 +251,6 @@ class SafetyAssessment(BaseModel):
     evidence: Optional[AssessmentEvidence] = None
 
 
-# ─── 状態管理 ─────────────────────────────────────────────────────────────────
-# AgentState.world に格納され、フレーム間で引き継がれる。
-# update_world_model() が last_assessment を更新し、次フレームの推論に使う。
-
-
-class WorldModel(BaseModel):
-    """フレーム間の状態引き継ぎ。AgentState.world に格納。"""
-    last_assessment: Optional["SafetyAssessment"] = None
-
-
-WorldModel.model_rebuild()  # forward reference を解決
 
 
 # =============================================================================
