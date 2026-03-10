@@ -1,8 +1,9 @@
 import asyncio
 import json
 import time
-import websockets
 from pathlib import Path
+
+import websockets
 
 OUTPUT_DIR = Path(__file__).parent.parent.parent / 'data'
 PERCEPTION_RESULTS = OUTPUT_DIR / 'perception_results.json'
@@ -25,7 +26,6 @@ async def monitor_and_stream(websocket):
     """Monitor data/perception_results.json and stream changes to client."""
     print("client connected")
     last_count = 0  # 前回送信した frames 数をトラッキング
-    server_start_time = time.time()  # サーバー起動時刻（基準点）
 
     try:
         while True:

@@ -55,6 +55,7 @@ def test_e2e_agent_no_llm():
         "vision_analyzer": None,
         "yolo_detector": None,
         "audio_analyzer": AudioAnalyzer(),
+        "depth_estimator": None,
         "prompts": {
             "vision_analysis": {
                 "default_prompt": "テスト用プロンプト（LLM 未使用のため内容は問わない）"
@@ -66,7 +67,7 @@ def test_e2e_agent_no_llm():
         "chat_max_tokens": 2000,
         "max_outstanding_regions": 6,
         "context_history_size": 1,
-        "expected_modalities": ["yolo", "vlm", "audio"],  # yolo/vlm に分割
+        "expected_modalities": ["yolo", "vlm", "audio"],  # yolo/vlm に分割（depth は enable=false）
         "run_mode": "until_provider_ends",  # provider が None を返すまで継続
     }
 

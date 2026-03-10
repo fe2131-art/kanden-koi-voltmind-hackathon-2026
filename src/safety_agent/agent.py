@@ -1,8 +1,7 @@
-from __future__ import annotations
-
 import json
 import logging
 import re
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import httpx
@@ -14,15 +13,17 @@ from typing_extensions import Annotated, TypedDict
 
 from .modality_nodes import (
     AudioAnalyzer,
+    DepthEstimator,
     ModalityResult,
     VisionAnalyzer,
     YOLODetector,
 )
 from .schema import (
-    SafetyAssessment,
+    DepthAnalysisResult,
     Observation,
     ObservationProvider,
     PerceptionIR,
+    SafetyAssessment,
     WorldModel,
 )
 
@@ -50,15 +51,22 @@ def _get_json_schema_for_vllm() -> Dict[str, Any]:
             "priority": {"type": "number", "minimum": 0, "maximum": 1},
             "temporal_status": {
                 "type": "string",
-                "enum": ["new", "persistent", "worsening", "improving", "resolved", "unknown"],
+                "enum": [
+                    "new",
+                    "persistent",
+                    "worsening",
+                    "improving",
+                    "resolved",
+                    "unknown",
+                ],
             },
             "evidence": {
                 "type": ["object", "null"],  # Optional: null の場合あり
                 "properties": {
-                    "vision":    {"type": "array", "items": {"type": "string"}},
-                    "yolo":      {"type": "array", "items": {"type": "string"}},
-                    "audio":     {"type": "array", "items": {"type": "string"}},
-                    "previous":  {"type": "array", "items": {"type": "string"}},
+                    "vision": {"type": "array", "items": {"type": "string"}},
+                    "yolo": {"type": "array", "items": {"type": "string"}},
+                    "audio": {"type": "array", "items": {"type": "string"}},
+                    "previous": {"type": "array", "items": {"type": "string"}},
                 },
                 "required": ["vision", "yolo", "audio", "previous"],
             },
@@ -82,13 +90,20 @@ def _get_json_schema_for_vllm() -> Dict[str, Any]:
 
 class OpenAICompatLLM:
     def __init__(
-        self, base_url: str, model: str, api_key: str = "EMPTY", timeout_s: float = 60.0, is_vllm: bool = False
+        self,
+        base_url: str,
+        model: str,
+        api_key: str = "EMPTY",
+        timeout_s: float = 60.0,
+        is_vllm: bool = False,
     ):
         self.base_url = base_url.rstrip("/")
         self.model = model
         self.api_key = api_key
         self.timeout_s = timeout_s
-        self.is_vllm = is_vllm or "localhost" in base_url  # ローカルサーバーなら vLLM と判定
+        self.is_vllm = (
+            is_vllm or "localhost" in base_url
+        )  # ローカルサーバーなら vLLM と判定
         # GPT-5 系モデルは max_tokens ではなく max_completion_tokens を使用
         self._use_max_completion_tokens = "gpt-5" in model.lower()
 
@@ -172,7 +187,6 @@ class OpenAICompatLLM:
                 logger.error(f"LLM JSON パースエラー: {str(e)}")
                 logger.debug(f"LLM raw output (first 3000 chars):\n{content[:3000]}")
                 raise
-
 
 
 def _robust_json_loads(text: str) -> Dict[str, Any]:
@@ -304,6 +318,7 @@ class ContextSchema(TypedDict):
     vision_analyzer: Optional[VisionAnalyzer]
     yolo_detector: Optional[YOLODetector]
     audio_analyzer: AudioAnalyzer
+    depth_estimator: Optional[DepthEstimator]
     prompts: dict  # プロンプト設定全体
     chat_max_tokens: int
     max_outstanding_regions: int
@@ -318,9 +333,7 @@ class ContextSchema(TypedDict):
 # =========================
 
 
-def ingest_observation(
-    state: AgentState, runtime: Runtime[ContextSchema]
-) -> Command:
+def ingest_observation(state: AgentState, runtime: Runtime[ContextSchema]) -> Command:
     """
     観測を取得して、yolo_node、vlm_node、audio_node へ fan-out で送信。
     Command + Send API により真の LangGraph 並列実行を実現。
@@ -340,12 +353,16 @@ def ingest_observation(
             )
         obs = nxt
 
-    # fan-out: yolo, vlm, audio を並列ノードへ送信
+    # fan-out: yolo, vlm, audio（+ depth）を並列ノードへ送信
     sends: list[Send] = [
         Send("yolo_node", {"observation": obs}),
         Send("vlm_node", {"observation": obs}),
         Send("audio_node", {"observation": obs}),
     ]
+
+    # enable_depth=true の場合のみ depth_node を追加
+    if "depth" in runtime.context["expected_modalities"]:
+        sends.append(Send("depth_node", {"observation": obs}))
 
     return Command(
         update={
@@ -354,7 +371,9 @@ def ingest_observation(
             "modality_results": {},  # dict リセット
             "received_modalities": [_RESET_SENTINEL],  # バリアカウンタをリセット
             "barrier_obs_id": None,  # ラッチをリセット
-            "messages": [{"role": "assistant", "content": f"[ingest] fan-out -> {obs.obs_id}"}],
+            "messages": [
+                {"role": "assistant", "content": f"[ingest] fan-out -> {obs.obs_id}"}
+            ],
         },
         goto=sends,
     )
@@ -378,7 +397,9 @@ def yolo_node(state: AgentState, runtime: Runtime[ContextSchema]) -> Command:
         update={
             "modality_results": {"yolo": result},
             "received_modalities": ["yolo"],
-            "messages": [{"role": "assistant", "content": f"[yolo] objects={len(objects)}"}],
+            "messages": [
+                {"role": "assistant", "content": f"[yolo] objects={len(objects)}"}
+            ],
         },
         goto="join_modalities",
     )
@@ -388,14 +409,19 @@ def vlm_node(state: AgentState, runtime: Runtime[ContextSchema]) -> Command:
     """VLM ノード：2枚画像を比較分析し構造化 JSON を返す。"""
     obs = state.get("observation")
     analyzer = runtime.context.get("vision_analyzer")
+    config = runtime.context.get("config", {})
     vision_analysis = None
     error = None
 
     if obs and obs.image_path and analyzer:
         try:
+            # Vision API のトークン上限を設定から取得
+            vision_max_tokens = config.get("tokens", {}).get("vision_max_completion_tokens", 4096)
+
             vision_analysis = analyzer.analyze(
                 image_path=obs.image_path,
                 prev_image_path=obs.prev_image_path,
+                max_tokens=vision_max_tokens,
             )
         except Exception as e:
             error = f"vlm: {e}"
@@ -409,7 +435,12 @@ def vlm_node(state: AgentState, runtime: Runtime[ContextSchema]) -> Command:
         update={
             "modality_results": {"vlm": result},
             "received_modalities": ["vlm"],
-            "messages": [{"role": "assistant", "content": f"[vlm] {'ok' if vision_analysis else 'none'}"}],
+            "messages": [
+                {
+                    "role": "assistant",
+                    "content": f"[vlm] {'ok' if vision_analysis else 'none'}",
+                }
+            ],
         },
         goto="join_modalities",
     )
@@ -433,7 +464,113 @@ def audio_node(state: AgentState, runtime: Runtime[ContextSchema]) -> Command:
         update={
             "modality_results": {"audio": result},
             "received_modalities": ["audio"],
-            "messages": [{"role": "assistant", "content": f"[audio] cues={len(audio_cues)}"}],
+            "messages": [
+                {"role": "assistant", "content": f"[audio] cues={len(audio_cues)}"}
+            ],
+        },
+        goto="join_modalities",
+    )
+
+
+def depth_node(state: AgentState, runtime: Runtime[ContextSchema]) -> Command:
+    """深度推定ノード：深度Anything3で推定し、VLMで分析、PNG出力。
+
+    1. DepthEstimator.estimate() で side-by-side PNG バイト列を取得
+    2. PNG をファイルに保存（data/depth/depth_Xs.png）
+    3. VisionAnalyzer.analyze_bytes_raw() で VLM 分析
+    4. DepthAnalysisResult に型変換してモダリティ結果に格納
+    """
+    obs = state.get("observation")
+    error = None
+    depth_analysis = None
+    depth_image_path = None
+
+    depth_estimator = runtime.context.get("depth_estimator")
+    vision_analyzer = runtime.context.get("vision_analyzer")
+    prompts = runtime.context.get("prompts", {})
+    config = runtime.context.get("config", {})
+
+    if depth_estimator and vision_analyzer and obs and obs.image_path:
+        try:
+            # ステップ1: 深度推定 + side-by-side PNG
+            side_by_side_bytes = depth_estimator.estimate(obs.image_path)
+            if side_by_side_bytes is None:
+                error = "depth: depth_estimator returned None"
+            else:
+                # ステップ1.5: side-by-side 画像をファイルに保存
+                try:
+                    depth_output_dir = Path("data/depth")
+                    depth_output_dir.mkdir(parents=True, exist_ok=True)
+
+                    # ファイル名を frame と完全に同じにする（例：frame_0s.jpg → frame_0s.jpg）
+                    frame_filename = Path(obs.image_path).name  # "frame_0s.jpg"
+                    depth_filename = frame_filename
+                    depth_image_path = str(depth_output_dir / depth_filename)
+
+                    with open(depth_image_path, "wb") as f:
+                        f.write(side_by_side_bytes)
+                    logger.debug(f"Depth image saved to {depth_image_path}")
+                except Exception as e:
+                    logger.warning(f"Failed to save depth image: {e}")
+                    depth_image_path = None
+
+                # ステップ2: VLM で深度画像を分析
+                depth_prompt = prompts.get("depth_analysis", {}).get("system")
+                if not depth_prompt:
+                    logger.debug("depth_analysis.system プロンプトが見つかりません。デフォルトプロンプトを使用します。")
+                    depth_prompt = (
+                        "この深度推定画像を分析して、空間的な危険性を評価してください。"
+                    )
+
+                # Vision API のトークン上限を設定から取得
+                vision_max_tokens = config.get("tokens", {}).get("vision_max_completion_tokens", 4096)
+
+                raw_result = vision_analyzer.analyze_bytes_raw(
+                    side_by_side_bytes,
+                    media_type="image/png",
+                    prompt=depth_prompt,
+                    max_tokens=vision_max_tokens,
+                )
+
+                if raw_result is None:
+                    error = "depth: VLM analysis failed"
+                else:
+                    # ステップ3: JSON を DepthAnalysisResult に型変換
+                    try:
+                        depth_analysis = DepthAnalysisResult.model_validate(raw_result)
+                        # フォールバック検出: summary が error message の場合
+                        if depth_analysis.summary and "could not be parsed" in depth_analysis.summary:
+                            logger.debug("Depth analysis returned fallback response (VLM レスポンスが不正)")
+                            # fallback response の場合もエラーを記録するが depth_analysis は保持
+                    except Exception as e:
+                        logger.warning(f"Failed to validate depth analysis result: {e}")
+                        error = f"depth: validation error: {e}"
+        except Exception as e:
+            logger.error(f"Depth node error: {e}")
+            error = f"depth: {e}"
+    elif not depth_estimator:
+        # DepthEstimator が利用不可（enable_depth=false または import失敗）
+        error = "depth: estimator not available"
+    elif not vision_analyzer:
+        error = "depth: vision_analyzer not available"
+
+    result = ModalityResult(
+        modality_name="depth",
+        extra={"depth_analysis": depth_analysis, "depth_image_path": depth_image_path}
+        if depth_analysis
+        else {"depth_image_path": depth_image_path},
+        error=error,
+    )
+    return Command(
+        update={
+            "modality_results": {"depth": result},
+            "received_modalities": ["depth"],
+            "messages": [
+                {
+                    "role": "assistant",
+                    "content": f"[depth] {'ok' if depth_analysis else 'none'}",
+                }
+            ],
         },
         goto="join_modalities",
     )
@@ -455,14 +592,20 @@ def join_modalities(state: AgentState, runtime: Runtime[ContextSchema]) -> Comma
         if barrier_obs_id == current_obs_id:
             # 既にこのフレーム（obs_id）で fuse 実行済み → スキップ
             return Command(
-                update={"messages": [{"role": "assistant", "content": "[join] already fused, skip"}]},
+                update={
+                    "messages": [
+                        {"role": "assistant", "content": "[join] already fused, skip"}
+                    ]
+                },
                 goto=END,
             )
         # 初回: ラッチをセットして fuse へ
         return Command(
             update={
                 "barrier_obs_id": current_obs_id,
-                "messages": [{"role": "assistant", "content": "[join] all modalities received"}],
+                "messages": [
+                    {"role": "assistant", "content": "[join] all modalities received"}
+                ],
             },
             goto="fuse_modalities",
         )
@@ -498,10 +641,12 @@ def fuse_modalities(
     yolo = results.get("yolo")
     vlm = results.get("vlm")
     audio = results.get("audio")
+    depth = results.get("depth")
 
-    objects = (yolo.objects if yolo and yolo.objects else [])
-    audio_cues = (audio.audio_cues if audio and audio.audio_cues else [])
+    objects = yolo.objects if yolo and yolo.objects else []
+    audio_cues = audio.audio_cues if audio and audio.audio_cues else []
     vision_analysis = vlm.extra.get("vision_analysis") if vlm else None
+    depth_analysis = depth.extra.get("depth_analysis") if depth else None
     modality_errors = [r.error for r in results.values() if r.error]
 
     # PerceptionIR を作成
@@ -511,6 +656,7 @@ def fuse_modalities(
         objects=objects,
         audio=audio_cues,
         vision_analysis=vision_analysis,
+        depth_analysis=depth_analysis,
         modality_errors=modality_errors,
     )
 
@@ -519,7 +665,7 @@ def fuse_modalities(
         "messages": [
             {
                 "role": "assistant",
-                "content": f"[fuse] ok (perception inference in determine_next_action_llm)",
+                "content": "[fuse] ok (perception inference in determine_next_action_llm)",
             }
         ],
     }
@@ -541,7 +687,12 @@ def determine_next_action_llm(
         return {
             "assessment": assessment,
             "world": world.model_copy(update={"last_assessment": assessment}),
-            "messages": [{"role": "assistant", "content": "[assess] LLM not configured -> heuristic"}],
+            "messages": [
+                {
+                    "role": "assistant",
+                    "content": "[assess] LLM not configured -> heuristic",
+                }
+            ],
         }
 
     # コンテキスト構築
@@ -550,12 +701,15 @@ def determine_next_action_llm(
     context_data = {
         "vision_analysis": (
             ir.vision_analysis.model_dump(exclude_none=True, by_alias=True)
-            if ir.vision_analysis else None
+            if ir.vision_analysis
+            else None
         ),
         "detected_objects": [o.model_dump() for o in ir.objects[:10]],
         "audio_cues": [a.model_dump() for a in ir.audio],
         "previous_assessment": (
-            world.last_assessment.model_dump() if context_history_size >= 1 and world.last_assessment else None
+            world.last_assessment.model_dump()
+            if context_history_size >= 1 and world.last_assessment
+            else None
         ),
     }
 
@@ -565,7 +719,11 @@ def determine_next_action_llm(
 
     try:
         chat_max_tokens = runtime.context["chat_max_tokens"]
-        raw = llm.chat_json(system=system, user=json.dumps(context_data, ensure_ascii=False), max_tokens=chat_max_tokens)
+        raw = llm.chat_json(
+            system=system,
+            user=json.dumps(context_data, ensure_ascii=False),
+            max_tokens=chat_max_tokens,
+        )
 
         # SafetyAssessment を直接取得
         assessment = SafetyAssessment.model_validate(raw)
@@ -577,14 +735,24 @@ def determine_next_action_llm(
             "assessment": assessment,
             "world": world.model_copy(update={"last_assessment": assessment}),
             "errors": [f"LLM assessment fallback: {e}"],
-            "messages": [{"role": "assistant", "content": f"[assess] LLM failed -> heuristic. err={e}"}],
+            "messages": [
+                {
+                    "role": "assistant",
+                    "content": f"[assess] LLM failed -> heuristic. err={e}",
+                }
+            ],
         }
 
     new_world = world.model_copy(update={"last_assessment": assessment})
     return {
         "assessment": assessment,
         "world": new_world,
-        "messages": [{"role": "assistant", "content": f"[assess] {assessment.action_type} risk={assessment.risk_level} priority={assessment.priority:.2f} (llm)"}],
+        "messages": [
+            {
+                "role": "assistant",
+                "content": f"[assess] {assessment.action_type} risk={assessment.risk_level} priority={assessment.priority:.2f} (llm)",
+            }
+        ],
     }
 
 
@@ -623,7 +791,13 @@ def emit_output(state: AgentState) -> Dict[str, Any]:
         "video_timestamp": obs.video_timestamp if obs else None,
         "vision_analysis": (
             ir.vision_analysis.model_dump(exclude_none=True, by_alias=True)
-            if ir and ir.vision_analysis else None
+            if ir and ir.vision_analysis
+            else None
+        ),
+        "depth_analysis": (
+            ir.depth_analysis.model_dump(exclude_none=True)
+            if ir and ir.depth_analysis
+            else None
         ),
         "objects": ir_dump.get("objects", []),
         "audio": ir_dump.get("audio", []),
@@ -664,11 +838,12 @@ def should_continue(state: AgentState) -> str:
 def build_agent():
     builder = StateGraph(AgentState, context_schema=ContextSchema)
 
-    # ノード登録（yolo/vlm に分割した fan-out/fan-in 対応）
+    # ノード登録（yolo/vlm/audio/depth に分割した fan-out/fan-in 対応）
     builder.add_node("ingest_observation", ingest_observation)
     builder.add_node("yolo_node", yolo_node)
     builder.add_node("vlm_node", vlm_node)
     builder.add_node("audio_node", audio_node)
+    builder.add_node("depth_node", depth_node)
     builder.add_node("join_modalities", join_modalities)  # ラッチ付き fan-in バリア
     builder.add_node("fuse_modalities", fuse_modalities)
     builder.add_node("determine_next_action_llm", determine_next_action_llm)
@@ -678,7 +853,9 @@ def build_agent():
     # エッジ設定
     builder.add_edge(START, "ingest_observation")
     # fan-out: yolo/vlm/audio ノードは Command で goto="join_modalities" するため静的エッジは不要
-    builder.add_edge("fuse_modalities", "determine_next_action_llm")  # PerceptionIR 生成 → 安全判断
+    builder.add_edge(
+        "fuse_modalities", "determine_next_action_llm"
+    )  # PerceptionIR 生成 → 安全判断
     builder.add_edge("determine_next_action_llm", "emit_output")
     builder.add_edge("emit_output", "bump_step")
     builder.add_conditional_edges("bump_step", should_continue)

@@ -1,4 +1,5 @@
 import json
+import logging
 import os
 import shutil
 import subprocess
@@ -10,16 +11,19 @@ import cv2
 import yaml
 from dotenv import load_dotenv
 
-# .env ファイルから環境変数を読み込む
-load_dotenv()
-
 from safety_agent.agent import AgentState, OpenAICompatLLM, build_agent
-from safety_agent.modality_nodes import AudioAnalyzer, VisionAnalyzer, YOLODetector
+from safety_agent.modality_nodes import (
+    AudioAnalyzer,
+    DepthEstimator,
+    VisionAnalyzer,
+    YOLODetector,
+)
 from safety_agent.schema import CameraPose, Observation, ObservationProvider, WorldModel
 from util.logger import setup_logger
 
-# ロガーを設定（デバッグモード有効化）
-import logging
+# .env ファイルから環境変数を読み込む
+load_dotenv()
+
 logger = setup_logger("safety_view_agent", level=logging.DEBUG)
 
 # ==========================================
@@ -745,6 +749,13 @@ def main():
         except Exception as e:
             logger.warning(f"Failed to initialize YOLO: {e}, using fallback")
 
+    depth_estimator = None
+    if agent_cfg.get("enable_depth", False):
+        try:
+            depth_estimator = DepthEstimator()
+        except Exception as e:
+            logger.warning(f"Failed to initialize DepthEstimator: {e}, depth estimation will not be available")
+
     # Initial state (with modality_results for fan-in)
     initial_state: AgentState = {
         "messages": [],
@@ -766,6 +777,8 @@ def main():
     expected_modalities = ["yolo", "vlm"]  # Vision is always expected
     if agent_cfg.get("enable_audio", False):
         expected_modalities.append("audio")
+    if agent_cfg.get("enable_depth", False):
+        expected_modalities.append("depth")
 
     # Context (with modality analyzers for fan-out nodes)
     context = {
@@ -774,7 +787,9 @@ def main():
         "vision_analyzer": vision_analyzer,
         "yolo_detector": yolo_detector,
         "audio_analyzer": audio_analyzer,
+        "depth_estimator": depth_estimator,
         "prompts": prompts,
+        "config": config,  # depth_node で config.get("tokens", ...) 使用
         "chat_max_tokens": tokens_cfg.get("chat_max_tokens", 2000),
         "max_outstanding_regions": agent_cfg.get("max_outstanding_regions", 6),
         "context_history_size": agent_cfg.get("context_history_size", 1),

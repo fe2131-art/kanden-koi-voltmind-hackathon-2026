@@ -118,6 +118,7 @@ def test_data_mode_config():
 def test_prepare_observations_mode_selection():
     """Test that prepare_observations selects the correct implementation based on mode."""
     from unittest.mock import patch
+
     from run import prepare_observations
 
     # Test manual mode (default) - should raise FileNotFoundError if no frames

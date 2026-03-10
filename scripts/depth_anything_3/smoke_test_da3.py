@@ -6,9 +6,8 @@ from pathlib import Path
 import cv2
 import numpy as np
 import torch
-from PIL import Image
-
 from depth_anything_3.api import DepthAnything3
+from PIL import Image
 
 
 def resolve_model_id(
