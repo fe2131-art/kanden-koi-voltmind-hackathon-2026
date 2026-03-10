@@ -211,7 +211,7 @@ python src/run.py
 #### 1. Depth-Anything-3 をクローン
 
 ```bash
-git clone https://github.com/DepthAnything/Depth-Anything-3.git external/Depth-Anything-3
+git clone https://github.com/ByteDance-Seed/Depth-Anything-3.git external/Depth-Anything-3
 ```
 
 #### 2. パッチを自動適用

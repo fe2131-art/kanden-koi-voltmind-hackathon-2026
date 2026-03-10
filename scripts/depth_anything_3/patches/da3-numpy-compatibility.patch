@@ -1,26 +1,26 @@
-diff --git a/external/Depth-Anything-3/pyproject.toml b/external/Depth-Anything-3/pyproject.toml
+diff --git a/pyproject.toml b/pyproject.toml
 index 6a11c7a..c3b25ed 100644
---- a/external/Depth-Anything-3/pyproject.toml
-+++ b/external/Depth-Anything-3/pyproject.toml
+--- a/pyproject.toml
++++ b/pyproject.toml
 @@ -19,7 +19,7 @@ dependencies = [
      "einops",
      "huggingface_hub",
      "imageio",
 -    "numpy<2",
 +    "numpy",
-      "opencv-python",
+     "opencv-python",
      "xformers",
      "open3d",
-diff --git a/external/Depth-Anything-3/requirements.txt b/external/Depth-Anything-3/requirements.txt
+diff --git a/requirements.txt b/requirements.txt
 index 878db3f..c3e6c75 100644
---- a/external/Depth-Anything-3/requirements.txt
-+++ b/external/Depth-Anything-3/requirements.txt
+--- a/requirements.txt
++++ b/requirements.txt
 @@ -5,7 +5,7 @@ torchvision
  einops
  huggingface_hub
  imageio
 -numpy<2
 +numpy
-  opencv-python
+ opencv-python
  xformers
  open3d
