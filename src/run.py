@@ -774,16 +774,16 @@ def main():
     # Initialize modality analyzers for fan-out nodes
     audio_analyzer = None
     if agent_cfg.get("enable_audio", False):
-        vlm_config = config.get("vlm", {})
-        vlm_vllm = vlm_config.get("vllm", {})
+        audio_config = config.get("audio", {})
+        audio_llm = audio_config.get("llm", {})
 
         # ベースURL: VLM設定 > 環境変数 > LLM設定
-        _vlm_url = vlm_vllm.get("base_url")
-        base_url = _vlm_url
+        base_url = audio_llm.get("base_url")
 
         # モデル: VLM設定 > 環境変数 > LLM設定
-        model = vlm_vllm.get("model")
-        audio_analyzer = AudioAnalyzer(model=model, base_url=base_url, timeout=600, provider="llm")
+        model = audio_llm.get("model")
+        timeout = audio_llm.get("timeout_s")
+        audio_analyzer = AudioAnalyzer(model=model, base_url=base_url, timeout=timeout)
 
     yolo_detector = None
     if agent_cfg.get("enable_yolo", False):

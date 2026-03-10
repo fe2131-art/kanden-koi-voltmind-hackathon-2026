@@ -530,6 +530,7 @@ def fuse_modalities(
     yolo = results.get("yolo")
     vlm = results.get("vlm")
     audio = results.get("audio")
+    print(audio)
 
     objects = (yolo.objects if yolo and yolo.objects else [])
     audio_cues = (audio.audio_cues if audio and audio.audio_cues else [])

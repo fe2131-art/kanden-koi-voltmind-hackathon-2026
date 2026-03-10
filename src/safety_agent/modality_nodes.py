@@ -307,15 +307,15 @@ class AudioAnalyzer:
         if max_tokens is None:
             max_tokens = self.max_tokens or 2048
 
-        audio_base64 = self.encode_audio("data/audio/crash.wav")
+        audio_base64 = self.encode_audio(audio_text)
         response = self.client.chat.completions.create(
-            model="Qwen/Qwen2-Audio-7B",
+            model=self.model,
             messages=[
                 # {"role": "system",
                 #  "content": "Your task is what happens in the audio."},
                 {"role": "user",
-                 "content": [{"type": "text", "text": "What happens in the audio do you think?"},
-                             {"type": "input_audio", "input_audio": {"data": audio_base64, "format": "wav"}}]}
+                "content": [{"type": "text", "text": "What happens in the audio do you think?"},
+                            {"type": "input_audio", "input_audio": {"data": audio_base64, "format": "wav"}}]}
                 ],
             max_tokens=max_tokens,
         )
@@ -324,7 +324,7 @@ class AudioAnalyzer:
             AudioCue(
                 cue=response.choices[0].message.content,
                 confidence=0.5,
-                direction="None",
+                direction="front",
                 evidence=audio_text,
             )
         )
