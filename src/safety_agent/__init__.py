@@ -11,7 +11,6 @@ from .schema import (
     ObservationProvider,
     PerceptionIR,
     SafetyAssessment,
-    WorldModel,
 )
 
 __version__ = "0.1.0"
@@ -26,7 +25,6 @@ __all__ = [
     "ObservationProvider",
     "PerceptionIR",
     "SafetyAssessment",
-    "WorldModel",
     "OpenAICompatLLM",
     "build_agent",
     "AgentState",

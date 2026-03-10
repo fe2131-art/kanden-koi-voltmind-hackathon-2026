@@ -16,7 +16,6 @@ from src.safety_agent.schema import (
     VisionOverallAssessment,
     VisionRisk,
     VisionTemporalChange,
-    WorldModel,
 )
 
 
@@ -56,11 +55,6 @@ def test_perception_ir():
     )
     assert ir.obs_id == "t0"
     assert len(ir.objects) == 0
-
-
-def test_world_model():
-    world = WorldModel()
-    assert world.last_assessment is None
 
 
 def test_safety_assessment():
