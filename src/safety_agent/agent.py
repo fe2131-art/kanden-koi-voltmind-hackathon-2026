@@ -370,6 +370,8 @@ def ingest_observation(state: AgentState, runtime: Runtime[ContextSchema]) -> Co
             "modality_results": {},  # dict リセット
             "received_modalities": [_RESET_SENTINEL],  # バリアカウンタをリセット
             "barrier_obs_id": None,  # ラッチをリセット
+            # 注: assessment と last_assessment はリセットしない
+            # 前フレーム結果を determine_next_action_llm で参照するため
             "messages": [
                 {"role": "assistant", "content": f"[ingest] fan-out -> {obs.obs_id}"}
             ],
@@ -673,7 +675,16 @@ def fuse_modalities(
 def determine_next_action_llm(
     state: AgentState, runtime: Runtime[ContextSchema]
 ) -> Dict[str, Any]:
-    """VLM/YOLO/音声から、次に起こすべき行動を LLM で決定。前フレーム結果を参照。"""
+    """VLM/YOLO/音声から、次に起こすべき行動を LLM で決定。前フレーム結果を参照。
+
+    フレーム間の状態引き継ぎ：
+    - last_assessment: 前フレームの判断（LLM 入力で参照用）
+    - assessment: 現フレームで新しく計算した判断
+
+    返却時に両キーに同じ値を入れる理由：
+    次フレームでこの値が last_assessment（前フレーム判断）として参照されるため。
+    ingest_observation でリセットされないため、フレーム間で正しく引き継がれる。
+    """
     ir = state.get("ir")
     if ir is None:
         return {"errors": ["No IR for action determination"], "done": True}
@@ -682,6 +693,7 @@ def determine_next_action_llm(
     if llm is None:
         # ヒューリスティックフォールバック
         assessment = _heuristic_assessment()
+        # assessment と last_assessment の両方に同じ値を返す（次フレーム引き継ぎ用）
         return {
             "assessment": assessment,
             "last_assessment": assessment,
@@ -726,6 +738,7 @@ def determine_next_action_llm(
 
         # SafetyAssessment を直接取得
         assessment = SafetyAssessment.model_validate(raw)
+        # LLM で計算した judgment を次フレームの前判断として保存
         return {
             "assessment": assessment,
             "last_assessment": assessment,
@@ -740,6 +753,7 @@ def determine_next_action_llm(
     except Exception as e:
         logger.error("LLM assessment failed, using heuristic fallback", exc_info=True)
         assessment = _heuristic_assessment()
+        # フォールバック判断も同様に次フレーム用に保存
         return {
             "assessment": assessment,
             "last_assessment": assessment,
