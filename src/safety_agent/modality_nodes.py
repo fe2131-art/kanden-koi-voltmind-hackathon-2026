@@ -16,6 +16,7 @@ import threading
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Optional
+
 from openai import OpenAI
 
 from .schema import (
@@ -91,14 +92,14 @@ class VisionAnalyzer:
 
     @staticmethod
     def _parse_vision_json(text: str) -> Optional[dict]:
-        """LLM テキスト出力から JSON を抽出・パース。"""
+        """LLM テキスト出力から JSON を抽出・パース（4段階＋最終フォールバック）。"""
         # 1) 直接パース
         try:
             return json.loads(text)
         except Exception:
             pass
 
-        # 2) markdown コードブロック抽出
+        # 2) markdown コードブロック抽出（基本形）
         m = re.search(r"```(?:json)?\s*\n(.*?)\n```", text, flags=re.DOTALL)
         if m:
             try:
@@ -106,7 +107,7 @@ class VisionAnalyzer:
             except Exception:
                 pass
 
-        # 3) { ... } 抽出（ネスト対応）
+        # 3) { ... } 抽出（ネスト対応、最初のブロック）
         stripped = text.strip()
         if stripped.startswith("{"):
             depth = 0
@@ -120,6 +121,32 @@ class VisionAnalyzer:
                             return json.loads(stripped[: i + 1])
                         except Exception:
                             break
+
+        # 4) より柔軟な Markdown コードブロック抽出
+        # バックティックの後に改行がない場合や、前後に空白・テキストがある場合に対応
+        m = re.search(
+            r"```(?:json)?\s*([\s\S]*?)```",
+            text,
+            flags=re.DOTALL
+        )
+        if m:
+            candidate = m.group(1).strip()
+            try:
+                return json.loads(candidate)
+            except Exception:
+                pass
+
+        # 5) 複数の { ... } ブロック抽出（最後のものを採用）
+        # 説明文が前後にある場合、最後の JSON ブロックを採用
+        matches = list(re.finditer(r"\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}", text))
+        if matches:
+            # 最後のマッチをパース試行
+            for match in reversed(matches):
+                try:
+                    candidate = match.group(0)
+                    return json.loads(candidate)
+                except Exception:
+                    continue
 
         return None
 
@@ -184,7 +211,7 @@ class VisionAnalyzer:
             raw = response.choices[0].message.content or ""
             parsed = self._parse_vision_json(raw)
             if parsed is None:
-                logger.warning("VLM response could not be parsed as JSON; raw text returned")
+                logger.warning(f"[vision_analyze] VLM response could not be parsed as JSON. First 300 chars:\n{raw[:300]}")
                 # フォールバック: summary のみで VisionAnalysisResult を構築
                 return VisionAnalysisResult(summary=raw[:500] if raw else "No response")
 
@@ -192,6 +219,83 @@ class VisionAnalyzer:
 
         except Exception as e:
             logger.error(f"Vision API error: {e}")
+            return None
+
+    @staticmethod
+    def _encode_image_bytes(image_bytes: bytes, media_type: str) -> str:
+        """画像バイト列を Base64 エンコードし、data URL を返す。"""
+        image_data = base64.b64encode(image_bytes).decode("utf-8")
+        return f"data:{media_type};base64,{image_data}"
+
+    def analyze_bytes_raw(
+        self,
+        image_bytes: bytes,
+        media_type: str = "image/png",
+        prompt: Optional[str] = None,
+        max_tokens: Optional[int] = None,
+    ) -> Optional[dict]:
+        """画像バイト列をVLMで分析し、生JSON辞書を返す（型変換なし）。
+
+        深度解析結果画像（side-by-side PNG）の分析用。
+        VisionAnalysisResult ではなく dict を返すのは、DepthAnalysisResult への変換を
+        ノードレベルで行うため。
+        """
+        if prompt is None:
+            prompt = self.default_prompt or "この画像を詳しく説明してください。"
+
+        if max_tokens is None:
+            max_tokens = self.max_tokens or 2048
+
+        image_url = self._encode_image_bytes(image_bytes, media_type)
+
+        content: list[dict[str, Any]]
+        if self.provider == "vllm":
+            content = [
+                {"type": "text", "text": prompt},
+                {"type": "image_url", "image_url": {"url": image_url}},
+            ]
+        else:
+            content = [
+                {"type": "text", "text": prompt},
+                {"type": "image_url", "image_url": {"url": image_url, "detail": "high"}},
+            ]
+
+        try:
+            if self.provider == "vllm":
+                response = self.client.chat.completions.create(
+                    model=self.model,
+                    messages=[{"role": "user", "content": content}],
+                    max_tokens=max_tokens,
+                )
+            else:
+                response = self.client.chat.completions.create(
+                    model=self.model,
+                    messages=[{"role": "user", "content": content}],
+                    max_completion_tokens=max_tokens,
+                )
+
+            raw = response.choices[0].message.content or ""
+
+            parsed = self._parse_vision_json(raw)
+            if parsed is None:
+                # エラーログにも raw の最初の 500 文字を含める
+                logger.warning(
+                    f"[depth_analysis] VLM response could not be parsed as JSON. "
+                    f"First 500 chars:\n{raw[:500]}"
+                )
+                # フォールバック: 生テキストを summary として返し、他のフィールドはデフォルト値
+                return {
+                    "summary": raw[:500] if raw else "VLM response could not be parsed",
+                    "depth_zones": [],
+                    "nearest_hazards": [],
+                    "occlusions": [],
+                    "spatial_layout": None,
+                }
+
+            return parsed
+
+        except Exception as e:
+            logger.error(f"Vision API error (depth analysis): {e}")
             return None
 
 
@@ -316,3 +420,162 @@ class AudioAnalyzer:
                 )
             )
         return cues
+
+
+# ─── DepthEstimator（Depth Anything 3） ──────────────────────────
+
+
+class DepthEstimator:
+    """Depth Anything 3 による深度推定。モデルロード失敗時は self._model = None。"""
+
+    def __init__(
+        self,
+        model_family: str = "mono",
+        model_size: str = "large",
+        model_id: Optional[str] = None,
+        process_res: int = 504,
+    ) -> None:
+        self.process_res = process_res
+        self._model = None
+        self._device = None
+
+        try:
+            import torch
+            from depth_anything_3.api import DepthAnything3
+
+            self._device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+            resolved_model_id = self._resolve_model_id(model_family, model_size, model_id)
+            self._model = DepthAnything3.from_pretrained(resolved_model_id).to(self._device)
+            logger.info(f"DepthEstimator initialized: {resolved_model_id} on {self._device}")
+        except ImportError as e:
+            logger.warning(f"depth_anything_3 not available: {e}. DepthEstimator will not work.")
+        except Exception as e:
+            logger.warning(f"Failed to initialize DepthEstimator: {e}")
+
+    def _resolve_model_id(
+        self,
+        model_family: str,
+        model_size: str,
+        model_id: Optional[str],
+    ) -> str:
+        """モデル ID を家族・サイズから解決。model_id が指定されたら優先。"""
+        if model_id:
+            return model_id
+
+        if model_family == "mono":
+            if model_size != "large":
+                raise ValueError("mono は large のみ指定できます。")
+            return "depth-anything/DA3MONO-LARGE"
+
+        if model_family == "metric":
+            if model_size != "large":
+                raise ValueError("metric は large のみ指定できます。")
+            return "depth-anything/DA3METRIC-LARGE"
+
+        if model_family == "any":
+            size_to_id = {
+                "small": "depth-anything/DA3-SMALL",
+                "base": "depth-anything/DA3-BASE",
+                "large": "depth-anything/DA3-LARGE",
+                "giant": "depth-anything/DA3-GIANT",
+            }
+            if model_size not in size_to_id:
+                raise ValueError(f"unknown size for 'any' family: {model_size}")
+            return size_to_id[model_size]
+
+        raise ValueError(f"unknown model_family: {model_family}")
+
+    def _depth_to_turbo_rgb(
+        self,
+        depth: Any,  # np.ndarray
+        percentile_low: float = 2.0,
+        percentile_high: float = 98.0,
+    ) -> Any:  # np.ndarray
+        """深度を Turbo カラーマップで可視化。近いほど暖色、遠いほど寒色。"""
+        import cv2
+        import numpy as np
+
+        depth = depth.astype(np.float32)
+        valid = np.isfinite(depth)
+
+        if not np.any(valid):
+            raise ValueError("Depth map has no finite values.")
+
+        lo = float(np.percentile(depth[valid], percentile_low))
+        hi = float(np.percentile(depth[valid], percentile_high))
+
+        if hi <= lo:
+            norm = np.zeros_like(depth, dtype=np.float32)
+        else:
+            clipped = np.clip(depth, lo, hi)
+            norm = (clipped - lo) / (hi - lo)
+
+        # 近いものを暖色にしたいので反転
+        norm = 1.0 - norm
+
+        gray_u8 = (norm * 255.0).clip(0, 255).astype(np.uint8)
+        color_bgr = cv2.applyColorMap(gray_u8, cv2.COLORMAP_TURBO)
+        color_rgb = cv2.cvtColor(color_bgr, cv2.COLOR_BGR2RGB)
+        return color_rgb
+
+    def _make_side_by_side_bytes(
+        self,
+        rgb: Any,  # np.ndarray
+        depth_vis_rgb: Any,  # np.ndarray
+    ) -> bytes:
+        """RGB と深度可視化を side-by-side で合成し、PNG バイト列を返す。"""
+        from io import BytesIO
+
+        import cv2
+        import numpy as np
+        from PIL import Image
+
+        if rgb.shape[:2] != depth_vis_rgb.shape[:2]:
+            depth_vis_rgb = cv2.resize(
+                depth_vis_rgb,
+                (rgb.shape[1], rgb.shape[0]),
+                interpolation=cv2.INTER_LINEAR,
+            )
+
+        merged = np.concatenate([rgb, depth_vis_rgb], axis=1)
+        img = Image.fromarray(merged)
+
+        buf = BytesIO()
+        img.save(buf, format="PNG")
+        return buf.getvalue()
+
+    def estimate(self, image_path: str) -> Optional[bytes]:
+        """画像から深度推定し、side-by-side PNG バイト列を返す。
+
+        モデルが None の場合は None を返す（深度推定は利用不可）。
+        エラー発生時は例外を raise しない（ModalityResult.error に設定される）。
+        """
+        if self._model is None:
+            return None
+
+        if not Path(image_path).exists():
+            logger.warning(f"Image not found for depth estimation: {image_path}")
+            return None
+
+        try:
+            import numpy as np
+
+            # 推論実行
+            prediction = self._model.inference(
+                [str(image_path)],
+                process_res=self.process_res,
+                process_res_method="upper_bound_resize",
+            )
+
+            depth = prediction.depth[0].astype(np.float32)
+            rgb = prediction.processed_images[0].astype(np.uint8)
+
+            depth_vis_rgb = self._depth_to_turbo_rgb(depth)
+            side_by_side_bytes = self._make_side_by_side_bytes(rgb, depth_vis_rgb)
+
+            logger.debug(f"Depth estimation completed for {image_path}")
+            return side_by_side_bytes
+
+        except Exception as e:
+            logger.error(f"Depth estimation failed: {e}")
+            return None
