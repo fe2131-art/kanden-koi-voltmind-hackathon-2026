@@ -16,6 +16,8 @@ import threading
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Optional
+import librosa
+import soundfile as sf
 
 from openai import OpenAI
 
@@ -390,10 +392,47 @@ class YOLODetector:
 
 
 class AudioAnalyzer:
-    """音声テキストから AudioCue リストを抽出するヒューリスティック。"""
+    def __init__(
+        self,
+        model: str,
+        base_url: str = "https://api.openai.com/v1",
+        api_key: str = "EMPTY",
+        timeout: float = 3600.0,
+        sample_rate: int = 16000,
+        default_prompt: Optional[str] = None,
+        max_tokens: Optional[int] = None,
+    ):
+        self.model = model
+        self.sample_rate = sample_rate
+        self.default_prompt = default_prompt
+        self.max_tokens = max_tokens
 
-    def analyze(self, audio_text: Optional[str]) -> list[AudioCue]:
-        """音声テキストを解析して AudioCue リストを返す。"""
+        # LLM 用に base_url を正規化
+        base_url = base_url.rstrip("/")
+        if base_url.endswith("/chat/completions"):
+            raise ValueError(
+                f"base_url にはフル endpoint ではなく /v1 までを渡してください: {base_url}"
+            )
+        if not base_url.endswith("/v1"):
+            base_url = f"{base_url}/v1"
+
+        self.client = OpenAI(
+            api_key=api_key,
+            base_url=base_url,
+            timeout=timeout,
+        )
+
+    def encode_audio(self, audio_path, sample_rate, video_timestamp, trimmed_filepath="data/audio/audio_trimmed.wav"):
+        audio, sr = librosa.load(audio_path, sr=sample_rate)
+        if video_timestamp is not None:
+            # 推論時間までの音声にトリミング
+            audio = audio[:sr*video_timestamp]
+        sf.write(trimmed_filepath, audio, sr)
+        with open(trimmed_filepath, "rb") as audio_file:
+            return base64.b64encode(audio_file.read()).decode('utf-8')
+
+    def analyze_heuristic(self, audio_text: Optional[str]) -> list[AudioCue]:
+        """音声テキストから AudioCue リストを抽出するヒューリスティック。"""
         if not audio_text:
             return []
 
@@ -421,6 +460,50 @@ class AudioAnalyzer:
             )
         return cues
 
+    def analyze(
+        self,
+        audio_text: str,
+        prompt: Optional[str] = None,
+        max_tokens: Optional[int] = None,
+        video_timestamp: Optional[int] = None,
+    ) -> str:
+        if not Path(audio_text).exists():
+            return self.analyze_heuristic(audio_text=None)
+
+        cues: list[AudioCue] = []
+        if prompt is None:
+            prompt = "この音声データで何が起きているか教えてください"
+
+        if max_tokens is None:
+            max_tokens = self.max_tokens or 2048
+        
+        audio_base64 = self.encode_audio(
+            "data/audio/crash.wav", #"data/audio/crash.wav",
+            self.sample_rate,
+            video_timestamp=video_timestamp,
+        )
+        response = self.client.chat.completions.create(
+            model=self.model,
+            messages=[
+                # {"role": "system",
+                #  "content": "Your task is what happens in the audio."},
+                {"role": "user",
+                "content": [{"type": "text", "text": "What happens in the audio do you think?"},
+                            {"type": "input_audio", "input_audio": {"data": audio_base64, "format": "wav"}}]}
+                ],
+            max_tokens=max_tokens,
+        )
+
+        cues.append(
+            AudioCue(
+                cue=response.choices[0].message.content,
+                confidence=0.5,
+                direction="front",
+                evidence=audio_text,
+            )
+        )
+
+        return cues
 
 # ─── DepthEstimator（Depth Anything 3） ──────────────────────────
 

@@ -456,7 +456,7 @@ def audio_node(state: AgentState, runtime: Runtime[ContextSchema]) -> Command:
     audio_analyzer = runtime.context.get("audio_analyzer")
     if audio_analyzer and obs:
         try:
-            audio_cues = audio_analyzer.analyze(obs.audio_text)
+            audio_cues = audio_analyzer.analyze(obs.audio_text, obs.video_timestamp)
         except Exception as e:
             error = f"audio: {e}"
 

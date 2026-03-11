@@ -552,7 +552,7 @@ def prepare_observations_inspesafe(
             obs_id=f"img_{i}",
             image_path=str(fp.resolve()),
             prev_image_path=str(frame_paths[i - 1].resolve()) if i > 0 else None,
-            audio_text=None,
+            audio_text="data/audio/audio.wav",
             camera_pose=CameraPose(pan_deg=0, tilt_deg=0, zoom=1),
         )
         for i, fp in enumerate(frame_paths)
@@ -623,7 +623,7 @@ def prepare_observations(
                 obs_id=f"img_{i}",
                 image_path=str(frame_path.absolute()),
                 prev_image_path=str(frame_files[i - 1].absolute()) if i > 0 else None,
-                audio_text=None,
+                audio_text="data/audio/audio.wav",
                 camera_pose=CameraPose(pan_deg=0, tilt_deg=0, zoom=1),
             )
             for i, frame_path in enumerate(frame_files)
@@ -740,7 +740,13 @@ def main():
     # Initialize modality analyzers for fan-out nodes
     audio_analyzer = None
     if agent_cfg.get("enable_audio", False):
-        audio_analyzer = AudioAnalyzer()
+        audio_config = config.get("audio", {})
+        audio_llm = audio_config.get("llm", {})
+        base_url = audio_llm.get("base_url")
+        model = audio_llm.get("model")
+        timeout = audio_llm.get("timeout_s")
+        sample_rate = audio_config.get("sample_rate")
+        audio_analyzer = AudioAnalyzer(model=model, base_url=base_url, timeout=timeout, sample_rate=sample_rate)
 
     yolo_detector = None
     if agent_cfg.get("enable_yolo", False):

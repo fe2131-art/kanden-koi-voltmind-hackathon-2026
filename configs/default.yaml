@@ -4,7 +4,7 @@
 agent:
   max_steps: 1    # デフォルト：1フレーム実行
   enable_yolo: false
-  enable_audio: false
+  enable_audio: true
   enable_depth: false
   max_outstanding_regions: 6        # 次に観測すべき候補領域の検討数上限
   context_history_size: 1           # LLM に渡す前回結果の数（0=なし, 1=前回のみ）
@@ -70,6 +70,10 @@ audio:
   sample_rate: 16000
   channels: 1
   codec: "pcm_s16le"
+  llm:
+    base_url: "http://localhost:8001/v1"  # vLLM サーバーのベースURL（provider: "vllm" の場合のみ使用）
+    model: "Qwen/Qwen2-Audio-7B"    # null → llm.vllm.model を流用
+    timeout_s: 60.0
 
 # LLM トークン設定
 tokens:
