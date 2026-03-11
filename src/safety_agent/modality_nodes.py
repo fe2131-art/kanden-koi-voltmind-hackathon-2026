@@ -478,7 +478,7 @@ class AudioAnalyzer:
             max_tokens = self.max_tokens or 2048
         
         audio_base64 = self.encode_audio(
-            "data/audio/crash.wav", #"data/audio/crash.wav",
+            audio_text, #"data/audio/crash.wav",
             self.sample_rate,
             video_timestamp=video_timestamp,
         )
