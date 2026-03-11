@@ -41,6 +41,7 @@ def test_e2e_agent_no_llm():
         "received_modalities": [],  # PR1: fan-in バリア
         "barrier_obs_id": None,  # ラッチ（同フレーム内で fuse は1回だけ）
         "latest_output": None,  # PR3: 統合出力
+        "last_vision_summary": None,
         "last_assessment": None,
         "assessment": None,
         "done": False,
@@ -59,10 +60,14 @@ def test_e2e_agent_no_llm():
             "vision_analysis": {
                 "default_prompt": "テスト用プロンプト（LLM 未使用のため内容は問わない）"
             },
+            "audio_analysis": {
+                "default_prompt": "テスト用音声プロンプト",
+            },
             "safety_assessment": {
                 "system": "テスト用：知覚推論+安全判断統合プロンプト（LLMなしで実行）",
             },
         },
+        "config": {"audio": {"window_seconds": 3.0}},
         "chat_max_tokens": 2000,
         "max_outstanding_regions": 6,
         "context_history_size": 1,

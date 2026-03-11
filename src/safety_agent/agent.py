@@ -302,6 +302,7 @@ class AgentState(TypedDict):
     barrier_obs_id: Optional[str]
 
     latest_output: Optional[Dict[str, Any]]
+    last_vision_summary: Optional[str]
 
     # 前フレーム、現フレームの安全判断
     last_assessment: Optional[SafetyAssessment]  # フレーム間の引き継ぎ
@@ -319,6 +320,7 @@ class ContextSchema(TypedDict):
     audio_analyzer: AudioAnalyzer
     depth_estimator: Optional[DepthEstimator]
     prompts: dict  # プロンプト設定全体
+    config: dict
     chat_max_tokens: int
     max_outstanding_regions: int
     context_history_size: int  # LLM に渡す前回結果の数（0=なし, 1=前回のみ）
@@ -456,7 +458,13 @@ def audio_node(state: AgentState, runtime: Runtime[ContextSchema]) -> Command:
     audio_analyzer = runtime.context.get("audio_analyzer")
     if audio_analyzer and obs:
         try:
-            audio_cues = audio_analyzer.analyze(obs.audio_text, obs.video_timestamp)
+            audio_cfg = runtime.context.get("config", {}).get("audio", {})
+            audio_cues = audio_analyzer.analyze(
+                audio_input=obs.audio_path or obs.audio_text,
+                video_timestamp=obs.video_timestamp,
+                previous_vision_summary=state.get("last_vision_summary"),
+                window_seconds=audio_cfg.get("window_seconds", 3.0),
+            )
         except Exception as e:
             error = f"audio: {e}"
 
@@ -816,8 +824,15 @@ def emit_output(state: AgentState) -> Dict[str, Any]:
         "errors": errors,
     }
 
+    last_vision_summary = (
+        ir.vision_analysis.summary
+        if ir and ir.vision_analysis and ir.vision_analysis.summary
+        else state.get("last_vision_summary")
+    )
+
     return {
         "latest_output": output,
+        "last_vision_summary": last_vision_summary,
         "messages": [
             {
                 "role": "assistant",

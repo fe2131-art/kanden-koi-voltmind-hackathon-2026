@@ -244,6 +244,109 @@ def get_vlm(config: dict, prompts: dict) -> Optional[VisionAnalyzer]:
         return None
 
 
+def get_alm(config: dict, prompts: dict) -> Optional[AudioAnalyzer]:
+    """ALM（Audio Language Model）を設定と環境変数に基づいて初期化。"""
+    alm_config = config.get("alm", {})
+    llm_config = config.get("llm", {})
+    audio_config = config.get("audio", {})
+    provider = alm_config.get("provider", "openai")
+
+    # audio_analysis プロンプトを取得（必須）
+    audio_prompt = prompts.get("audio_analysis", {}).get("default_prompt")
+    if audio_prompt is None:
+        raise ValueError(
+            "プロンプト設定 audio_analysis.default_prompt が見つかりません。"
+            "configs/prompt.yaml を確認してください。"
+        )
+
+    sample_rate = audio_config.get("sample_rate", 16000)
+    window_seconds = audio_config.get("window_seconds", 3.0)
+
+    if provider == "openai":
+        api_key = os.getenv("OPENAI_API_KEY")
+        if not api_key:
+            logger.warning("OPENAI_API_KEY not set, ALM disabled")
+            return None
+
+        alm_openai = alm_config.get("openai", {})
+        llm_openai = llm_config.get("openai", {})
+
+        model = os.getenv("ALM_MODEL") or alm_openai.get("model") or llm_openai.get("model")
+        if not model:
+            raise ValueError(
+                "ALM モデル名が未設定です。"
+                "configs/default.yaml の alm.openai.model または環境変数 ALM_MODEL を設定してください。"
+            )
+
+        _alm_base = alm_openai.get("base_url")
+        _llm_base = llm_openai.get("base_url")
+        base_url = _alm_base if _alm_base is not None else _llm_base
+        if not base_url:
+            raise ValueError(
+                "ALM ベースURLが未設定です。"
+                "configs/default.yaml の alm.openai.base_url または llm.openai.base_url を設定してください。"
+            )
+
+        _alm_timeout = alm_openai.get("timeout_s")
+        _llm_timeout = llm_openai.get("timeout_s")
+        timeout_s = _alm_timeout if _alm_timeout is not None else _llm_timeout
+        if timeout_s is None:
+            raise ValueError(
+                "ALM タイムアウトが未設定です。"
+                "configs/default.yaml の alm.openai.timeout_s を設定してください。"
+            )
+
+        logger.info(f"Using AudioAnalyzer (model={model})")
+        return AudioAnalyzer(
+            base_url=base_url,
+            model=model,
+            api_key=api_key,
+            timeout=timeout_s,
+            sample_rate=sample_rate,
+            window_seconds=window_seconds,
+            default_prompt=audio_prompt.strip(),
+            provider="openai",
+        )
+
+    elif provider == "vllm":
+        alm_vllm = alm_config.get("vllm", {})
+        llm_vllm = llm_config.get("vllm", {})
+
+        _alm_url = alm_vllm.get("base_url")
+        _llm_url = llm_vllm.get("base_url")
+        base_url = _alm_url if _alm_url is not None else _llm_url
+
+        model = alm_vllm.get("model") or llm_vllm.get("model")
+
+        if not base_url:
+            logger.warning("ALM base_url not set, ALM disabled")
+            return None
+
+        _alm_api = alm_vllm.get("api_key")
+        _llm_api = llm_vllm.get("api_key")
+        api_key = _alm_api if _alm_api is not None else (_llm_api or "EMPTY")
+
+        _alm_timeout = alm_vllm.get("timeout_s")
+        _llm_timeout = llm_vllm.get("timeout_s")
+        timeout_s = _alm_timeout if _alm_timeout is not None else (_llm_timeout or 60.0)
+
+        logger.info(f"Using AudioAnalyzer with vLLM at {base_url} (model={model})")
+        return AudioAnalyzer(
+            base_url=base_url,
+            model=model,
+            api_key=api_key,
+            timeout=timeout_s,
+            sample_rate=sample_rate,
+            window_seconds=window_seconds,
+            default_prompt=audio_prompt.strip(),
+            provider="vllm",
+        )
+
+    else:
+        logger.warning(f"Unknown ALM provider: {provider}")
+        return None
+
+
 def find_video(search_dirs: list[str], video_extensions: set[str]) -> Optional[Path]:
     """検索ディレクトリからビデオファイルを探す。
 
@@ -552,8 +655,9 @@ def prepare_observations_inspesafe(
             obs_id=f"img_{i}",
             image_path=str(fp.resolve()),
             prev_image_path=str(frame_paths[i - 1].resolve()) if i > 0 else None,
-            audio_text="data/audio/audio.wav",
+            audio_path="data/audio/audio.wav",
             camera_pose=CameraPose(pan_deg=0, tilt_deg=0, zoom=1),
+            video_timestamp=video_timestamps_map.get(f"img_{i}"),
         )
         for i, fp in enumerate(frame_paths)
     ]
@@ -623,8 +727,9 @@ def prepare_observations(
                 obs_id=f"img_{i}",
                 image_path=str(frame_path.absolute()),
                 prev_image_path=str(frame_files[i - 1].absolute()) if i > 0 else None,
-                audio_text="data/audio/audio.wav",
+                audio_path="data/audio/audio.wav",
                 camera_pose=CameraPose(pan_deg=0, tilt_deg=0, zoom=1),
+                video_timestamp=video_timestamps_map.get(f"img_{i}"),
             )
             for i, frame_path in enumerate(frame_files)
         ]
@@ -733,21 +838,12 @@ def main():
     provider = ObservationProvider(obs_list)
     llm = get_llm(config)
     vision_analyzer = get_vlm(config, prompts)
+    audio_analyzer = get_alm(config, prompts) if agent_cfg.get("enable_audio", False) else None
 
     # Build agent
     agent = build_agent()
 
     # Initialize modality analyzers for fan-out nodes
-    audio_analyzer = None
-    if agent_cfg.get("enable_audio", False):
-        audio_config = config.get("audio", {})
-        audio_llm = audio_config.get("llm", {})
-        base_url = audio_llm.get("base_url")
-        model = audio_llm.get("model")
-        timeout = audio_llm.get("timeout_s")
-        sample_rate = audio_config.get("sample_rate")
-        audio_analyzer = AudioAnalyzer(model=model, base_url=base_url, timeout=timeout, sample_rate=sample_rate)
-
     yolo_detector = None
     if agent_cfg.get("enable_yolo", False):
         try:
@@ -773,6 +869,7 @@ def main():
         "received_modalities": [],
         "barrier_obs_id": None,
         "latest_output": None,
+        "last_vision_summary": None,
         "last_assessment": None,
         "assessment": None,
         "done": False,

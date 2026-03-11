@@ -53,8 +53,8 @@ mkdir -p "$UV_CACHE_DIR" "$HF_HOME"
 
 # 依存を揃える
 uv sync --frozen || uv sync
-  
-MODEL="Qwen/Qwen2-Audio-7B" #"Qwen/Qwen2-Audio-7B-Instruct"
+
+MODEL="Qwen/Qwen2.5-Omni-7B" #"Qwen/Qwen2.5-Omni-7B"
 PORT=8001
 
 echo

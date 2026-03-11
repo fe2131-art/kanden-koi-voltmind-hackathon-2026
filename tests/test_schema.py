@@ -100,12 +100,14 @@ def test_observation():
         obs_id="t0",
         image_path="/path/to/image.jpg",
         prev_image_path="/path/to/prev.jpg",
+        audio_path="/path/to/audio.wav",
         audio_text="Some audio",
         camera_pose=CameraPose(pan_deg=0.0),
     )
     assert obs.obs_id == "t0"
     assert obs.image_path == "/path/to/image.jpg"
     assert obs.prev_image_path == "/path/to/prev.jpg"
+    assert obs.audio_path == "/path/to/audio.wav"
 
 
 def test_vision_analysis_result_basic():

@@ -8,6 +8,7 @@ vision_node / audio_node で並列実行され、fuse_modalities で統合され
 from __future__ import annotations
 
 import base64
+from io import BytesIO
 import json
 import logging
 import os
@@ -394,42 +395,95 @@ class YOLODetector:
 class AudioAnalyzer:
     def __init__(
         self,
-        model: str,
+        model: Optional[str] = None,
         base_url: str = "https://api.openai.com/v1",
         api_key: str = "EMPTY",
         timeout: float = 3600.0,
         sample_rate: int = 16000,
+        window_seconds: float = 3.0,
         default_prompt: Optional[str] = None,
         max_tokens: Optional[int] = None,
+        provider: str = "vllm",
     ):
         self.model = model
         self.sample_rate = sample_rate
+        self.window_seconds = window_seconds
         self.default_prompt = default_prompt
         self.max_tokens = max_tokens
+        self.provider = provider
+        self.client: Optional[OpenAI] = None
 
-        # LLM 用に base_url を正規化
-        base_url = base_url.rstrip("/")
-        if base_url.endswith("/chat/completions"):
-            raise ValueError(
-                f"base_url にはフル endpoint ではなく /v1 までを渡してください: {base_url}"
+        if self.model:
+            # LLM 用に base_url を正規化
+            if provider == "vllm":
+                base_url = base_url.rstrip("/")
+                if base_url.endswith("/chat/completions"):
+                    raise ValueError(
+                        f"base_url にはフル endpoint ではなく /v1 までを渡してください: {base_url}"
+                    )
+                if not base_url.endswith("/v1"):
+                    base_url = f"{base_url}/v1"
+
+            self.client = OpenAI(
+                api_key=api_key,
+                base_url=base_url,
+                timeout=timeout,
             )
-        if not base_url.endswith("/v1"):
-            base_url = f"{base_url}/v1"
 
-        self.client = OpenAI(
-            api_key=api_key,
-            base_url=base_url,
-            timeout=timeout,
-        )
+    @staticmethod
+    def _stringify_message_content(content: Any) -> str:
+        if isinstance(content, str):
+            return content
+        if isinstance(content, list):
+            parts: list[str] = []
+            for item in content:
+                if isinstance(item, dict) and item.get("type") == "text":
+                    text_value = item.get("text")
+                    if isinstance(text_value, str):
+                        parts.append(text_value)
+            return "\n".join(parts)
+        return ""
 
-    def encode_audio(self, audio_path, sample_rate, video_timestamp, trimmed_filepath="data/audio/audio_trimmed.wav"):
+    @staticmethod
+    def _parse_audio_json(text: str) -> list[dict[str, Any]]:
+        parsed = VisionAnalyzer._parse_vision_json(text)
+        if parsed is None:
+            return []
+        if isinstance(parsed, list):
+            return [item for item in parsed if isinstance(item, dict)]
+        if isinstance(parsed, dict):
+            events = parsed.get("events")
+            if isinstance(events, list):
+                return [item for item in events if isinstance(item, dict)]
+        return []
+
+    def _encode_audio_window(
+        self,
+        audio_path: str,
+        sample_rate: int,
+        video_timestamp: Optional[float],
+        window_seconds: Optional[float],
+    ) -> str:
         audio, sr = librosa.load(audio_path, sr=sample_rate)
-        if video_timestamp is not None:
-            # 推論時間までの音声にトリミング
-            audio = audio[:sr*video_timestamp]
-        sf.write(trimmed_filepath, audio, sr)
-        with open(trimmed_filepath, "rb") as audio_file:
-            return base64.b64encode(audio_file.read()).decode('utf-8')
+        total_samples = len(audio)
+
+        if video_timestamp is None:
+            logger.warning("Audio timestamp missing; using full audio without trimming.")
+            trimmed = audio
+        else:
+            end_sample = int(max(0.0, video_timestamp) * sr)
+            end_sample = min(end_sample, total_samples)
+            lookback_seconds = self.window_seconds if window_seconds is None else window_seconds
+            lookback_samples = int(max(0.0, lookback_seconds) * sr)
+            start_sample = max(0, end_sample - lookback_samples)
+            trimmed = audio[start_sample:end_sample]
+
+        if trimmed.size == 0:
+            return ""
+
+        buffer = BytesIO()
+        sf.write(buffer, trimmed, sr, format="WAV")
+        return base64.b64encode(buffer.getvalue()).decode("utf-8")
 
     def analyze_heuristic(self, audio_text: Optional[str]) -> list[AudioCue]:
         """音声テキストから AudioCue リストを抽出するヒューリスティック。"""
@@ -460,50 +514,123 @@ class AudioAnalyzer:
             )
         return cues
 
+    def _normalize_audio_events(
+        self,
+        events: list[dict[str, Any]],
+    ) -> list[AudioCue]:
+        cues: list[AudioCue] = []
+        for item in events:
+            cue = item.get("cue")
+            if not isinstance(cue, str) or not cue.strip():
+                continue
+
+            confidence_raw = item.get("confidence", 0.5)
+            try:
+                confidence = float(confidence_raw)
+            except (TypeError, ValueError):
+                confidence = 0.5
+            confidence = min(max(confidence, 0.0), 1.0)
+
+            direction = item.get("direction")
+            if direction not in {"left", "right", None}:
+                direction = None
+
+            evidence = item.get("evidence")
+            if evidence is not None and not isinstance(evidence, str):
+                evidence = str(evidence)
+
+            cues.append(
+                AudioCue(
+                    cue=cue.strip(),
+                    confidence=confidence,
+                    direction=direction,
+                    evidence=evidence.strip() if isinstance(evidence, str) else None,
+                )
+            )
+        return cues
+
     def analyze(
         self,
-        audio_text: str,
+        audio_input: Optional[str],
         prompt: Optional[str] = None,
         max_tokens: Optional[int] = None,
-        video_timestamp: Optional[int] = None,
-    ) -> str:
-        if not Path(audio_text).exists():
-            return self.analyze_heuristic(audio_text=None)
+        video_timestamp: Optional[float] = None,
+        previous_vision_summary: Optional[str] = None,
+        window_seconds: Optional[float] = None,
+    ) -> list[AudioCue]:
+        if not audio_input:
+            return []
 
-        cues: list[AudioCue] = []
+        if not Path(audio_input).exists():
+            return self.analyze_heuristic(audio_text=audio_input)
+
+        if not self.client or not self.model:
+            logger.warning("AudioAnalyzer client is not configured; returning empty cues.")
+            return []
+
         if prompt is None:
-            prompt = "この音声データで何が起きているか教えてください"
+            base_prompt = (
+                self.default_prompt
+                or (
+                    "Analyze the audio clip and return only hazard-related or attention-worthy "
+                    "audio events as JSON. Output only "
+                    "{\"events\": [{\"cue\": \"short_event_name\", \"confidence\": 0.0, "
+                    "\"direction\": null, \"evidence\": \"short evidence\"}]}. "
+                    "The direction field must be either \"left\", \"right\", or null. "
+                    "If there is no relevant event, return {\"events\": []}."
+                )
+            )
+            if previous_vision_summary:
+                prompt = (
+                    f"{base_prompt}\n"
+                    f"Previous frame visual summary: {previous_vision_summary}\n"
+                    "Use the visual summary only as background context. "
+                    "Return only what is supported by the audio clip."
+                )
+            else:
+                prompt = base_prompt
 
         if max_tokens is None:
             max_tokens = self.max_tokens or 2048
-        
-        audio_base64 = self.encode_audio(
-            audio_text, #"data/audio/crash.wav",
+
+        audio_base64 = self._encode_audio_window(
+            audio_input,
             self.sample_rate,
             video_timestamp=video_timestamp,
-        )
-        response = self.client.chat.completions.create(
-            model=self.model,
-            messages=[
-                # {"role": "system",
-                #  "content": "Your task is what happens in the audio."},
-                {"role": "user",
-                "content": [{"type": "text", "text": "What happens in the audio do you think?"},
-                            {"type": "input_audio", "input_audio": {"data": audio_base64, "format": "wav"}}]}
-                ],
-            max_tokens=max_tokens,
+            window_seconds=window_seconds,
         )
 
-        cues.append(
-            AudioCue(
-                cue=response.choices[0].message.content,
-                confidence=0.5,
-                direction="front",
-                evidence=audio_text,
-            )
-        )
+        if not audio_base64:
+            return []
 
-        return cues
+        content = [
+            {"type": "text", "text": prompt},
+            {"type": "input_audio", "input_audio": {"data": audio_base64, "format": "wav"}},
+        ]
+
+        try:
+            create_kwargs: dict[str, Any] = {
+                "model": self.model,
+                "messages": [{"role": "user", "content": content}],
+            }
+            if self.provider == "vllm":
+                create_kwargs["max_tokens"] = max_tokens
+            else:
+                create_kwargs["max_completion_tokens"] = max_tokens
+
+            response = self.client.chat.completions.create(**create_kwargs)
+            raw = self._stringify_message_content(response.choices[0].message.content)
+            events = self._parse_audio_json(raw)
+            if not events:
+                logger.warning(
+                    "[audio_analyze] Audio model response could not be parsed as JSON. "
+                    f"Returning empty cues. Raw response (first 500 chars): {raw[:500]!r}"
+                )
+                return []
+            return self._normalize_audio_events(events)
+        except Exception as e:
+            logger.error(f"Audio API error: {e}")
+            return []
 
 # ─── DepthEstimator（Depth Anything 3） ──────────────────────────
 

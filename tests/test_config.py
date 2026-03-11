@@ -44,6 +44,38 @@ def test_llm_initialization_openai_missing_key():
     assert llm is None
 
 
+def test_alm_initialization_openai_missing_key():
+    """Test OpenAI ALM initialization without API key (should return None)."""
+
+    from run import get_alm
+
+    config = {
+        "llm": {
+            "openai": {
+                "base_url": "https://api.openai.com/v1",
+                "model": "gpt-4o",
+            }
+        },
+        "alm": {
+            "provider": "openai",
+            "openai": {
+                "base_url": "https://api.openai.com/v1",
+                "model": "gpt-4o",
+            },
+        },
+        "audio": {
+            "sample_rate": 16000,
+            "window_seconds": 3.0,
+        },
+    }
+    prompts = {"audio_analysis": {"default_prompt": "test"}}
+
+    os.environ.pop("OPENAI_API_KEY", None)
+
+    alm = get_alm(config, prompts)
+    assert alm is None
+
+
 def test_config_vllm_defaults():
     """Test that vLLM configuration has proper defaults."""
     from run import load_config
@@ -82,6 +114,20 @@ def test_thresholds_config():
     assert "hazard_focus_threshold" in thresholds_cfg
     assert 0 <= thresholds_cfg["risk_stop_threshold"] <= 1
     assert 0 <= thresholds_cfg["hazard_focus_threshold"] <= 1
+
+
+def test_audio_config_defaults():
+    """Test audio configuration defaults."""
+    from run import load_config
+
+    config = load_config("configs/default.yaml")
+    audio_cfg = config.get("audio", {})
+    alm_cfg = config.get("alm", {})
+
+    assert audio_cfg["sample_rate"] == 16000
+    assert audio_cfg["window_seconds"] == 3.0
+    assert alm_cfg["provider"] in ["openai", "vllm"]
+    assert "vllm" in alm_cfg
 
 
 def test_agent_config():
