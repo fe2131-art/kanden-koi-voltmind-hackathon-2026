@@ -796,6 +796,7 @@ def run_and_log_agent(
     agent: object,
     initial_state: AgentState,
     context: dict,
+    on_frame_callback=None,
 ) -> tuple[dict, list[dict]]:
     """ストリーミングでエージェントを実行して全フレーム出力を収集。
 
@@ -803,6 +804,7 @@ def run_and_log_agent(
         agent: LangGraph エージェントインスタンス
         initial_state: 初期エージェント状態
         context: エージェント実行時コンテキスト
+        on_frame_callback: フレーム処理後に呼び出される関数（frame_output を引数とする）
 
     Returns:
         (最終状態、全フレーム出力) のタプル
@@ -821,6 +823,9 @@ def run_and_log_agent(
             if frame_id != prev_latest_obs_id:
                 all_frame_outputs.append(latest)
                 prev_latest_obs_id = frame_id
+                # フレーム処理後、コールバックがあれば即時実行
+                if on_frame_callback:
+                    on_frame_callback(latest)
         final_state = state
 
     # Log agent results
@@ -948,14 +953,19 @@ def main():
         "run_mode": "until_provider_ends",  # provider が None を返すまで継続
     }
 
-    # Run and log agent
-    _, all_frame_outputs = run_and_log_agent(agent, initial_state, context)
+    # フレーム処理時のコールバック関数定義
+    def _on_frame(frame_output: dict) -> None:
+        """フレーム処理完了時に JSON に即時保存"""
+        save_analysis_results(
+            "data",
+            {"frames": [frame_output]},
+            video_timestamps_map,
+        )
 
-    # Save all frame results from agent's emit_output node
-    save_analysis_results(
-        "data",
-        {"frames": all_frame_outputs},
-        video_timestamps_map,
+    # Run and log agent with per-frame callback
+    _, all_frame_outputs = run_and_log_agent(
+        agent, initial_state, context,
+        on_frame_callback=_on_frame,
     )
 
     # Save Mermaid diagram
