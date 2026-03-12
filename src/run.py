@@ -857,6 +857,16 @@ def main():
     # Setup data directory
     os.makedirs("data", exist_ok=True)
 
+    # Archive existing perception_results.json with timestamp before starting new run
+    perception_results_file = "data/perception_results.json"
+    results_archive_dir = "data/results_archive"
+    if os.path.exists(perception_results_file):
+        os.makedirs(results_archive_dir, exist_ok=True)
+        timestamp = time.strftime("%Y%m%d_%H%M%S")
+        archived_file = os.path.join(results_archive_dir, f"perception_results_{timestamp}.json")
+        shutil.move(perception_results_file, archived_file)
+        logger.info(f"Archived perception_results.json → {archived_file}")
+
     # Clean up data/frames before processing
     frames_dir = "data/frames"
     if os.path.exists(frames_dir):
