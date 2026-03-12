@@ -155,10 +155,10 @@ class DetectedObject(BaseModel):
 
 
 class AudioCue(BaseModel):
-    """音声テキストから抽出した危険キュー。PerceptionIR.audio の要素。"""
-    cue: str  # e.g. "vehicle_approaching_right"
+    """音声解析から抽出した危険キュー。PerceptionIR.audio の要素。"""
+    cue: str  # e.g. "vehicle_approaching"
     confidence: float = Field(ge=0, le=1)
-    direction: Optional[Literal["left", "right", "front", "back"]] = None
+    direction: Optional[Literal["left", "right"]] = None
     evidence: Optional[str] = None
 
 
@@ -266,7 +266,8 @@ class Observation:
     obs_id: str
     image_path: Optional[str] = None
     prev_image_path: Optional[str] = None  # 前フレームの画像パス（2枚比較用）
-    audio_text: Optional[str] = None
+    audio_path: Optional[str] = None       # 音声ファイルパス（推奨）
+    audio_text: Optional[str] = None       # 音声文字起こしやテキスト入力（後方互換）
     camera_pose: Optional[CameraPose] = None
     video_timestamp: Optional[float] = None  # 動画内の秒数
 

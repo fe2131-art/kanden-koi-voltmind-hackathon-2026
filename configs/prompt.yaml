@@ -218,3 +218,27 @@ depth_analysis:
     - "depth_zones" は必ず3要素（近距離・中距離・遠距離）を含む
     - 該当対象がない場合、"nearest_hazards" と "occlusions" は [] を出力する
     - 不明な場合は各文字列フィールドに "unknown" を使う
+
+audio_analysis:
+  default_prompt: |
+    Analyze the audio clip and return only hazard-related or attention-worthy audio events as JSON.
+    Use the previous frame visual summary only as background context, and return only what is supported by the audio clip.
+
+    Output format:
+    {
+      "events": [
+        {
+          "cue": "short_event_name",
+          "confidence": 0.0,
+          "direction": null,
+          "evidence": "short evidence"
+        }
+      ]
+    }
+
+    Constraints:
+    - Output JSON only
+    - If there is no relevant event, return {"events": []}
+    - cue must be a short event name
+    - confidence must be between 0.0 and 1.0
+    - direction must be one of: "left", "right", or null

@@ -2,9 +2,9 @@
 
 # Agent parameters
 agent:
-  max_steps: 1    # デフォルト：1フレーム実行
+  max_steps: 2    # デフォルト：2フレーム実行
   enable_yolo: false
-  enable_audio: false
+  enable_audio: true
   enable_depth: false
   max_outstanding_regions: 6        # 次に観測すべき候補領域の検討数上限
   context_history_size: 1           # LLM に渡す前回結果の数（0=なし, 1=前回のみ）
@@ -43,7 +43,15 @@ vlm:
 
 # ALM (Audio-Language Model) 設定
 alm:
-  provider: "vllm"     # "openai" | "vllm
+  provider: "vllm"     # "openai" | "vllm"
+  openai:
+    base_url: "https://api.openai.com/v1"
+    model: "gpt-5-nano"
+    timeout_s: 60.0
+  vllm:
+    base_url: "http://localhost:8001/v1"
+    model: "Qwen/Qwen2.5-Omni-7B"
+    timeout_s: 60.0
 
 # Data input mode
 data:
@@ -68,6 +76,7 @@ video:
 audio:
   output_filename: "audio.wav"
   sample_rate: 16000
+  window_seconds: 3.0
   channels: 1
   codec: "pcm_s16le"
 
