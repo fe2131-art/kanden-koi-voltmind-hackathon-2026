@@ -94,6 +94,26 @@ const styles = {
     color: '#aaa',
     marginTop: '6px',
   },
+  badge: {
+    display: 'inline-block',
+    fontSize: '11px',
+    fontWeight: '600',
+    padding: '4px 8px',
+    borderRadius: '4px',
+    marginBottom: '10px',
+  },
+  badgeConnected: {
+    background: '#1a6f1a',
+    color: '#7fff7f',
+  },
+  badgeDisconnected: {
+    background: '#6f1a1a',
+    color: '#ff7f7f',
+  },
+  badgeReconnecting: {
+    background: '#6f6f1a',
+    color: '#ffff7f',
+  },
 }
 
 function App() {
@@ -104,6 +124,7 @@ function App() {
   const [mode, setMode] = useState('sync')
   const [delay, setDelay] = useState(0.7)
   const [status, setStatus] = useState('initializing...')
+  const [connectionState, setConnectionState] = useState('initializing')
   const [hud, setHud] = useState('(waiting for data/perception_results.json)')
   const [log, setLog] = useState('')
 
@@ -208,11 +229,21 @@ function App() {
       setLog('')
 
       const url = wsUrl.trim()
+      setConnectionState('connecting')
       wsRef.current = new WebSocket(url)
 
-      wsRef.current.onopen = () => updateStatus('OPEN')
-      wsRef.current.onerror = () => updateStatus('ERROR (check console)')
-      wsRef.current.onclose = () => updateStatus('CLOSED')
+      wsRef.current.onopen = () => {
+        setConnectionState('connected')
+        updateStatus('✓ connected')
+      }
+      wsRef.current.onerror = () => {
+        wsRef.current.close()
+      }
+      wsRef.current.onclose = () => {
+        setConnectionState('reconnecting')
+        updateStatus('✗ disconnected — reconnecting in 3s...')
+        setTimeout(() => connectWS(), 3000)
+      }
 
       wsRef.current.onmessage = (ev) => {
         const msg = JSON.parse(ev.data)
@@ -328,6 +359,18 @@ function App() {
           {/* Status Panel */}
           <div style={styles.panel}>
             <h3 style={styles.panelH3}>Status</h3>
+            <div style={{
+              ...styles.badge,
+              ...(connectionState === 'connected' ? styles.badgeConnected :
+                  connectionState === 'disconnected' ? styles.badgeDisconnected :
+                  connectionState === 'reconnecting' ? styles.badgeReconnecting :
+                  { background: '#4a4a4a', color: '#aaa' })
+            }}>
+              {connectionState === 'connected' ? '● Connected' :
+               connectionState === 'disconnected' ? '● Disconnected' :
+               connectionState === 'reconnecting' ? '⟳ Reconnecting...' :
+               'Initializing...'}
+            </div>
             <div style={{ ...styles.controls, marginTop: '8px', flexDirection: 'column', alignItems: 'flex-start', gap: '12px' }}>
               <label style={styles.controlsLabel}>
                 バックエンド URL
