@@ -431,9 +431,9 @@ def split_video_to_frames(
             if max_frames > 0 and frame_count >= max_frames:
                 break
 
-            # Calculate timestamp in seconds
+            # Calculate timestamp in seconds (keep 1 decimal place = 0.1s unit)
             timestamp = idx / source_fps
-            timestamp_str = f"{timestamp:.3f}".rstrip('0').rstrip('.')
+            timestamp_str = f"{timestamp:.1f}"
 
             # Save frame
             frame_filename = frame_output_format.format(timestamp=timestamp_str)
@@ -614,6 +614,13 @@ def prepare_observations_inspesafe(
     if not session_dir.exists():
         raise FileNotFoundError(f"セッションが見つかりません: {session_dir}")
 
+    # 赤外線動画からフレーム抽出（利用可能な場合）
+    # TODO: 赤外線フレーム統合機能は将来実装予定（マルチモーダル分析に統合）
+    video_cfg = config.get("video", {})
+    infrared_videos = sorted(session_dir.glob("*_infrared_*.mp4"))
+    if infrared_videos:
+        _process_infrared_inspesafe(infrared_videos[0], video_cfg, frame_output_format)
+
     # 動画ファイル（*_visible_*.mp4）を取得
     rgb_videos = sorted(session_dir.glob("*_visible_*.mp4"))
     if not rgb_videos:
@@ -635,7 +642,6 @@ def prepare_observations_inspesafe(
         logger.warning(f"[inspesafe] 音声ファイルなし: {session_dir}")
 
     # フレーム展開（既存の split_video_to_frames を再利用）
-    video_cfg = config.get("video", {})
     frames, video_timestamps = split_video_to_frames(
         video_path=str(video_path),
         frames_dir="data/frames",
@@ -662,6 +668,48 @@ def prepare_observations_inspesafe(
         for i, fp in enumerate(frame_paths)
     ]
     return obs_list, video_timestamps_map
+
+
+def _process_infrared_inspesafe(
+    infrared_video_path: Path, video_cfg: dict, frame_output_format: str
+) -> tuple[list[Path], dict]:
+    """InspecSafe-V1 モード用：赤外線動画からフレーム抽出処理。
+
+    Args:
+        infrared_video_path: 赤外線動画ファイルパス
+        video_cfg: ビデオ設定辞書
+        frame_output_format: フレームファイル名形式テンプレート
+
+    Returns:
+        (フレームパスリスト, ビデオタイムスタンプマップ) のタプル
+    """
+    infrared_frames_dir = "data/infrared_frames"
+
+    # Clean up existing infrared frames
+    if os.path.exists(infrared_frames_dir):
+        shutil.rmtree(infrared_frames_dir)
+    os.makedirs(infrared_frames_dir, exist_ok=True)
+
+    logger.info(f"[inspesafe] 赤外線動画: {infrared_video_path.name}")
+
+    # Extract frames from infrared video (no audio extraction needed)
+    frame_paths, video_timestamps = split_video_to_frames(
+        str(infrared_video_path),
+        infrared_frames_dir,
+        frame_output_format=frame_output_format,
+        target_fps=video_cfg.get("fps", 1.0),
+        max_frames=video_cfg.get("max_frames", 30),
+        clear_frames=False,  # Already cleaned above
+    )
+
+    if frame_paths:
+        logger.info(f"[inspesafe] {len(frame_paths)} 赤外線フレーム展開完了")
+        # Create timestamp map (same format as RGB processing)
+        infrared_timestamps_map = {f"ir_{i}": ts for i, ts in enumerate(video_timestamps)}
+        return frame_paths, infrared_timestamps_map
+    else:
+        logger.warning(f"No frames extracted from infrared video: {infrared_video_path}")
+        return [], {}
 
 
 def prepare_observations(
