@@ -31,10 +31,20 @@ async def monitor_and_stream(websocket):
         while True:
             # Check if perception_results.json has changed
             if PERCEPTION_RESULTS.exists():
-                try:
-                    with open(PERCEPTION_RESULTS, 'r', encoding='utf-8') as f:
-                        data = json.load(f)
+                # JSON 読み込みの競合対策：リトライロジック（最大3回、50ms待機）
+                data = None
+                for attempt in range(3):
+                    try:
+                        with open(PERCEPTION_RESULTS, 'r', encoding='utf-8') as f:
+                            data = json.load(f)
+                        break
+                    except (json.JSONDecodeError, IOError) as e:
+                        if attempt < 2:
+                            await asyncio.sleep(0.05)
+                        elif attempt == 2:
+                            print(f"Error reading perception_results.json (3 attempts): {e}")
 
+                if data is not None:
                     # Extract frames
                     frames = data.get('frames', [])
                     current_count = len(frames)
@@ -62,11 +72,8 @@ async def monitor_and_stream(websocket):
 
                         last_count = current_count
 
-                except (json.JSONDecodeError, IOError) as e:
-                    print(f"Error reading perception_results.json: {e}")
-
-            # Poll every 0.5 seconds
-            await asyncio.sleep(0.5)
+            # Poll every 0.1 seconds
+            await asyncio.sleep(0.1)
 
     except websockets.ConnectionClosed:
         print("client disconnected")
