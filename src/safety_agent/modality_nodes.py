@@ -27,6 +27,7 @@ from .schema import (
     BoundingBox,
     DetectedObject,
     VisionAnalysisResult,
+    VisionOverallAssessment,
 )
 
 logger = logging.getLogger(__name__)
@@ -215,8 +216,11 @@ class VisionAnalyzer:
             parsed = self._parse_vision_json(raw)
             if parsed is None:
                 logger.warning(f"[vision_analyze] VLM response could not be parsed as JSON. First 300 chars:\n{raw[:300]}")
-                # フォールバック: summary のみで VisionAnalysisResult を構築
-                return VisionAnalysisResult(summary=raw[:500] if raw else "No response")
+                # フォールバック: scene_description のみで VisionAnalysisResult を構築
+                return VisionAnalysisResult(
+                    scene_description=raw[:500] if raw else "No response",
+                    overall_assessment=VisionOverallAssessment(severity="unknown", reason="JSON parse failed")
+                )
 
             return VisionAnalysisResult.model_validate(parsed)
 
@@ -286,13 +290,10 @@ class VisionAnalyzer:
                     f"[depth_analysis] VLM response could not be parsed as JSON. "
                     f"First 500 chars:\n{raw[:500]}"
                 )
-                # フォールバック: 生テキストを summary として返し、他のフィールドはデフォルト値
+                # フォールバック: 生テキストを scene_description として返し、depth_layers はデフォルト値
                 return {
-                    "summary": raw[:500] if raw else "VLM response could not be parsed",
-                    "depth_zones": [],
-                    "nearest_hazards": [],
-                    "occlusions": [],
-                    "spatial_layout": None,
+                    "scene_description": raw[:500] if raw else "VLM response could not be parsed",
+                    "depth_layers": [],
                 }
 
             return parsed
@@ -485,34 +486,6 @@ class AudioAnalyzer:
         sf.write(buffer, trimmed, sr, format="WAV")
         return base64.b64encode(buffer.getvalue()).decode("utf-8")
 
-    def analyze_heuristic(self, audio_text: Optional[str]) -> list[AudioCue]:
-        """音声テキストから AudioCue リストを抽出するヒューリスティック。"""
-        if not audio_text:
-            return []
-
-        t = audio_text.lower()
-        cues: list[AudioCue] = []
-
-        # Example heuristics; replace with audio model output
-        if "right" in t and ("car" in t or "vehicle" in t or "approach" in t):
-            cues.append(
-                AudioCue(
-                    cue="vehicle_approaching",
-                    confidence=0.7,
-                    direction="right",
-                    evidence=audio_text,
-                )
-            )
-        if "left" in t and ("car" in t or "vehicle" in t or "approach" in t):
-            cues.append(
-                AudioCue(
-                    cue="vehicle_approaching",
-                    confidence=0.7,
-                    direction="left",
-                    evidence=audio_text,
-                )
-            )
-        return cues
 
     def _normalize_audio_events(
         self,
@@ -524,27 +497,21 @@ class AudioAnalyzer:
             if not isinstance(cue, str) or not cue.strip():
                 continue
 
-            confidence_raw = item.get("confidence", 0.5)
-            try:
-                confidence = float(confidence_raw)
-            except (TypeError, ValueError):
-                confidence = 0.5
-            confidence = min(max(confidence, 0.0), 1.0)
-
-            direction = item.get("direction")
-            if direction not in {"left", "right", None}:
-                direction = None
+            severity = item.get("severity", "unknown")
+            if severity not in {"low", "medium", "high", "critical", "unknown"}:
+                severity = "unknown"
 
             evidence = item.get("evidence")
-            if evidence is not None and not isinstance(evidence, str):
+            if evidence is None:
+                evidence = ""
+            elif not isinstance(evidence, str):
                 evidence = str(evidence)
 
             cues.append(
                 AudioCue(
                     cue=cue.strip(),
-                    confidence=confidence,
-                    direction=direction,
-                    evidence=evidence.strip() if isinstance(evidence, str) else None,
+                    severity=severity,
+                    evidence=evidence.strip() if evidence else "",
                 )
             )
         return cues
@@ -562,7 +529,8 @@ class AudioAnalyzer:
             return []
 
         if not Path(audio_input).exists():
-            return self.analyze_heuristic(audio_text=audio_input)
+            logger.warning(f"Audio file not found: {audio_input}")
+            return []
 
         if not self.client or not self.model:
             logger.warning("AudioAnalyzer client is not configured; returning empty cues.")
@@ -574,9 +542,8 @@ class AudioAnalyzer:
                 or (
                     "Analyze the audio clip and return only hazard-related or attention-worthy "
                     "audio events as JSON. Output only "
-                    "{\"events\": [{\"cue\": \"short_event_name\", \"confidence\": 0.0, "
-                    "\"direction\": null, \"evidence\": \"short evidence\"}]}. "
-                    "The direction field must be either \"left\", \"right\", or null. "
+                    "{\"events\": [{\"cue\": \"short_event_name\", \"severity\": \"low|medium|high|critical|unknown\", "
+                    "\"evidence\": \"short evidence\"}]}. "
                     "If there is no relevant event, return {\"events\": []}."
                 )
             )

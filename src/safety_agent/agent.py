@@ -547,8 +547,8 @@ def depth_node(state: AgentState, runtime: Runtime[ContextSchema]) -> Command:
                     # ステップ3: JSON を DepthAnalysisResult に型変換
                     try:
                         depth_analysis = DepthAnalysisResult.model_validate(raw_result)
-                        # フォールバック検出: summary が error message の場合
-                        if depth_analysis.summary and "could not be parsed" in depth_analysis.summary:
+                        # フォールバック検出: scene_description が error message の場合
+                        if depth_analysis.scene_description and "could not be parsed" in depth_analysis.scene_description:
                             logger.debug("Depth analysis returned fallback response (VLM レスポンスが不正)")
                             # fallback response の場合もエラーを記録するが depth_analysis は保持
                     except Exception as e:
@@ -825,8 +825,8 @@ def emit_output(state: AgentState) -> Dict[str, Any]:
     }
 
     last_vision_summary = (
-        ir.vision_analysis.summary
-        if ir and ir.vision_analysis and ir.vision_analysis.summary
+        ir.vision_analysis.scene_description
+        if ir and ir.vision_analysis and ir.vision_analysis.scene_description
         else state.get("last_vision_summary")
     )
 
