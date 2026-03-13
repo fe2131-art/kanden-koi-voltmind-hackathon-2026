@@ -4,71 +4,56 @@
 vision_analysis:
   # VisionAnalyzer.analyze() が image_path のみで呼ばれたときのデフォルトプロンプト
   default_prompt: |
-    2枚の画像（1枚目=先の時刻、2枚目=1秒後）を、安全性評価・空間把握・工場/施設の点検の観点から比較分析してください。
+    画像1枚を安全性評価・空間把握の観点から分析してください。
 
-    次の点を見てください：
-    - 各画像にある人・物・設備・構造物・動きのありそうな要素
+    確認すること：
+    - 画像内で見えている人・物・設備・構造物の概要
     - 危険の可能性がある場所や状況
-    - 死角、見えにくい場所、注意が必要な領域
-    - 通行・移動のしやすさ
-    - 設備や施設の異常、不自然な状態、破損、漏れ、ずれ、散乱、劣化、異物など
-    - 2枚の間での変化（移動、出現、消失、位置ずれ、状態変化、異常の進行や解消）
-    - 全体として安全かどうか、および点検上の注意点
+    - 死角や見えにくい場所
+    - 安全上気になる状態
+      （障害物、つまずきの原因、飛び出し、接触のおそれ、不安定な物、落下のおそれ、
+        挟まれ・巻き込まれのおそれ、破損、漏れ、ずれ、散乱、劣化、異物、不自然な状態など）
 
     ルール：
-    - 画像から確認できることだけを述べてください
-    - 不明なことは推測せず、"unknown" を使ってください
-    - 物体や設備の種類は固定せず、見えた内容をそのまま短く記述してください
-    - 1枚目と2枚目の差分を明確にしてください
-    - 出力は JSON のみで返してください
-    - JSON以外の文字は出力しないでください
+    - 画像から確認できることだけを書く
+    - 推測しない。判断できない場合は "unknown" を使う
+    - 該当する項目がない場合は空配列 [] を使う
+    - scene_description には、全体の状況、主要な見えている要素、安全上気になる点を過不足なく記述する
+    - critical_points には、位置を特定できる重要な危険箇所だけを書く
+    - 危険箇所の位置を特定できる場合は BBOX を出す
+    - BBOX は危険箇所または危険源を最もよく表す範囲とする
+    - BBOX は正規化座標とし、左上を (0,0)、右下を (1,1) とする
+    - BBOX は必ず normalized_bbox の中に
+      { "x_min": ..., "y_min": ..., "x_max": ..., "y_max": ... }
+      の形で書く
+    - BBOX の値は 0.0 以上 1.0 以下とする
+    - 危険箇所の位置を特定できない場合は、critical_points に無理に出さない
+    - JSON のみを出力し、JSON以外の文字は出力しない
 
     以下の形式で出力してください：
 
     {
-      "summary": "全体の状況を簡潔に要約",
-      "elements": [
+      "scene_description": "全体の状況、主要な見えている要素、安全上気になる点を過不足なく記述",
+      "critical_points": [
         {
-          "label": "見えている要素",
-          "position": "位置や方向",
-          "note": "必要なら補足"
-        }
-      ],
-      "risks": [
-        {
-          "description": "危険の内容",
-          "position": "位置や方向",
-          "level": "low|medium|high|unknown"
+          "description": "位置を特定できる重要な危険箇所",
+          "normalized_bbox": {
+            "x_min": 0.0,
+            "y_min": 0.0,
+            "x_max": 0.0,
+            "y_max": 0.0
+          },
+          "severity": "low|medium|high|critical|unknown"
         }
       ],
       "blind_spots": [
         {
           "description": "死角や見えにくい場所",
-          "position": "位置や方向"
+          "position": "位置や方向。分からなければ unknown"
         }
       ],
-      "inspection_findings": [
-        {
-          "description": "設備・施設の異常または点検上の所見",
-          "position": "位置や方向",
-          "severity": "normal|minor|moderate|critical|unknown"
-        }
-      ],
-      "temporal_changes": [
-        {
-          "target": "変化した対象",
-          "change": "moved|appeared|disappeared|shifted|state_changed|unknown",
-          "from": "1枚目での位置や状態",
-          "to": "2枚目での位置や状態",
-          "note": "必要なら補足"
-        }
-      ],
-      "navigability": {
-        "status": "clear|partial|blocked|unknown",
-        "description": "移動しやすさの説明"
-      },
       "overall_assessment": {
-        "level": "safe|caution|dangerous|unknown",
+        "severity": "low|medium|high|critical|unknown",
         "reason": "判断理由"
       }
     }
@@ -77,160 +62,167 @@ safety_assessment:
   # determine_next_action_llm() のシステムプロンプト
   # VLM画像分析・音声キュー・前回判断を元に総合安全判断を実行
   system: |
-    あなたは安全性評価・産業安全支援AIです。
-    VLM画像分析結果、YOLO検出結果、音声キュー、前回の安全判断を統合し、最終安全判断を行ってください。
+    あなたは安全性評価AIです。
+    画像そのものではなく、上流の分析結果を統合して、同じシーンの最終安全判断を行ってください。
 
     入力：
     - vision_analysis
-      - summary
-      - elements
-      - risks
+      - scene_description
+      - critical_points
       - blind_spots
-      - inspection_findings
-      - temporal_changes
-      - navigability
       - overall_assessment
-    - detected_objects      ← YOLO 検出オブジェクトリスト
-    - audio_cues
-    - previous_assessment   ← 前回フレームの SafetyAssessment（以下のフィールドを含む）
-      - risk_level: "high|medium|low"
-      - safety_status: 前回の状態説明
-      - detected_hazards: 前回検出した危険リスト
-      - action_type: 前回の action_type（emergency_stop|inspect_region|mitigate|monitor）
-      - target_region: 前回の対象領域（null の場合あり）
-      - temporal_status: 前回の時系列状態（new|persistent|worsening|improving|resolved|unknown）
-      - reason: 前回の判断理由
-      - evidence: 前回の根拠（vision/yolo/audio/previous の各配列）
-      - priority: 前回の優先度（0.0-1.0）
+        - severity
+        - reason
+    - depth_analysis
+      - scene_description
+      - depth_layers
+    - audio_analysis
+      - events
+        - cue
+        - severity
+        - evidence
+    - previous_assessment
+      - severity
+      - safety_status
+      - detected_hazards
+      - action_type
+      - target_region
+      - temporal_status
+      - comment
+      - future_risk
+      - reason
+      - priority
 
-    判断方針：
-    - vision_analysis を視覚的根拠の中心として扱う
-    - 特に risks, inspection_findings, temporal_changes, blind_spots, navigability, overall_assessment を重視する
-    - YOLO は対象物や領域の補強根拠として使う
-    - 音声は警報音、異音、接触音などの危険補強として使う
-    - previous_assessment は必ず参照し、前回からの継続・悪化・改善・解消を判断する
-    - 前回の危険が今回も確認できる、または解消確認できない場合は継続とみなす
-    - 画像や音声から重大危険が示される場合は単独でも重く扱う
-    - 不明な点は推測せず、unknown または null を使う
+    方針：
+    - 現在の情報を前回より優先する
+    - vision_analysis を主な根拠とし、critical_points と overall_assessment を特に重視する
+    - depth_analysis は空間構造や死角の補助情報として使う
+    - audio_analysis は警報音や異常音の補助情報として使う
+    - previous_assessment は継続・悪化・改善・解消の判断に使う
+    - 推測せず、判断が難しい場合は unknown または null を使う
 
-    action_type は以下から選ぶ：
-    - "emergency_stop" : 即時停止・退避が必要
-    - "inspect_region" : 特定領域の重点確認が必要
-    - "mitigate" : 安全対策の実施・強化が必要
-    - "monitor" : 現時点では継続監視でよい
+    severity:
+    - low
+    - medium
+    - high
+    - critical
+    - unknown
 
-    temporal_status は以下から選ぶ：
-    - "new"
-    - "persistent"
-    - "worsening"
-    - "improving"
-    - "resolved"
-    - "unknown"
+    action_type:
+    - emergency_stop: 直ちに停止・退避が必要
+    - inspect_region: 特定箇所の確認が必要
+    - mitigate: 対策や注意喚起が必要
+    - monitor: 継続監視でよい
 
-    risk_level の基準：
-    - "high"   : 即時対応が必要な危険あり
-    - "medium" : 注意または対策が必要
-    - "low"    : 直ちに危険とは言えないが監視継続が望ましい
+    temporal_status:
+    - new
+    - persistent
+    - worsening
+    - improving
+    - resolved
+    - unknown
 
-    整合ルール：
-    - action_type が "emergency_stop" の場合、risk_level は "high" とする
-    - action_type が "inspect_region" の場合、target_region は null にしない
-    - action_type が "mitigate" または "monitor" の場合、target_region は null とする
-    - vision_analysis.overall_assessment が危険寄りで、risks または inspection_findings に裏付けがある場合は risk_level に反映する
-    - detected_hazards は重複なく短い日本語で列挙する
-
-    出力は必ず JSON のみとし、説明文・Markdown・コードブロックは出力しないこと。
-    すべてのフィールドを必ず出力すること。
+    ルール：
+    - 重大な critical_points があれば risk_level は high を優先する
+    - blind_spots が重要な場所なら inspect_region を選んでよい
+    - 明確な警報音や異常音があれば risk_level を上げてよい
+    - 明確な危険がなければ monitor
+    - 局所確認が必要なら inspect_region
+    - 危険はあるが即停止までは不要なら mitigate
+    - 即停止・退避が必要なら emergency_stop
+    - 前回の危険が今回も確認される、または解消確認できない場合は persistent
+    - inspect_region のときだけ target_region を設定する
+    - critical_points を使う場合は "critical_point_<index>"、blind_spots を使う場合は "blind_spot_<index>" を使う
+    - emergency_stop の場合、risk_level は high にする
+    - detected_hazards は短い日本語で重複なく列挙する
+    - priority は 0.0 から 1.0 の範囲で出力する
 
     出力形式：
     {
-      "risk_level": "high|medium|low",
-      "safety_status": "現在の安全状態を日本語で簡潔に説明",
-      "detected_hazards": ["検出された危険を日本語で列挙"],
+      "risk_level": "low|medium|high",
+      "safety_status": "現在の安全状態を簡潔に説明",
+      "detected_hazards": ["現在確認されている危険"],
       "action_type": "emergency_stop|inspect_region|mitigate|monitor",
-      "target_region": "対象領域IDまたはnull",
+      "target_region": "critical_point_0|blind_spot_0|null",
       "temporal_status": "new|persistent|worsening|improving|resolved|unknown",
-      "reason": "判断理由を日本語で簡潔に説明",
-      "evidence": {
-        "vision": ["vision_analysis から使った根拠"],
-        "yolo": ["detected_objects から使った根拠"],
-        "audio": ["audio_cues から使った根拠"],
-        "previous": ["previous_assessment から使った根拠"]
-      },
+      "reason": "判断理由を簡潔に説明",
       "priority": 0.0
     }
 
     制約：
+    - JSONのみを出力する
+    - すべてのフィールドを必ず出力する
     - JSON以外の文字は出力しない
-    - target_region は inspect_region のときのみ設定する
-    - 根拠がない配列は [] を出力する
-    - priority は 0.0-1.0 の範囲で出力する
 
 depth_analysis:
   # 深度推定画像（side-by-side: 左=RGB, 右=Turbo カラーマップ）を VLM で分析
   system: |
-    あなたは深度推定画像を解析し、安全性の観点から空間状況を要約する AI です。
+    あなたは深度推定画像を解析し、安全性評価・空間把握のための空間情報を整理する AI です。
 
     入力は横並びの2枚の画像です。
     - 左: RGB画像
     - 右: 深度画像（Turboカラーマップ）
       - 暖色系 = 相対的に近い
       - 寒色系 = 相対的に遠い
-      - 黒や不明瞭な領域 = 深度推定が困難、または欠損している可能性がある
+      - 黒や不明瞭な領域 = 深度推定が不安定、欠損、または不明な可能性がある
 
-    あなたのタスクは、RGB画像と深度画像の両方を統合して、
-    安全性の観点から空間構造と注意対象を整理することです。
+    タスク：
+    RGB画像と深度画像を統合し、相対的な奥行き関係と安全上注意すべき空間的特徴を整理してください。
 
-    以下の観点で分析してください：
-    - 空間的な層構造（近距離・中距離・遠距離）
-    - 各層に見える物体、人、設備、構造物
-    - 最も手前にある注意対象（人物、障害物、設備、構造物など）
-    - 隠れた領域、深度推定が不安定または不明な領域
-    - 全体的な空間レイアウトと安全上の特徴
+    確認すること：
+    - 近距離・中距離・遠距離の層構造
+    - 各層に見える人・物・設備・構造物
+    - 手前側にある注意対象
+    - 隠れた領域、深度が不安定または不明な領域
+    - 全体の空間配置と安全上の特徴
 
-    重要なルール：
-    - RGB画像と深度画像の両方に基づいて述べること
-    - 見えている内容だけを述べ、過度な推測をしないこと
-    - 絶対距離を断定せず、相対的な奥行き関係を優先すること
-    - 距離が不明確な場合は "unknown" を使うこと
-    - 出力は JSON のみとし、JSON 以外の文字を一切出力しないこと
+    ルール：
+    - RGB画像と深度画像の両方に基づいて述べる
+    - 見えている内容だけを書く
+    - 絶対距離は断定せず、相対的な奥行き関係を優先する
+    - 危険かどうか断定できないものは、注意対象として表現する
+    - 不明な場合は "unknown" を使う
+    - JSON のみを出力し、JSON以外の文字は出力しない
 
     出力形式：
     {
-      "summary": "空間構成と安全上の要点を簡潔に要約。判断できない場合は 'unknown'",
-      "depth_zones": [
-        "近距離領域に見える対象と特徴",
-        "中距離領域に見える対象と特徴",
-        "遠距離領域に見える対象と特徴"
-      ],
-      "nearest_hazards": [
-        "最も手前にある注意対象の説明"
-      ],
-      "occlusions": [
-        "隠れ、欠損、深度不明瞭領域の説明"
-      ],
-      "spatial_layout": "空間全体の奥行き・配置・安全性に関する説明。判断できない場合は 'unknown'"
+      "scene_description": "全体の空間状況、主な対象、奥行き構造、手前側の注意対象、隠れや深度不明瞭領域、安全上気になる点を記述。判断できない場合は 'unknown'",
+      "depth_layers": [
+        {
+          "zone": "near",
+          "description": "近距離領域に見える対象と特徴。判断できない場合は 'unknown'"
+        },
+        {
+          "zone": "mid",
+          "description": "中距離領域に見える対象と特徴。判断できない場合は 'unknown'"
+        },
+        {
+          "zone": "far",
+          "description": "遠距離領域に見える対象と特徴。判断できない場合は 'unknown'"
+        }
+      ]
     }
-
-    制約：
-    - JSON以外の文字は出力しない
-    - すべてのフィールドを必ず出力する
-    - "depth_zones" は必ず3要素（近距離・中距離・遠距離）を含む
-    - 該当対象がない場合、"nearest_hazards" と "occlusions" は [] を出力する
-    - 不明な場合は各文字列フィールドに "unknown" を使う
 
 audio_analysis:
   default_prompt: |
-    Analyze the audio clip and return only hazard-related or attention-worthy audio events as JSON.
+    Analyze the audio clip and return only safety-relevant dangerous or abnormal audio events as JSON.
     Use the previous frame visual summary only as background context, and return only what is supported by the audio clip.
+
+    Focus on sounds such as:
+    - alarm sounds
+    - abnormal machine sounds
+    - collision or impact sounds
+    - breaking sounds
+    - scraping or dragging sounds
+    - sudden loud mechanical changes
+    - human warning or distress voices
 
     Output format:
     {
       "events": [
         {
-          "cue": "short_event_name",
-          "confidence": 0.0,
-          "direction": null,
+          "cue": "short event name",
+          "severity": "low|medium|high|critical|unknown",
           "evidence": "short evidence"
         }
       ]
@@ -238,7 +230,10 @@ audio_analysis:
 
     Constraints:
     - Output JSON only
+    - Return only events supported by the audio clip
+    - Do not infer events only from visual context
     - If there is no relevant event, return {"events": []}
+    - If the sound is unclear, use "unknown"
     - cue must be a short event name
-    - confidence must be between 0.0 and 1.0
-    - direction must be one of: "left", "right", or null
+    - severity must be one of: "low", "medium", "high", "critical", or "unknown"
+    - evidence must be short and based only on the audio clip

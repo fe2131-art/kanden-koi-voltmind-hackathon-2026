@@ -5,8 +5,11 @@ from src.safety_agent.schema import (
     AudioCue,
     BoundingBox,
     CameraPose,
+    CriticalPoint,
     DepthAnalysisResult,
+    DepthZoneDescription,
     DetectedObject,
+    NormalizedBBox,
     Observation,
     ObservationProvider,
     PerceptionIR,
@@ -14,8 +17,6 @@ from src.safety_agent.schema import (
     VisionAnalysisResult,
     VisionBlindSpot,
     VisionOverallAssessment,
-    VisionRisk,
-    VisionTemporalChange,
 )
 
 
@@ -34,10 +35,10 @@ def test_detected_object():
 
 def test_audio_cue():
     cue = AudioCue(
-        cue="vehicle_approaching", confidence=0.7, direction="right", evidence="sound"
+        cue="vehicle_approaching", severity="medium", evidence="車が接近している音"
     )
     assert cue.cue == "vehicle_approaching"
-    assert cue.direction == "right"
+    assert cue.severity == "medium"
 
 
 def test_camera_pose():
@@ -112,55 +113,34 @@ def test_observation():
 
 def test_vision_analysis_result_basic():
     result = VisionAnalysisResult(
-        summary="工場内の状況。フォークリフト1台と作業員2名が確認。",
-        risks=[VisionRisk(description="フォークリフトが接近中", position="中央右", level="high")],
+        scene_description="工場内の状況。フォークリフト1台と作業員2名が確認。",
+        critical_points=[
+            CriticalPoint(
+                description="フォークリフトが接近中",
+                severity="high",
+                normalized_bbox=NormalizedBBox(x_min=0.4, y_min=0.3, x_max=0.7, y_max=0.8),
+            )
+        ],
         blind_spots=[VisionBlindSpot(description="棚の背後が見えない", position="右奥")],
+        overall_assessment=VisionOverallAssessment(
+            severity="high", reason="フォークリフト接近による高リスク"
+        ),
     )
-    assert result.summary.startswith("工場")
-    assert len(result.risks) == 1
-    assert result.risks[0].level == "high"
+    assert result.scene_description.startswith("工場")
+    assert len(result.critical_points) == 1
+    assert result.critical_points[0].severity == "high"
     assert len(result.blind_spots) == 1
-    assert result.navigability is None
-    assert result.overall_assessment is None
-
-
-def test_vision_temporal_change_alias():
-    """VisionTemporalChange の from/to エイリアスが正しく動作することを確認。"""
-    change = VisionTemporalChange.model_validate({
-        "target": "forklift",
-        "change": "moved",
-        "from": "左端",
-        "to": "中央",
-        "note": "約2m移動",
-    })
-    assert change.from_state == "左端"
-    assert change.to_state == "中央"
-
-    # by_alias=True でシリアライズすると "from"/"to" キーが出力される
-    dumped = change.model_dump(by_alias=True, exclude_none=True)
-    assert "from" in dumped
-    assert "to" in dumped
-    assert dumped["from"] == "左端"
-
-
-def test_vision_analysis_result_full():
-    """VisionAnalysisResult が overall_assessment を含む場合の構築を検証。"""
-    result = VisionAnalysisResult(
-        summary="安全な状態",
-        overall_assessment=VisionOverallAssessment(level="safe", reason="危険物なし"),
-    )
-    dumped = result.model_dump(exclude_none=True)
-    assert dumped["overall_assessment"]["level"] == "safe"
 
 
 def test_perception_ir_with_vision_analysis():
     """PerceptionIR が vision_analysis フィールドを持つことを確認。"""
-    analysis = VisionAnalysisResult(summary="テスト分析結果")
+    analysis = VisionAnalysisResult(
+        scene_description="テスト分析結果",
+        overall_assessment=VisionOverallAssessment(severity="low", reason="異常なし"),
+    )
     ir = PerceptionIR(obs_id="t0", vision_analysis=analysis)
     assert ir.vision_analysis is not None
-    assert ir.vision_analysis.summary == "テスト分析結果"
-
-    assert not hasattr(ir, "vision_description")
+    assert ir.vision_analysis.scene_description == "テスト分析結果"
 
 
 def test_observation_provider():
@@ -183,34 +163,41 @@ def test_observation_provider():
 def test_depth_analysis_result():
     """DepthAnalysisResult の基本構築を検証。"""
     depth = DepthAnalysisResult(
-        summary="近い領域に危険物あり",
-        depth_zones=[
-            "近い領域（0.5m以内）：フォークリフト",
-            "中距離領域（0.5-2m）：棚",
-            "遠い領域（2m以上）：壁",
+        scene_description="近い領域に危険物あり。段階的に奥へ深くなる。",
+        depth_layers=[
+            DepthZoneDescription(
+                zone="near", description="フォークリフト（0.3m）接近中"
+            ),
+            DepthZoneDescription(zone="mid", description="棚（0.5-2m）"),
+            DepthZoneDescription(zone="far", description="壁（2m以上）"),
         ],
-        nearest_hazards=["フォークリフト（0.3m）"],
-        occlusions=["棚の背後"],
-        spatial_layout="深度が前から後ろへ段階的に深くなる配置",
     )
-    assert depth.summary == "近い領域に危険物あり"
-    assert len(depth.depth_zones) == 3
-    assert len(depth.nearest_hazards) == 1
-    assert depth.spatial_layout is not None
+    assert depth.scene_description.startswith("近い領域")
+    assert len(depth.depth_layers) == 3
+    assert depth.depth_layers[0].zone == "near"
 
 
 def test_perception_ir_with_depth_analysis():
     """PerceptionIR が depth_analysis フィールドを持つことを確認。"""
-    depth = DepthAnalysisResult(summary="テスト深度分析")
+    depth = DepthAnalysisResult(
+        scene_description="テスト深度分析",
+        depth_layers=[],
+    )
     ir = PerceptionIR(obs_id="t0", depth_analysis=depth)
     assert ir.depth_analysis is not None
-    assert ir.depth_analysis.summary == "テスト深度分析"
+    assert ir.depth_analysis.scene_description == "テスト深度分析"
 
 
 def test_perception_ir_full_modalities():
     """PerceptionIR に vision_analysis と depth_analysis の両方を含めることを確認。"""
-    vision = VisionAnalysisResult(summary="ビジョン分析結果")
-    depth = DepthAnalysisResult(summary="深度分析結果")
+    vision = VisionAnalysisResult(
+        scene_description="ビジョン分析結果",
+        overall_assessment=VisionOverallAssessment(severity="low", reason="OK"),
+    )
+    depth = DepthAnalysisResult(
+        scene_description="深度分析結果",
+        depth_layers=[],
+    )
     ir = PerceptionIR(
         obs_id="t0",
         vision_analysis=vision,
@@ -218,5 +205,5 @@ def test_perception_ir_full_modalities():
     )
     assert ir.vision_analysis is not None
     assert ir.depth_analysis is not None
-    assert ir.vision_analysis.summary == "ビジョン分析結果"
-    assert ir.depth_analysis.summary == "深度分析結果"
+    assert ir.vision_analysis.scene_description == "ビジョン分析結果"
+    assert ir.depth_analysis.scene_description == "深度分析結果"

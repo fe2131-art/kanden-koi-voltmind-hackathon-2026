@@ -69,18 +69,19 @@ from pydantic import BaseModel, ConfigDict, Field
 # PerceptionIR.vision_analysis に格納される。
 
 
-class VisionElement(BaseModel):
-    """画像中に見えている要素（人・物・設備など）。"""
-    label: str
-    position: str
-    note: Optional[str] = None
+class NormalizedBBox(BaseModel):
+    """正規化された bounding box（0.0-1.0 範囲）。"""
+    x_min: float = Field(ge=0.0, le=1.0)
+    y_min: float = Field(ge=0.0, le=1.0)
+    x_max: float = Field(ge=0.0, le=1.0)
+    y_max: float = Field(ge=0.0, le=1.0)
 
 
-class VisionRisk(BaseModel):
-    """画像から検出された危険の内容。"""
+class CriticalPoint(BaseModel):
+    """画像中の危険箇所。位置を特定できる重要な危険。"""
     description: str
-    position: str
-    level: Literal["low", "medium", "high", "unknown"]
+    normalized_bbox: Optional[NormalizedBBox] = None
+    severity: Literal["low", "medium", "high", "critical", "unknown"] = "unknown"
 
 
 class VisionBlindSpot(BaseModel):
@@ -89,46 +90,18 @@ class VisionBlindSpot(BaseModel):
     position: str
 
 
-class VisionInspectionFinding(BaseModel):
-    """設備・施設の異常または点検上の所見。"""
-    description: str
-    position: str
-    severity: Literal["normal", "minor", "moderate", "critical", "unknown"]
-
-
-class VisionTemporalChange(BaseModel):
-    """2枚の画像間での変化（移動・出現・消失など）。"""
-    model_config = ConfigDict(populate_by_name=True)
-
-    target: str
-    change: Literal["moved", "appeared", "disappeared", "shifted", "state_changed", "unknown"]
-    from_state: str = Field(alias="from")  # "from" は Python 予約語のため alias
-    to_state: str = Field(alias="to")
-    note: Optional[str] = None
-
-
-class VisionNavigability(BaseModel):
-    """通路・移動経路の通行しやすさ。"""
-    status: Literal["clear", "partial", "blocked", "unknown"]
-    description: str
-
-
 class VisionOverallAssessment(BaseModel):
     """画像全体の安全レベル評価。"""
-    level: Literal["safe", "caution", "dangerous", "unknown"]
+    severity: Literal["low", "medium", "high", "critical", "unknown"]
     reason: str
 
 
 class VisionAnalysisResult(BaseModel):
     """VisionAnalyzer.analyze() の構造化出力。PerceptionIR.vision_analysis に格納。"""
-    summary: str
-    elements: List[VisionElement] = Field(default_factory=list)
-    risks: List[VisionRisk] = Field(default_factory=list)
+    scene_description: str
+    critical_points: List[CriticalPoint] = Field(default_factory=list)
     blind_spots: List[VisionBlindSpot] = Field(default_factory=list)
-    inspection_findings: List[VisionInspectionFinding] = Field(default_factory=list)
-    temporal_changes: List[VisionTemporalChange] = Field(default_factory=list)
-    navigability: Optional[VisionNavigability] = None
-    overall_assessment: Optional[VisionOverallAssessment] = None
+    overall_assessment: VisionOverallAssessment
 
 
 # ─── YOLO 検出結果 ────────────────────────────────────────────────────────────
@@ -157,9 +130,8 @@ class DetectedObject(BaseModel):
 class AudioCue(BaseModel):
     """音声解析から抽出した危険キュー。PerceptionIR.audio の要素。"""
     cue: str  # e.g. "vehicle_approaching"
-    confidence: float = Field(ge=0, le=1)
-    direction: Optional[Literal["left", "right"]] = None
-    evidence: Optional[str] = None
+    severity: Literal["low", "medium", "high", "critical", "unknown"]
+    evidence: str  # 根拠説明
 
 
 # ─── 深度解析結果 ──────────────────────────────────────────────────────────────
@@ -167,13 +139,16 @@ class AudioCue(BaseModel):
 # PerceptionIR.depth_analysis に格納。
 
 
+class DepthZoneDescription(BaseModel):
+    """深度層別の領域説明。"""
+    zone: Literal["near", "mid", "far"]
+    description: str
+
+
 class DepthAnalysisResult(BaseModel):
     """Depth Anything 3 による深度解析結果。PerceptionIR.depth_analysis に格納。"""
-    summary: str
-    depth_zones: List[str] = Field(default_factory=list)  # 深度層別の領域説明
-    nearest_hazards: List[str] = Field(default_factory=list)  # 最も近い危険物
-    occlusions: List[str] = Field(default_factory=list)  # 隠れた領域・死角
-    spatial_layout: Optional[str] = None  # 空間的配置の整体的説明
+    scene_description: str
+    depth_layers: List[DepthZoneDescription] = Field(default_factory=list)
 
 
 # ─── カメラ姿勢 ───────────────────────────────────────────────────────────────
