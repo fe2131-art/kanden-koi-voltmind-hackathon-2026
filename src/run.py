@@ -989,4 +989,14 @@ def main():
 
 
 if __name__ == "__main__":
+    """
+    .venv/bin/python src/vis/anomaly_viewer.py --port 7861
+    .venv/bin/python src/vis/anomaly_viewer.py --share    
+    - tmux でバックグラウンド実行
+        tmux new-session -d -s anomaly-viewer '.venv/bin/python src/vis/anomaly_viewer.py --share'
+    - セッションが起動していることを確認
+        tmux ls # anomaly-viewer 
+    - セッションを停止
+        tmux kill-session -t anomaly-viewer
+    """
     main()
