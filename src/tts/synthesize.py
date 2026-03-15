@@ -187,6 +187,63 @@ def synthesize_text(
 # ---------------------------------------------------------------------------
 
 
+def _synthesize_via_server(
+    text: str,
+    server_url: str,
+    voice: str,
+    language: str,
+    instruct: Optional[str],
+    sample_rate: int,
+    temperature: Optional[float],
+    top_p: Optional[float],
+    top_k: Optional[int],
+    repetition_penalty: Optional[float],
+) -> Optional[tuple[np.ndarray, int]]:
+    """TTS サーバ経由でテキストを合成する。
+
+    Args:
+        server_url: TTS サーバのベース URL（例: http://localhost:8010）。
+
+    Returns:
+        (waveform, sample_rate) タプル（成功時）、または None（失敗時）。
+    """
+    import httpx
+
+    url = f"{server_url.rstrip('/')}/v1/audio/speech"
+    payload: dict = {
+        "input": text,
+        "voice": voice,
+        "language": language,
+        "sample_rate": sample_rate,
+    }
+    if instruct is not None:
+        payload["instruct"] = instruct
+    if temperature is not None:
+        payload["temperature"] = temperature
+    if top_p is not None:
+        payload["top_p"] = top_p
+    if top_k is not None:
+        payload["top_k"] = top_k
+    if repetition_penalty is not None:
+        payload["repetition_penalty"] = repetition_penalty
+
+    try:
+        with httpx.Client(timeout=120.0) as client:
+            r = client.post(url, json=payload)
+            r.raise_for_status()
+
+        import io
+
+        import soundfile as sf
+
+        buf = io.BytesIO(r.content)
+        waveform, sr = sf.read(buf, dtype="float32")
+        return np.asarray(waveform, dtype=np.float32), int(sr)
+    except Exception as e:
+        logger.error(f"サーバ合成失敗 ({url}): {e}")
+        return None
+
+
 def run_batch(
     input_path: Path,
     outdir: Path,
@@ -200,6 +257,7 @@ def run_batch(
     top_k: Optional[int] = None,
     repetition_penalty: Optional[float] = None,
     dry_run: bool = False,
+    server_url: Optional[str] = None,
 ) -> None:
     """フレームリストを読み込み、WAV ファイルを一括生成する。
 
@@ -213,6 +271,8 @@ def run_batch(
         instruct:   音声スタイル指示テキスト（1.7B CustomVoice のみ有効）。
         temperature, top_p, top_k, repetition_penalty: 生成パラメータ。
         dry_run:    True の場合モデルをロードせずテキストのみ表示する。
+        server_url: TTS サーバの URL（例: http://localhost:8010）。
+                    指定時はサーバ経由で合成し、モデルをローカルにロードしない。
     """
     outdir.mkdir(parents=True, exist_ok=True)
     frames = _load_results(input_path)
@@ -230,6 +290,37 @@ def run_batch(
             logger.info(f"  {out_path.name}: {text!r}")
         return
 
+    # サーバモード: ローカルモデルを使わず HTTP API を呼ぶ
+    if server_url is not None:
+        logger.info(f"サーバモードで合成: {server_url}")
+        for frame in frames:
+            ts = float(frame.get("video_timestamp") or 0.0)
+            out_path = outdir / f"frame_{ts:.1f}s.wav"
+            text = frame_to_tts_text(frame)
+            logger.info(f"合成中 {out_path.name}: {text!r}")
+            result = _synthesize_via_server(
+                text=text,
+                server_url=server_url,
+                voice=voice,
+                language=language,
+                instruct=instruct,
+                sample_rate=sample_rate,
+                temperature=temperature,
+                top_p=top_p,
+                top_k=top_k,
+                repetition_penalty=repetition_penalty,
+            )
+            if result is not None:
+                waveform, sr = result
+                sf.write(str(out_path), waveform, sr)
+                duration = len(waveform) / sr
+                logger.info(f"  保存完了: {out_path} ({duration:.2f}s)")
+            else:
+                _write_silent_wav(out_path, sample_rate=sample_rate)
+        logger.info(f"完了。{len(frames)} ファイルを {outdir} に書き出しました。")
+        return
+
+    # ローカルモード: 従来通りモデルをロードして合成
     import torch
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -311,6 +402,11 @@ def _parse_args() -> argparse.Namespace:
         action="store_true",
         help="モデルをロードせずテキストのみ表示する",
     )
+    parser.add_argument(
+        "--server-mode",
+        action="store_true",
+        help="configs/default.yaml の tts.server_url に接続してサーバ経由で合成する",
+    )
     return parser.parse_args()
 
 
@@ -340,7 +436,11 @@ def main() -> None:
     top_p: Optional[float] = tts_cfg.get("top_p")
     top_k: Optional[int] = tts_cfg.get("top_k")
     repetition_penalty: Optional[float] = tts_cfg.get("repetition_penalty")
+    # --server-mode のときのみ設定ファイルの server_url を使用する
+    server_url: Optional[str] = (tts_cfg.get("server_url") or None) if args.server_mode else None
 
+    if server_url:
+        logger.info(f"TTS server_url: {server_url}")
     if instruct:
         logger.info(f"instruct: {instruct!r}")
 
@@ -357,6 +457,7 @@ def main() -> None:
         top_k=top_k,
         repetition_penalty=repetition_penalty,
         dry_run=args.dry_run,
+        server_url=server_url,
     )
 
 

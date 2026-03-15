@@ -1,10 +1,10 @@
 #!/bin/bash
-#SBATCH -J vllm-qwen3-light
+#SBATCH -J qwen-tts-server
 #SBATCH -p gpu
 #SBATCH --gres=gpu:1
 #SBATCH -c 8
 #SBATCH --mem=32G
-#SBATCH -t 01:00:00
+#SBATCH -t 02:00:00
 #SBATCH -o slurm-%j.out
 
 set -euo pipefail
@@ -45,55 +45,57 @@ echo "=========================================="
 
 cd "$WORK_DIR"
 
-# GPU 割り当て: 音声モデル(GPU 0)と共存するため GPU 1 を使用
-# Slurm が自動割り当てしない場合に明示指定
-export CUDA_VISIBLE_DEVICES=1
-
 # キャッシュ（作業者単位で永続化）
 export UV_CACHE_DIR="$HOME/.cache/uv"
 export HF_HOME="$HOME/data/hf_cache"
 export TRANSFORMERS_CACHE="$HF_HOME"
 mkdir -p "$UV_CACHE_DIR" "$HF_HOME"
 
+# 環境変数の読み込み
+set -a
+[ -f .env ] && source .env
+set +a
+
 # 依存を揃える
 uv sync --frozen || uv sync
 
-MODEL="Qwen/Qwen3.5-9B"
-PORT=8000
+# 空きメモリが最多の GPU を選択
+BEST_GPU=$(nvidia-smi --query-gpu=memory.free --format=csv,noheader,nounits \
+  | awk 'BEGIN{max=-1; idx=0} {if($1>max){max=$1; idx=NR-1}} END{print idx}')
+export CUDA_VISIBLE_DEVICES="$BEST_GPU"
+echo "Selected GPU: $BEST_GPU (most free memory)"
+
+MODEL="${TTS_MODEL:-Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice}"
+PORT=8010
 
 echo
-echo "---- Starting vLLM server ----"
-uv run vllm serve "$MODEL" \
+echo "---- Starting Qwen TTS server ----"
+TTS_MODEL="$MODEL" uv run uvicorn src.tts.server:app \
   --host 0.0.0.0 \
   --port "$PORT" \
-  --tensor-parallel-size 1 \
-  --max-model-len 8192 \
-  --gpu-memory-utilization 0.90 \
-  --enable-prefix-caching \
-  > "vllm_${SLURM_JOB_ID}.log" 2>&1 &
-# --reasoning-parser qwen3 は Qwen3 thinking モデル用。必要なら上記に追加。
+  > "qwen_tts_server_${SLURM_JOB_ID:-local}.log" 2>&1 &
 
-VLLM_PID=$!
-echo "vLLM PID=$VLLM_PID"
+SERVER_PID=$!
+echo "TTS server PID=$SERVER_PID"
 
 echo
 echo "---- Waiting for server to be ready ----"
-for i in $(seq 1 90); do
-  if curl -fsS "http://127.0.0.1:${PORT}/v1/models" >/dev/null 2>&1; then
+for i in $(seq 1 60); do
+  if curl -fsS "http://127.0.0.1:${PORT}/health" >/dev/null 2>&1; then
     echo "Server is up! (http://127.0.0.1:${PORT})"
     break
   fi
-  sleep 1
+  sleep 2
 done
 
 echo
-echo "---- /v1/models ----"
-curl -s "http://127.0.0.1:${PORT}/v1/models" || true
+echo "---- /health ----"
+curl -s "http://127.0.0.1:${PORT}/health" || true
 
 echo
-echo "---- Tail vLLM log ----"
-tail -n 60 "vllm_${SLURM_JOB_ID}.log" || true
+echo "---- Tail server log ----"
+tail -n 40 "qwen_tts_server_${SLURM_JOB_ID:-local}.log" || true
 
 echo
-echo "---- Keep running (stop with: scancel ${SLURM_JOB_ID}) ----"
-wait "$VLLM_PID"
+echo "---- Keep running (stop with: scancel ${SLURM_JOB_ID:-N/A}) ----"
+wait "$SERVER_PID"
