@@ -140,10 +140,9 @@ python src/run.py
 ```yaml
 agent:
   max_steps: 1              # 処理フレーム数（-1: 全フレーム）
-  enable_yolo: false        # YOLO 物体検出の有効/無効
-  enable_audio: false       # 音声解析の有効/無効
-  max_outstanding_regions: 6     # LLM が検討する未確認領域の上限数
-  context_history_size: 1        # 前回判断の参照（0=なし, 1=前回のみ、推奨）
+  enable_audio: true        # 音声解析の有効/無効
+  enable_depth: true        # 深度推定の有効/無効
+  context_history_size: 1   # 前回判断の参照（0=なし, 1=前回のみ、推奨）
 ```
 
 ### context_history_size について

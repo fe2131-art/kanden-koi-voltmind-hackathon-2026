@@ -68,7 +68,6 @@ def test_e2e_agent_no_llm():
         },
         "config": {"audio": {"window_seconds": 3.0}},
         "chat_max_tokens": 2000,
-        "max_outstanding_regions": 6,
         "context_history_size": 1,
         "expected_modalities": [
             "vlm",

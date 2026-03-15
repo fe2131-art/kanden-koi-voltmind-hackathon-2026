@@ -122,28 +122,27 @@ def main():
 ```python
 def custom_view_planning(state, runtime) -> Dict:
     """カスタムビュー提案ロジック"""
-    world = state["world"]
-    
+    ir = state["ir"]  # 現在の PerceptionIR
+    assessment = state["assessment"]  # 現在の安全判断
+
     def score_candidate(candidate: ViewCandidate) -> float:
-        unobs = world.outstanding_unobserved
-        
-        # カバレッジスコア
-        coverage = sum(
-            1 for u in unobs
-            if is_visible_from(u, candidate)
-        )
-        
-        # 冗長性ペナルティ
-        redundancy = sum(
-            1 for h in world.fused_hazards
-            if is_visible_from(h, candidate)
-        )
-        
-        # スコア計算
-        score = coverage * 0.8 - redundancy * 0.2
+        # detected_hazards から危険箇所を抽出
+        hazards = assessment.detected_hazards if assessment else []
+
+        # 検出されたオブジェクト・視覚分析を参照
+        vision = ir.vision_analysis if ir else None
+
+        # 脅威スコア計算
+        threat_score = len(hazards) * 0.8
+
+        # リスク優先度スコア
+        priority_score = assessment.priority if assessment else 0.0
+
+        # スコア計算（高いほど優先観測対象）
+        score = threat_score + priority_score * 0.2
         return score
-    
-    candidates = generate_candidates(world)
+
+    candidates = generate_view_candidates()  # 汎用候補生成
     scored = [(c, score_candidate(c)) for c in candidates]
     sorted_candidates = sorted(scored, key=lambda x: x[1], reverse=True)
     

@@ -319,7 +319,6 @@ class ContextSchema(TypedDict):
     prompts: dict  # プロンプト設定全体
     config: dict
     chat_max_tokens: int
-    max_outstanding_regions: int
     context_history_size: int  # LLM に渡す前回結果の数（0=なし, 1=前回のみ）
     expected_modalities: List[str]
     # run_mode: "until_provider_ends" | "stop_when_safe"

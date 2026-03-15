@@ -1023,7 +1023,6 @@ def main():
         "prompts": prompts,
         "config": config,  # depth_node で config.get("tokens", ...) 使用
         "chat_max_tokens": tokens_cfg.get("chat_max_tokens", 2000),
-        "max_outstanding_regions": agent_cfg.get("max_outstanding_regions", 6),
         "context_history_size": agent_cfg.get("context_history_size", 1),
         "expected_modalities": expected_modalities,
         "run_mode": "until_provider_ends",  # provider が None を返すまで継続

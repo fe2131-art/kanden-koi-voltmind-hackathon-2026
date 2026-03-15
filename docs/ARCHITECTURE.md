@@ -82,12 +82,12 @@ Perceiver.estimate(obs, objects, audio_cues, vision_description)
 → PerceptionIR (objects, hazards, unobserved, audio, vision_description)
 ```
 
-### 4. 世界モデル（`src/safety_agent/schema.py`）
+### 4. Pydantic スキーマ（`src/safety_agent/schema.py`）
 
-Pydantic スキーマで状態管理：
-- `WorldModel`: 全体状態（fused_hazards, outstanding_unobserved, last_assessment）
-- `PerceptionIR`: フレーム単位の内部表現
+状態管理スキーマ：
+- `PerceptionIR`: フレーム単位の知覚統合結果（vision_analysis, audio, depth_analysis）
 - `SafetyAssessment`: LLM による総合安全判断（risk_level, safety_status, detected_hazards, action_type, target_region, reason, priority）
+- `Observation`: 入力観測データ（image_path, audio_path, camera_pose）
 
 ## データフロー
 
@@ -124,9 +124,9 @@ Input: Observation (image_path + audio_text)
    - モダリティエラーをまとめて記録
   ↓
 5. update_world_model
-   - fused_hazards を信度で統合
-   - outstanding_unobserved をリスク順にソート
+   - PerceptionIR のハザード情報を記録
    - 前回の SafetyAssessment を保持
+   - 状態遷移のために assessment を更新
   ↓
 6. determine_next_action_llm 【知覚推論 + 安全判断を統合実行】
    a) LLM あり: 2ステップで実行
@@ -206,9 +206,8 @@ LLM 未設定時のフォールバック：
 ```yaml
 agent:
   max_steps: 1                    # フレーム処理数（-1: 全フレーム）
-  enable_yolo: false              # YOLO 物体検出の有効/無効
-  enable_audio: false             # 音声解析の有効/無効（Speech-to-Text 未実装）
-  max_outstanding_regions: 6      # LLM が検討する未確認領域の上限数
+  enable_audio: true              # 音声解析の有効/無効
+  enable_depth: true              # 深度推定の有効/無効
   context_history_size: 1         # LLM に渡す前回判断の数（0=なし, 1=前回のみ）
 
 llm:
