@@ -140,25 +140,42 @@ def synthesize_text(
     model,
     voice: str = "Vivian",
     language: str = "Japanese",
-) -> Optional[np.ndarray]:
+    instruct: Optional[str] = None,
+    temperature: Optional[float] = None,
+    top_p: Optional[float] = None,
+    top_k: Optional[int] = None,
+    repetition_penalty: Optional[float] = None,
+) -> Optional[tuple[np.ndarray, int]]:
     """テキストを float32 numpy 波形配列に合成する。
 
     Qwen3-TTS-CustomVoice の推論フロー:
-      model.generate_custom_voice(text, language, speaker) を呼び出し、
+      model.generate_custom_voice(text, language, speaker, instruct) を呼び出し、
       (wavs, sr) タプルの wavs[0] を返す。
 
     Returns:
-        float32 numpy 配列（成功時）、または None（失敗時）。
+        (waveform, native_sample_rate) タプル（成功時）、または None（失敗時）。
         None を受け取った呼び出し元は _write_silent_wav() を使うこと。
     """
     try:
-        wavs, _sr = model.generate_custom_voice(
+        gen_kwargs: dict = {}
+        if temperature is not None:
+            gen_kwargs["temperature"] = temperature
+        if top_p is not None:
+            gen_kwargs["top_p"] = top_p
+        if top_k is not None:
+            gen_kwargs["top_k"] = top_k
+        if repetition_penalty is not None:
+            gen_kwargs["repetition_penalty"] = repetition_penalty
+
+        wavs, native_sr = model.generate_custom_voice(
             text=text,
             language=language,
             speaker=voice,
+            instruct=instruct or "",
+            **gen_kwargs,
         )
         waveform: np.ndarray = np.asarray(wavs[0], dtype=np.float32)
-        return waveform
+        return waveform, int(native_sr)
 
     except Exception as e:
         logger.error(f"合成失敗 (text='{text[:60]}...'): {e}")
@@ -177,6 +194,11 @@ def run_batch(
     sample_rate: int = 12000,
     voice: str = "Vivian",
     language: str = "Japanese",
+    instruct: Optional[str] = None,
+    temperature: Optional[float] = None,
+    top_p: Optional[float] = None,
+    top_k: Optional[int] = None,
+    repetition_penalty: Optional[float] = None,
     dry_run: bool = False,
 ) -> None:
     """フレームリストを読み込み、WAV ファイルを一括生成する。
@@ -188,6 +210,8 @@ def run_batch(
         sample_rate: 出力サンプルレート（Qwen3-TTS は 12000 Hz）。
         voice:      話者名。
         language:   合成言語。
+        instruct:   音声スタイル指示テキスト（1.7B CustomVoice のみ有効）。
+        temperature, top_p, top_k, repetition_penalty: 生成パラメータ。
         dry_run:    True の場合モデルをロードせずテキストのみ表示する。
     """
     outdir.mkdir(parents=True, exist_ok=True)
@@ -224,9 +248,23 @@ def run_batch(
             _write_silent_wav(out_path, sample_rate=sample_rate)
             continue
 
-        waveform = synthesize_text(text, model, voice=voice, language=language)
+        result = synthesize_text(
+            text, model,
+            voice=voice,
+            language=language,
+            instruct=instruct,
+            temperature=temperature,
+            top_p=top_p,
+            top_k=top_k,
+            repetition_penalty=repetition_penalty,
+        )
 
-        if waveform is not None:
+        if result is not None:
+            waveform, native_sr = result
+            if sample_rate != native_sr:
+                import librosa
+                waveform = librosa.resample(waveform, orig_sr=native_sr, target_sr=sample_rate)
+                logger.info(f"  リサンプル: {native_sr} Hz → {sample_rate} Hz")
             sf.write(str(out_path), waveform, sample_rate)
             duration = len(waveform) / sample_rate
             logger.info(f"  保存完了: {out_path} ({duration:.2f}s)")
@@ -297,6 +335,14 @@ def main() -> None:
     sample_rate: int = int(tts_cfg.get("sample_rate", 12000))
     voice: str = tts_cfg.get("voice", "Vivian")
     language: str = tts_cfg.get("language", "Japanese")
+    instruct: Optional[str] = tts_cfg.get("instruct") or None
+    temperature: Optional[float] = tts_cfg.get("temperature")
+    top_p: Optional[float] = tts_cfg.get("top_p")
+    top_k: Optional[int] = tts_cfg.get("top_k")
+    repetition_penalty: Optional[float] = tts_cfg.get("repetition_penalty")
+
+    if instruct:
+        logger.info(f"instruct: {instruct!r}")
 
     run_batch(
         input_path=args.input,
@@ -305,6 +351,11 @@ def main() -> None:
         sample_rate=sample_rate,
         voice=voice,
         language=language,
+        instruct=instruct,
+        temperature=temperature,
+        top_p=top_p,
+        top_k=top_k,
+        repetition_penalty=repetition_penalty,
         dry_run=args.dry_run,
     )
 

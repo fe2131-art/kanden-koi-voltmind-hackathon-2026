@@ -91,6 +91,13 @@ thresholds:
 # TTS (Text-to-Speech) 設定 — Qwen3-TTS バッチ合成
 tts:
   model: "Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice"
-  sample_rate: 12000   # Qwen3-TTS ネイティブサンプルレート (12kHz)
+  sample_rate: 24000   # 出力サンプルレート（ネイティブ 12kHz → librosa でアップサンプル）
   voice: "Vivian"      # 話者名
   language: "Japanese" # 合成言語
+  # 音声スタイル指示（1.7B CustomVoice のみ有効）
+  instruct: "あなたは日本人のアナウンサーです。自然な日本語のイントネーションで、明瞭かつ流暢に発話してください。感情表現を適切に込めて、聞き取りやすい速度で話してください。"
+  # 生成パラメータ（イントネーション安定化）
+  temperature: 0.8
+  top_p: 0.9
+  top_k: 50
+  repetition_penalty: 1.1
