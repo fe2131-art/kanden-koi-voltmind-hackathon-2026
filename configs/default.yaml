@@ -3,7 +3,6 @@
 # Agent parameters
 agent:
   max_steps: -1    # -1 = 動画全体を実行、N = 最初のN フレームのみ
-  enable_yolo: false
   enable_audio: true
   enable_depth: true
   max_outstanding_regions: 6        # 次に観測すべき候補領域の検討数上限

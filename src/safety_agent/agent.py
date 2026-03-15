@@ -16,7 +16,6 @@ from .modality_nodes import (
     DepthEstimator,
     ModalityResult,
     VisionAnalyzer,
-    YOLODetector,
 )
 from .schema import (
     DepthAnalysisResult,
@@ -63,11 +62,10 @@ def _get_json_schema_for_vllm() -> Dict[str, Any]:
                 "type": ["object", "null"],  # Optional: null の場合あり
                 "properties": {
                     "vision": {"type": "array", "items": {"type": "string"}},
-                    "yolo": {"type": "array", "items": {"type": "string"}},
                     "audio": {"type": "array", "items": {"type": "string"}},
                     "previous": {"type": "array", "items": {"type": "string"}},
                 },
-                "required": ["vision", "yolo", "audio", "previous"],
+                "required": ["vision", "audio", "previous"],
             },
         },
         "required": [
@@ -316,7 +314,6 @@ class ContextSchema(TypedDict):
     provider: ObservationProvider
     llm: Optional[OpenAICompatLLM]
     vision_analyzer: Optional[VisionAnalyzer]
-    yolo_detector: Optional[YOLODetector]
     audio_analyzer: AudioAnalyzer
     depth_estimator: Optional[DepthEstimator]
     prompts: dict  # プロンプト設定全体
@@ -336,7 +333,7 @@ class ContextSchema(TypedDict):
 
 def ingest_observation(state: AgentState, runtime: Runtime[ContextSchema]) -> Command:
     """
-    観測を取得して、yolo_node、vlm_node、audio_node へ fan-out で送信。
+    観測を取得して、vlm_node、audio_node へ fan-out で送信。
     Command + Send API により真の LangGraph 並列実行を実現。
     """
     step = state["step"]
@@ -354,9 +351,8 @@ def ingest_observation(state: AgentState, runtime: Runtime[ContextSchema]) -> Co
             )
         obs = nxt
 
-    # fan-out: yolo, vlm, audio（+ depth）を並列ノードへ送信
+    # fan-out: vlm, audio（+ depth）を並列ノードへ送信
     sends: list[Send] = [
-        Send("yolo_node", {"observation": obs}),
         Send("vlm_node", {"observation": obs}),
         Send("audio_node", {"observation": obs}),
     ]
@@ -379,32 +375,6 @@ def ingest_observation(state: AgentState, runtime: Runtime[ContextSchema]) -> Co
             ],
         },
         goto=sends,
-    )
-
-
-def yolo_node(state: AgentState, runtime: Runtime[ContextSchema]) -> Command:
-    """YOLO ノード：物体検出を実行。"""
-    obs = state.get("observation")
-    yolo = runtime.context.get("yolo_detector")
-    objects = []
-    error = None
-
-    if obs and obs.image_path and yolo:
-        try:
-            objects = yolo.detect(obs.image_path)
-        except Exception as e:
-            error = f"yolo: {e}"
-
-    result = ModalityResult(modality_name="yolo", objects=objects, error=error)
-    return Command(
-        update={
-            "modality_results": {"yolo": result},
-            "received_modalities": ["yolo"],
-            "messages": [
-                {"role": "assistant", "content": f"[yolo] objects={len(objects)}"}
-            ],
-        },
-        goto="join_modalities",
     )
 
 
@@ -602,7 +572,7 @@ def join_modalities(state: AgentState, runtime: Runtime[ContextSchema]) -> Comma
     Fan-in バリア + ラッチ：全て期待するモダリティが受け取ったかを確認。
     ラッチ（barrier_obs_id）により、同フレーム内で fuse_modalities は1回だけ実行される。
     """
-    expected = set(runtime.context.get("expected_modalities", ["yolo", "vlm", "audio"]))
+    expected = set(runtime.context.get("expected_modalities", ["vlm", "audio"]))
     received = set(state.get("received_modalities", []))
     obs = state.get("observation")
     current_obs_id = obs.obs_id if obs else None
@@ -610,7 +580,7 @@ def join_modalities(state: AgentState, runtime: Runtime[ContextSchema]) -> Comma
 
     if expected.issubset(received):
         # 全てのモダリティが揃った
-        if barrier_obs_id == current_obs_id:
+        if current_obs_id is not None and barrier_obs_id == current_obs_id:
             # 既にこのフレーム（obs_id）で fuse 実行済み → スキップ
             return Command(
                 update={
@@ -650,7 +620,7 @@ def fuse_modalities(
 ) -> Dict[str, Any]:
     """
     全モダリティの ModalityResult を PerceptionIR に統合する。
-    fan-in ポイント：yolo_node、vlm_node、audio_node の完了後に実行。
+    fan-in ポイント：vlm_node、audio_node の完了後に実行。
     """
     obs = state.get("observation")
     if obs is None:
@@ -659,12 +629,11 @@ def fuse_modalities(
     # modality_results は既に dict
     results: Dict[str, ModalityResult] = state.get("modality_results", {})
 
-    yolo = results.get("yolo")
     vlm = results.get("vlm")
     audio = results.get("audio")
     depth = results.get("depth")
 
-    objects = yolo.objects if yolo and yolo.objects else []
+    objects = []
     audio_cues = audio.audio_cues if audio and audio.audio_cues else []
     vision_analysis = vlm.extra.get("vision_analysis") if vlm else None
     depth_analysis = depth.extra.get("depth_analysis") if depth else None
@@ -695,7 +664,7 @@ def fuse_modalities(
 def determine_next_action_llm(
     state: AgentState, runtime: Runtime[ContextSchema]
 ) -> Dict[str, Any]:
-    """VLM/YOLO/音声から、次に起こすべき行動を LLM で決定。前フレーム結果を参照。
+    """VLM/音声から、次に起こすべき行動を LLM で決定。前フレーム結果を参照。
 
     フレーム間の状態引き継ぎ：
     - last_assessment: 前フレームの判断（LLM 入力で参照用）
@@ -707,20 +676,51 @@ def determine_next_action_llm(
     """
     ir = state.get("ir")
     if ir is None:
-        return {"errors": ["No IR for action determination"], "done": True}
+        logger.warning(
+            "IR is None in determine_next_action_llm, returning default assessment"
+        )
+        assessment = SafetyAssessment(
+            risk_level="low",
+            safety_status="継続観測中",
+            detected_hazards=[],
+            action_type="monitor",
+            reason="IR 未生成のため継続監視",
+            priority=0.0,
+            temporal_status="unknown",
+            evidence=None,
+        )
+        return {
+            "assessment": assessment,
+            "last_assessment": assessment,
+            "errors": ["No IR, used default assessment"],
+            "messages": [
+                {
+                    "role": "assistant",
+                    "content": "[assess] no IR -> default",
+                }
+            ],
+        }
 
     llm = runtime.context.get("llm")
     if llm is None:
-        # ヒューリスティックフォールバック
-        assessment = _heuristic_assessment()
-        # assessment と last_assessment の両方に同じ値を返す（次フレーム引き継ぎ用）
+        logger.warning("LLM not configured, returning default assessment")
+        assessment = SafetyAssessment(
+            risk_level="low",
+            safety_status="継続観測中",
+            detected_hazards=[],
+            action_type="monitor",
+            reason="LLM 未設定のため継続監視",
+            priority=0.0,
+            temporal_status="unknown",
+            evidence=None,
+        )
         return {
             "assessment": assessment,
             "last_assessment": assessment,
             "messages": [
                 {
                     "role": "assistant",
-                    "content": "[assess] LLM not configured -> heuristic",
+                    "content": "[assess] LLM not configured -> default",
                 }
             ],
         }
@@ -771,36 +771,32 @@ def determine_next_action_llm(
         }
 
     except Exception as e:
-        logger.error("LLM assessment failed, using heuristic fallback", exc_info=True)
-        assessment = _heuristic_assessment()
-        # フォールバック判断も同様に次フレーム用に保存
+        logger.error(
+            "LLM assessment failed, returning default assessment", exc_info=True
+        )
+        assessment = SafetyAssessment(
+            risk_level="low",
+            safety_status="継続観測中",
+            detected_hazards=[],
+            action_type="monitor",
+            reason="LLM 失敗のため継続監視",
+            priority=0.0,
+            temporal_status="unknown",
+            evidence=None,
+        )
         # エラーメッセージを最初の 150 文字に制限（JSON パースエラー等が長いため）
         error_summary = f"{type(e).__name__}: {str(e)[:150]}"
         return {
             "assessment": assessment,
             "last_assessment": assessment,
-            "errors": [f"LLM assessment fallback: {error_summary}"],
+            "errors": [f"LLM assessment failed: {error_summary}"],
             "messages": [
                 {
                     "role": "assistant",
-                    "content": "[assess] LLM failed -> heuristic",
+                    "content": "[assess] LLM failed -> default",
                 }
             ],
         }
-
-
-def _heuristic_assessment() -> SafetyAssessment:
-    """LLM 不使用時のフォールバック。"""
-    return SafetyAssessment(
-        risk_level="low",
-        safety_status="継続観測中（LLM なし）",
-        detected_hazards=[],
-        action_type="monitor",
-        reason="LLM 未設定のためヒューリスティックで継続監視",
-        priority=0.0,
-        temporal_status="unknown",
-        evidence=None,
-    )
 
 
 def emit_output(state: AgentState) -> Dict[str, Any]:
@@ -878,9 +874,8 @@ def should_continue(state: AgentState) -> str:
 def build_agent():
     builder = StateGraph(AgentState, context_schema=ContextSchema)
 
-    # ノード登録（yolo/vlm/audio/depth に分割した fan-out/fan-in 対応）
+    # ノード登録（vlm/audio/depth に分割した fan-out/fan-in 対応）
     builder.add_node("ingest_observation", ingest_observation)
-    builder.add_node("yolo_node", yolo_node)
     builder.add_node("vlm_node", vlm_node)
     builder.add_node("audio_node", audio_node)
     builder.add_node("depth_node", depth_node)
@@ -892,7 +887,7 @@ def build_agent():
 
     # エッジ設定
     builder.add_edge(START, "ingest_observation")
-    # fan-out: yolo/vlm/audio ノードは Command で goto="join_modalities" するため静的エッジは不要
+    # fan-out: vlm/audio ノードは Command で goto="join_modalities" するため静的エッジは不要
     builder.add_edge(
         "fuse_modalities", "determine_next_action_llm"
     )  # PerceptionIR 生成 → 安全判断

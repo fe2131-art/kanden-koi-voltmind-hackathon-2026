@@ -226,7 +226,7 @@ class VisionAnalyzer:
             return VisionAnalysisResult.model_validate(parsed)
 
         except Exception as e:
-            logger.error(f"Vision API error: {e}")
+            logger.error(f"Vision API error: {e}", exc_info=True)
             return None
 
     @staticmethod
@@ -305,95 +305,8 @@ class VisionAnalyzer:
             return parsed
 
         except Exception as e:
-            logger.error(f"Vision API error (depth analysis): {e}")
+            logger.error(f"Vision API error (depth analysis): {e}", exc_info=True)
             return None
-
-
-# ─── YOLODetector ──────────────────────────────────────────────
-
-
-class YOLODetector:
-    """YOLO モデルをラップ。スレッドセーフのため Lock を保持。"""
-
-    def __init__(self, model_path: str = "yolov8n.pt") -> None:
-        try:
-            from ultralytics import YOLO
-
-            self._model = YOLO(model_path)
-        except ImportError:
-            self._model = None
-        self._lock = threading.Lock()  # ultralytics はスレッドセーフでないため
-
-    def detect(self, image_path: str) -> list[DetectedObject]:
-        """YOLO 検出を実行。マルチスレッド対応。"""
-        if not image_path or not os.path.exists(image_path):
-            return self._simple_image_analysis(image_path)
-
-        if not self._model:
-            return self._simple_image_analysis(image_path)
-
-        try:
-            with self._lock:
-                res = self._model(image_path, verbose=False)[0]
-            out: list[DetectedObject] = []
-            for b in res.boxes:
-                cls = int(b.cls.item())
-                conf = float(b.conf.item())
-                label = self._model.names.get(cls, str(cls))
-                xyxy = b.xyxy[0].tolist()
-                out.append(
-                    DetectedObject(
-                        label=label,
-                        confidence=conf,
-                        bbox=BoundingBox(
-                            x1=xyxy[0], y1=xyxy[1], x2=xyxy[2], y2=xyxy[3]
-                        ),
-                    )
-                )
-            if out:
-                logger.debug(f"YOLO detected {len(out)} objects")
-            return out
-        except Exception as e:
-            logger.warning(f"YOLO detection failed: {e}, using simple analysis")
-            return self._simple_image_analysis(image_path)
-
-    def _simple_image_analysis(self, image_path: str) -> list[DetectedObject]:
-        """YOLO が利用できない場合のフォールバック。"""
-        if not image_path or not os.path.exists(image_path):
-            return []
-
-        try:
-            from PIL import Image
-
-            img = Image.open(image_path)
-            width, height = img.size
-
-            objects = []
-            file_size_mb = os.path.getsize(image_path) / (1024 * 1024)
-
-            if file_size_mb > 0.1:
-                objects.append(
-                    DetectedObject(
-                        label="foreground_object",
-                        confidence=0.5,
-                        bbox=BoundingBox(x1=0.1, y1=0.1, x2=0.9, y2=0.8),
-                    )
-                )
-
-            aspect_ratio = width / height if height > 0 else 1.0
-            if aspect_ratio > 1.5:
-                objects.append(
-                    DetectedObject(
-                        label="background_landscape",
-                        confidence=0.6,
-                        bbox=BoundingBox(x1=0.0, y1=0.5, x2=1.0, y2=1.0),
-                    )
-                )
-
-            return objects
-        except Exception as e:
-            logger.warning(f"Simple image analysis error: {e}")
-            return []
 
 
 # ─── AudioAnalyzer ──────────────────────────────────────────────
@@ -568,25 +481,24 @@ class AudioAnalyzer:
         if max_tokens is None:
             max_tokens = self.max_tokens or 2048
 
-        audio_base64 = self._encode_audio_window(
-            audio_input,
-            self.sample_rate,
-            video_timestamp=video_timestamp,
-            window_seconds=window_seconds,
-        )
-
-        if not audio_base64:
-            return []
-
-        content = [
-            {"type": "text", "text": prompt},
-            {
-                "type": "input_audio",
-                "input_audio": {"data": audio_base64, "format": "wav"},
-            },
-        ]
-
         try:
+            audio_base64 = self._encode_audio_window(
+                audio_input,
+                self.sample_rate,
+                video_timestamp=video_timestamp,
+                window_seconds=window_seconds,
+            )
+
+            if not audio_base64:
+                return []
+
+            content = [
+                {"type": "text", "text": prompt},
+                {
+                    "type": "input_audio",
+                    "input_audio": {"data": audio_base64, "format": "wav"},
+                },
+            ]
             create_kwargs: dict[str, Any] = {
                 "model": self.model,
                 "messages": [{"role": "user", "content": content}],
@@ -607,7 +519,7 @@ class AudioAnalyzer:
                 return []
             return self._normalize_audio_events(events)
         except Exception as e:
-            logger.error(f"Audio API error: {e}")
+            logger.error(f"Audio API error: {e}", exc_info=True)
             return []
 
 
@@ -776,5 +688,5 @@ class DepthEstimator:
             return side_by_side_bytes
 
         except Exception as e:
-            logger.error(f"Depth estimation failed: {e}")
+            logger.error(f"Depth estimation failed: {e}", exc_info=True)
             return None

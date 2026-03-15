@@ -195,6 +195,7 @@ function App() {
   const lastAssessmentFrameRef = useRef(null)
 
   useEffect(() => {
+    let cancelled = false
     const ctx = canvasRef.current?.getContext('2d')
     if (!ctx) return
 
@@ -326,7 +327,10 @@ function App() {
       wsRef.current.onclose = () => {
         setConnectionState('reconnecting')
         updateStatus('✗ disconnected — reconnecting in 3s...')
-        setTimeout(() => connectWS(), 3000)
+        setTimeout(() => {
+          if (cancelled) return
+          connectWS()
+        }, 3000)
       }
 
       wsRef.current.onmessage = (ev) => {
@@ -434,15 +438,17 @@ function App() {
     animIdRef.current = requestAnimationFrame(tick)
 
     return () => {
+      cancelled = true
       if (animIdRef.current) cancelAnimationFrame(animIdRef.current)
       if (wsRef.current) {
         wsRef.current.close()
         wsRef.current = null
       }
+      const videoEl = videoRef.current
       window.removeEventListener('resize', resizeCanvasToVideo)
-      videoRef.current?.removeEventListener('loadedmetadata', resizeCanvasToVideo)
-      videoRef.current?.removeEventListener('play', resizeCanvasToVideo)
-      videoRef.current?.removeEventListener('play', onVideoPlayOnce)
+      videoEl?.removeEventListener('loadedmetadata', resizeCanvasToVideo)
+      videoEl?.removeEventListener('play', resizeCanvasToVideo)
+      videoEl?.removeEventListener('play', onVideoPlayOnce)
     }
   }, [mode, delay, wsUrl])
 

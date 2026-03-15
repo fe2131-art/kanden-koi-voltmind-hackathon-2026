@@ -3,6 +3,7 @@ import logging
 import os
 import shutil
 import subprocess
+import sys
 import time
 from pathlib import Path
 from typing import Optional
@@ -16,7 +17,6 @@ from safety_agent.modality_nodes import (
     AudioAnalyzer,
     DepthEstimator,
     VisionAnalyzer,
-    YOLODetector,
 )
 from safety_agent.schema import CameraPose, Observation, ObservationProvider
 from util.logger import setup_logger
@@ -76,7 +76,7 @@ def get_llm(config: dict) -> Optional[OpenAICompatLLM]:
         # OpenAI API
         api_key = os.getenv("OPENAI_API_KEY")
         if not api_key:
-            logger.warning("OPENAI_API_KEY not set, using heuristic fallback")
+            logger.warning("OPENAI_API_KEY not set, using default assessment")
             return None
 
         openai_cfg = llm_config.get("openai", {})
@@ -109,12 +109,12 @@ def get_llm(config: dict) -> Optional[OpenAICompatLLM]:
 
         if not base_url:
             logger.warning(
-                "LLM base_url not set in configs/default.yaml, using heuristic fallback"
+                "LLM base_url not set in configs/default.yaml, using default assessment"
             )
             return None
         if not model:
             logger.warning(
-                "LLM model not set in configs/default.yaml, using heuristic fallback"
+                "LLM model not set in configs/default.yaml, using default assessment"
             )
             return None
 
@@ -868,18 +868,22 @@ def run_and_log_agent(
     final_state: dict = {}
     prev_latest_obs_id: str | None = None
 
-    for state in agent.stream(initial_state, context=context, stream_mode="values"):
-        latest = state.get("latest_output")
-        if "latest_output" in state and latest:
-            frame_id = latest.get("frame_id")
-            # フレームが更新されたときのみ追加（重複回避）
-            if frame_id != prev_latest_obs_id:
-                all_frame_outputs.append(latest)
-                prev_latest_obs_id = frame_id
-                # フレーム処理後、コールバックがあれば即時実行
-                if on_frame_callback:
-                    on_frame_callback(latest)
-        final_state = state
+    try:
+        for state in agent.stream(initial_state, context=context, stream_mode="values"):
+            latest = state.get("latest_output")
+            if "latest_output" in state and latest:
+                frame_id = latest.get("frame_id")
+                # フレームが更新されたときのみ追加（重複回避）
+                if frame_id != prev_latest_obs_id:
+                    all_frame_outputs.append(latest)
+                    prev_latest_obs_id = frame_id
+                    # フレーム処理後、コールバックがあれば即時実行
+                    if on_frame_callback:
+                        on_frame_callback(latest)
+            final_state = state
+    except Exception as e:
+        logger.error(f"Agent streaming error: {e}", exc_info=True)
+        # 収集済みのフレームを返す
 
     # Log agent results
     if final_state.get("selected"):
@@ -940,9 +944,13 @@ def main():
     )
 
     # Prepare observations from video and frames
-    obs_list, video_timestamps_map = prepare_observations(
-        config, video_extensions, frame_output_format, audio_cfg
-    )
+    try:
+        obs_list, video_timestamps_map = prepare_observations(
+            config, video_extensions, frame_output_format, audio_cfg
+        )
+    except FileNotFoundError as e:
+        logger.error(f"Data preparation failed: {e}")
+        sys.exit(1)
 
     # Apply max_steps filter to obs_list
     max_steps_cfg = agent_cfg.get("max_steps", 1)
@@ -970,13 +978,6 @@ def main():
     agent = build_agent()
 
     # Initialize modality analyzers for fan-out nodes
-    yolo_detector = None
-    if agent_cfg.get("enable_yolo", False):
-        try:
-            yolo_detector = YOLODetector("yolov8n.pt")
-        except Exception as e:
-            logger.warning(f"Failed to initialize YOLO: {e}, using fallback")
-
     depth_estimator = None
     if agent_cfg.get("enable_depth", False):
         try:
@@ -1005,7 +1006,7 @@ def main():
     }
 
     # Build expected_modalities based on enabled features
-    expected_modalities = ["yolo", "vlm"]  # Vision is always expected
+    expected_modalities = ["vlm"]  # Vision is always expected
     if agent_cfg.get("enable_audio", False):
         expected_modalities.append("audio")
     if agent_cfg.get("enable_depth", False):
@@ -1016,7 +1017,6 @@ def main():
         "provider": provider,
         "llm": llm,
         "vision_analyzer": vision_analyzer,
-        "yolo_detector": yolo_detector,
         "audio_analyzer": audio_analyzer,
         "depth_estimator": depth_estimator,
         "prompts": prompts,

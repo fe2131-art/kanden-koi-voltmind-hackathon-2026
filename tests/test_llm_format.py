@@ -76,14 +76,16 @@ def test_safety_assessment_minimal():
 
 def test_llm_json_output_as_string():
     """LLM が返す JSON 文字列をパースしてからバリデート。"""
-    llm_json_str = json.dumps({
-        "risk_level": "medium",
-        "safety_status": "注意が必要",
-        "detected_hazards": ["obstacle"],
-        "action_type": "mitigate",
-        "reason": "障害物がある",
-        "priority": 0.6,
-    })
+    llm_json_str = json.dumps(
+        {
+            "risk_level": "medium",
+            "safety_status": "注意が必要",
+            "detected_hazards": ["obstacle"],
+            "action_type": "mitigate",
+            "reason": "障害物がある",
+            "priority": 0.6,
+        }
+    )
 
     # JSON をパースして SafetyAssessment で検証
     llm_dict = json.loads(llm_json_str)

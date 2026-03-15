@@ -12,18 +12,18 @@ OUTPUT_DIR = Path(__file__).parent.parent.parent / "data"
 PERCEPTION_RESULTS = OUTPUT_DIR / "perception_results.json"
 
 
-def normalize_critical_point(cp: dict) -> dict:
-    """Convert vision_analysis.critical_points entry to App.jsx format."""
+def normalize_critical_point(cp: dict) -> dict | None:
+    """Convert vision_analysis.critical_points entry to App.jsx format.
+
+    Returns None if normalized_bbox is missing or incomplete.
+    """
     nb = cp.get("normalized_bbox") or {}
+    if not nb or any(k not in nb for k in ("x_min", "y_min", "x_max", "y_max")):
+        return None
     return {
         "description": cp.get("description", ""),
         "severity": cp.get("severity", "unknown"),
-        "bbox": [
-            nb.get("x_min", 0.0),
-            nb.get("y_min", 0.0),
-            nb.get("x_max", 1.0),
-            nb.get("y_max", 1.0),
-        ],
+        "bbox": [nb["x_min"], nb["y_min"], nb["x_max"], nb["y_max"]],
     }
 
 
@@ -63,8 +63,12 @@ async def monitor_and_stream(websocket):
                         ):
                             vision_analysis = result.get("vision_analysis") or {}
                             critical_points = [
-                                normalize_critical_point(cp)
-                                for cp in vision_analysis.get("critical_points", [])
+                                p
+                                for p in (
+                                    normalize_critical_point(cp)
+                                    for cp in vision_analysis.get("critical_points", [])
+                                )
+                                if p is not None
                             ]
 
                             # タイムスタンプを使用（Unix timestamp）
@@ -153,4 +157,8 @@ async def main():
 
 
 if __name__ == "__main__":
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(name)s %(levelname)s %(message)s",
+    )
     asyncio.run(main())

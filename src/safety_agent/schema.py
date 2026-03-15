@@ -23,13 +23,6 @@ from pydantic import BaseModel, Field
 #  │    agent.py: vlm_node() → PerceptionIR                                 │
 #  └─────────────────────────────────────────────────────────────────────────┘
 #
-#  ┌─ YOLO 出力 ─────────────────────────────────────────────────────────────┐
-#  │  BoundingBox            DetectedObject.bbox                             │
-#  │  DetectedObject         PerceptionIR.objects                            │
-#  │    modality_nodes.py: YOLODetector.detect() の返却値                   │
-#  │    agent.py: yolo_node() → PerceptionIR, determine_next_action_llm()   │
-#  └─────────────────────────────────────────────────────────────────────────┘
-#
 #  ┌─ 音声出力 ──────────────────────────────────────────────────────────────┐
 #  │  AudioCue               PerceptionIR.audio                             │
 #  │    modality_nodes.py: AudioAnalyzer.analyze() の返却値                 │
@@ -45,7 +38,7 @@ from pydantic import BaseModel, Field
 #  ┌─ 安全判断 ──────────────────────────────────────────────────────────────┐
 #  │  AssessmentEvidence     SafetyAssessment.evidence                      │
 #  │  SafetyAssessment       AgentState.assessment / WorldModel.last_assessment │
-#  │    agent.py: determine_next_action_llm() / _heuristic_assessment()     │
+#  │    agent.py: determine_next_action_llm()                               │
 #  │    agent.py: _get_json_schema_for_vllm() で vLLM 構造化出力スキーマ定義 │
 #  └─────────────────────────────────────────────────────────────────────────┘
 #
@@ -191,7 +184,7 @@ class PerceptionIR(BaseModel):
 
 
 # ─── 安全判断 ─────────────────────────────────────────────────────────────────
-# determine_next_action_llm() または _heuristic_assessment() が生成し、
+# determine_next_action_llm() が生成し、
 # AgentState.assessment と WorldModel.last_assessment に格納される。
 
 
@@ -199,13 +192,12 @@ class AssessmentEvidence(BaseModel):
     """SafetyAssessment の判断根拠（モダリティ別）。SafetyAssessment.evidence に格納。"""
 
     vision: List[str] = Field(default_factory=list)  # VLM 分析から使った根拠
-    yolo: List[str] = Field(default_factory=list)  # YOLO 検出から使った根拠
     audio: List[str] = Field(default_factory=list)  # 音声キューから使った根拠
     previous: List[str] = Field(default_factory=list)  # 前回判断から参照した根拠
 
 
 class SafetyAssessment(BaseModel):
-    """LLM または heuristic による総合安全判断。AgentState.assessment に格納。
+    """LLM による総合安全判断。AgentState.assessment に格納。
 
     action_type の意味:
       - "emergency_stop"  : 即時停止・退避が必要
