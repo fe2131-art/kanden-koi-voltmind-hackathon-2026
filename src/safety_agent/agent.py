@@ -306,7 +306,7 @@ class AgentState(TypedDict):
 
     # 前フレーム、現フレームの安全判断
     last_assessment: Optional[SafetyAssessment]  # フレーム間の引き継ぎ
-    assessment: Optional[SafetyAssessment]       # 現フレームの判断
+    assessment: Optional[SafetyAssessment]  # 現フレームの判断
 
     done: bool
     errors: Annotated[List[str], _sliding_window_errors]
@@ -419,7 +419,9 @@ def vlm_node(state: AgentState, runtime: Runtime[ContextSchema]) -> Command:
     if obs and obs.image_path and analyzer:
         try:
             # Vision API のトークン上限を設定から取得
-            vision_max_tokens = config.get("tokens", {}).get("vision_max_completion_tokens", 4096)
+            vision_max_tokens = config.get("tokens", {}).get(
+                "vision_max_completion_tokens", 4096
+            )
 
             vision_analysis = analyzer.analyze(
                 image_path=obs.image_path,
@@ -526,13 +528,17 @@ def depth_node(state: AgentState, runtime: Runtime[ContextSchema]) -> Command:
                 # ステップ2: VLM で深度画像を分析
                 depth_prompt = prompts.get("depth_analysis", {}).get("system")
                 if not depth_prompt:
-                    logger.debug("depth_analysis.system プロンプトが見つかりません。デフォルトプロンプトを使用します。")
+                    logger.debug(
+                        "depth_analysis.system プロンプトが見つかりません。デフォルトプロンプトを使用します。"
+                    )
                     depth_prompt = (
                         "この深度推定画像を分析して、空間的な危険性を評価してください。"
                     )
 
                 # Vision API のトークン上限を設定から取得
-                vision_max_tokens = config.get("tokens", {}).get("vision_max_completion_tokens", 4096)
+                vision_max_tokens = config.get("tokens", {}).get(
+                    "vision_max_completion_tokens", 4096
+                )
 
                 raw_result = vision_analyzer.analyze_bytes_raw(
                     side_by_side_bytes,
@@ -548,8 +554,14 @@ def depth_node(state: AgentState, runtime: Runtime[ContextSchema]) -> Command:
                     try:
                         depth_analysis = DepthAnalysisResult.model_validate(raw_result)
                         # フォールバック検出: scene_description が error message の場合
-                        if depth_analysis.scene_description and "could not be parsed" in depth_analysis.scene_description:
-                            logger.debug("Depth analysis returned fallback response (VLM レスポンスが不正)")
+                        if (
+                            depth_analysis.scene_description
+                            and "could not be parsed"
+                            in depth_analysis.scene_description
+                        ):
+                            logger.debug(
+                                "Depth analysis returned fallback response (VLM レスポンスが不正)"
+                            )
                             # fallback response の場合もエラーを記録するが depth_analysis は保持
                     except Exception as e:
                         logger.warning(f"Failed to validate depth analysis result: {e}")
@@ -762,14 +774,16 @@ def determine_next_action_llm(
         logger.error("LLM assessment failed, using heuristic fallback", exc_info=True)
         assessment = _heuristic_assessment()
         # フォールバック判断も同様に次フレーム用に保存
+        # エラーメッセージを最初の 150 文字に制限（JSON パースエラー等が長いため）
+        error_summary = f"{type(e).__name__}: {str(e)[:150]}"
         return {
             "assessment": assessment,
             "last_assessment": assessment,
-            "errors": [f"LLM assessment fallback: {e}"],
+            "errors": [f"LLM assessment fallback: {error_summary}"],
             "messages": [
                 {
                     "role": "assistant",
-                    "content": f"[assess] LLM failed -> heuristic. err={e}",
+                    "content": "[assess] LLM failed -> heuristic",
                 }
             ],
         }

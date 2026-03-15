@@ -6,7 +6,9 @@ from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
 
-def setup_logger(name: str, log_dir: str = "logs", level=logging.INFO) -> logging.Logger:
+def setup_logger(
+    name: str, log_dir: str = "logs", level=logging.INFO
+) -> logging.Logger:
     """
     Setup a logger with both file and console handlers.
 
@@ -45,7 +47,9 @@ def setup_logger(name: str, log_dir: str = "logs", level=logging.INFO) -> loggin
         try:
             log_file = log_path / f"{name}.log"
             file_handler = RotatingFileHandler(
-                log_file, maxBytes=10 * 1024 * 1024, backupCount=5  # 10MB per file, 5 backups
+                log_file,
+                maxBytes=10 * 1024 * 1024,
+                backupCount=5,  # 10MB per file, 5 backups
             )
             file_handler.setLevel(level)
             file_handler.setFormatter(formatter)

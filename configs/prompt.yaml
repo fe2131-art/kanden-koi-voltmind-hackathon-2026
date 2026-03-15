@@ -139,7 +139,7 @@ safety_assessment:
 
     出力形式：
     {
-      "risk_level": "low|medium|high",
+      "risk_level": "low|medium|high" (※ "unknown" は使わない。vision/depth/audio が unclear なら "low" を選ぶ),
       "safety_status": "現在の安全状態を簡潔に説明",
       "detected_hazards": ["現在確認されている危険"],
       "action_type": "emergency_stop|inspect_region|mitigate|monitor",

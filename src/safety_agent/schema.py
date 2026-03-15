@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import List, Literal, Optional
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, Field
 
 # =============================================================================
 # Pydantic スキーマ定義
@@ -71,6 +71,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 class NormalizedBBox(BaseModel):
     """正規化された bounding box（0.0-1.0 範囲）。"""
+
     x_min: float = Field(ge=0.0, le=1.0)
     y_min: float = Field(ge=0.0, le=1.0)
     x_max: float = Field(ge=0.0, le=1.0)
@@ -79,6 +80,7 @@ class NormalizedBBox(BaseModel):
 
 class CriticalPoint(BaseModel):
     """画像中の危険箇所。位置を特定できる重要な危険。"""
+
     description: str
     normalized_bbox: Optional[NormalizedBBox] = None
     severity: Literal["low", "medium", "high", "critical", "unknown"] = "unknown"
@@ -86,18 +88,21 @@ class CriticalPoint(BaseModel):
 
 class VisionBlindSpot(BaseModel):
     """画像中の死角・見えにくい場所。"""
+
     description: str
     position: str
 
 
 class VisionOverallAssessment(BaseModel):
     """画像全体の安全レベル評価。"""
+
     severity: Literal["low", "medium", "high", "critical", "unknown"]
     reason: str
 
 
 class VisionAnalysisResult(BaseModel):
     """VisionAnalyzer.analyze() の構造化出力。PerceptionIR.vision_analysis に格納。"""
+
     scene_description: str
     critical_points: List[CriticalPoint] = Field(default_factory=list)
     blind_spots: List[VisionBlindSpot] = Field(default_factory=list)
@@ -110,6 +115,7 @@ class VisionAnalysisResult(BaseModel):
 
 class BoundingBox(BaseModel):
     """YOLO 検出ボックスの座標（正規化）。"""
+
     x1: float
     y1: float
     x2: float
@@ -118,6 +124,7 @@ class BoundingBox(BaseModel):
 
 class DetectedObject(BaseModel):
     """YOLO で検出された1オブジェクト。PerceptionIR.objects の要素。"""
+
     label: str
     confidence: float = Field(ge=0, le=1)
     bbox: Optional[BoundingBox] = None
@@ -129,6 +136,7 @@ class DetectedObject(BaseModel):
 
 class AudioCue(BaseModel):
     """音声解析から抽出した危険キュー。PerceptionIR.audio の要素。"""
+
     cue: str  # e.g. "vehicle_approaching"
     severity: Literal["low", "medium", "high", "critical", "unknown"]
     evidence: str  # 根拠説明
@@ -141,12 +149,14 @@ class AudioCue(BaseModel):
 
 class DepthZoneDescription(BaseModel):
     """深度層別の領域説明。"""
+
     zone: Literal["near", "mid", "far"]
     description: str
 
 
 class DepthAnalysisResult(BaseModel):
     """Depth Anything 3 による深度解析結果。PerceptionIR.depth_analysis に格納。"""
+
     scene_description: str
     depth_layers: List[DepthZoneDescription] = Field(default_factory=list)
 
@@ -157,6 +167,7 @@ class DepthAnalysisResult(BaseModel):
 
 class CameraPose(BaseModel):
     """カメラの物理姿勢（pan/tilt/zoom）。Optional フィールドで値なしも可。"""
+
     pan_deg: Optional[float] = None
     tilt_deg: Optional[float] = None
     zoom: Optional[float] = None
@@ -169,13 +180,14 @@ class CameraPose(BaseModel):
 
 class PerceptionIR(BaseModel):
     """1フレーム分の知覚統合結果（YOLO + VLM + 音声 + 深度）。AgentState.ir に格納。"""
+
     obs_id: str
     camera_pose: Optional[CameraPose] = None
-    objects: List[DetectedObject] = Field(default_factory=list)       # YOLO 出力
-    audio: List[AudioCue] = Field(default_factory=list)               # 音声出力
-    vision_analysis: Optional[VisionAnalysisResult] = None            # VLM 出力
-    depth_analysis: Optional[DepthAnalysisResult] = None              # 深度解析出力
-    modality_errors: List[str] = Field(default_factory=list)          # 各モダリティのエラー
+    objects: List[DetectedObject] = Field(default_factory=list)  # YOLO 出力
+    audio: List[AudioCue] = Field(default_factory=list)  # 音声出力
+    vision_analysis: Optional[VisionAnalysisResult] = None  # VLM 出力
+    depth_analysis: Optional[DepthAnalysisResult] = None  # 深度解析出力
+    modality_errors: List[str] = Field(default_factory=list)  # 各モダリティのエラー
 
 
 # ─── 安全判断 ─────────────────────────────────────────────────────────────────
@@ -185,9 +197,10 @@ class PerceptionIR(BaseModel):
 
 class AssessmentEvidence(BaseModel):
     """SafetyAssessment の判断根拠（モダリティ別）。SafetyAssessment.evidence に格納。"""
-    vision: List[str] = Field(default_factory=list)    # VLM 分析から使った根拠
-    yolo: List[str] = Field(default_factory=list)      # YOLO 検出から使った根拠
-    audio: List[str] = Field(default_factory=list)     # 音声キューから使った根拠
+
+    vision: List[str] = Field(default_factory=list)  # VLM 分析から使った根拠
+    yolo: List[str] = Field(default_factory=list)  # YOLO 検出から使った根拠
+    audio: List[str] = Field(default_factory=list)  # 音声キューから使った根拠
     previous: List[str] = Field(default_factory=list)  # 前回判断から参照した根拠
 
 
@@ -208,6 +221,7 @@ class SafetyAssessment(BaseModel):
       - "resolved"   : 解消された
       - "unknown"    : 判断不可（初回またはヒューリスティック）
     """
+
     # 現在の危険状態
     risk_level: Literal["high", "medium", "low"]
     safety_status: str
@@ -226,8 +240,6 @@ class SafetyAssessment(BaseModel):
     evidence: Optional[AssessmentEvidence] = None
 
 
-
-
 # =============================================================================
 # 観測入力
 # run.py の prepare_observations() でリスト生成 → ObservationProvider に渡される。
@@ -238,11 +250,12 @@ class SafetyAssessment(BaseModel):
 @dataclass
 class Observation:
     """1フレーム分の入力データ。run.py で生成され agent に渡される。"""
+
     obs_id: str
     image_path: Optional[str] = None
     prev_image_path: Optional[str] = None  # 前フレームの画像パス（2枚比較用）
-    audio_path: Optional[str] = None       # 音声ファイルパス（推奨）
-    audio_text: Optional[str] = None       # 音声文字起こしやテキスト入力（後方互換）
+    audio_path: Optional[str] = None  # 音声ファイルパス（推奨）
+    audio_text: Optional[str] = None  # 音声文字起こしやテキスト入力（後方互換）
     camera_pose: Optional[CameraPose] = None
     video_timestamp: Optional[float] = None  # 動画内の秒数
 

@@ -330,7 +330,13 @@ function App() {
       }
 
       wsRef.current.onmessage = (ev) => {
-        const msg = JSON.parse(ev.data)
+        let msg
+        try {
+          msg = JSON.parse(ev.data)
+        } catch (e) {
+          console.warn('[WS] invalid JSON received:', e)
+          return
+        }
         recvCountRef.current++
 
         // 完全自動同期: video_timestamp がある場合は直接マッピング
