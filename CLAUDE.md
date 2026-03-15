@@ -4,7 +4,7 @@
 **Safety View Agent** は、LangGraph を使用した安全支援エージェントです。複雑なマルチスタジアムロボット環境での安全性を評価し、次に観測すべき視点（画角）を動的に提案します。
 
 ### 特徴
-- **LLM 不要**: OpenAI互換LLMが利用できない場合、ヒューリスティックスで動作
+- **LLM 不要**: OpenAI互換LLMが利用できない場合、固定値 SafetyAssessment で継続動作
 - **フラット構造**: 複雑なプラグインアーキテクチャを廃止し、シンプルな単一パッケージ設計
 - **E2E 動作検証**: `pytest` で LLM なしでもエンドツーエンド通過
 
@@ -22,7 +22,7 @@ kanden-koi-voltmind-hackathon-2026/
 │   ├── safety_agent/          # メインパッケージ
 │   │   ├── __init__.py
 │   │   ├── schema.py          # Pydantic モデル定義
-│   │   ├── modality_nodes.py  # モダリティ処理クラス（VisionAnalyzer, YOLODetector, AudioAnalyzer）
+│   │   ├── modality_nodes.py  # モダリティ処理クラス（VisionAnalyzer, AudioAnalyzer）
 │   │   ├── perceiver.py       # Perceiver クラス（ハザード推定）
 │   │   └── agent.py           # LLM・グラフノード・ビルダー（fan-out/fan-in 実装）
 │   └── apps/                  # React + Vite デモアプリ
@@ -129,29 +129,30 @@ python finetuning/train_dummy.py --epochs 3
 ## 重要なコードパス
 
 ### スキーマ定義（`src/safety_agent/schema.py`）
-- **Pydantic モデル**: `BoundingBox`, `Hazard`, `PerceptionIR`, `SafetyAssessment` など
+- **Pydantic モデル**: `PerceptionIR`, `SafetyAssessment`, `AudioCue`, `VisionAnalysisResult` など
 - **Observation / ObservationProvider**: データソース抽象化
 
 ### モダリティ処理ノード（`src/safety_agent/modality_nodes.py`）
 - **`VisionAnalyzer`**: OpenAI互換 Vision API による画像テキスト分析
-- **`YOLODetector`**: ultralytics YOLO 物体検出（threading.Lock で並列実行対応）
-- **`AudioAnalyzer`**: 音声テキストからヒューリスティックで AudioCue を抽出
-- **`ModalityResult`**: 各モダリティの統一結果型（objects, audio_cues, description, error フィールド）
+- **`AudioAnalyzer`**: 音声テキストから AudioCue を抽出（危険キュー検出）
+- **`DepthEstimator`**: 深度推定モデルによる 3D シーン分析
+- **`ModalityResult`**: 各モダリティの統一結果型（modality_name, audio_cues, description, extra, error フィールド）
 
 ### エージェント実装（`src/safety_agent/agent.py`）
 - **`OpenAICompatLLM`**: OpenAI互換 LLM クライアント（httpx 使用）
 - **グラフノード関数（fan-out/fan-in パイプライン）**:
   - `ingest_observation`: 観測データ取得 + fan-out 並列送信（Command + Send）
-  - `yolo_node`: 物体検出（並列実行）
   - `vlm_node`: 画像分析（並列実行）
   - `audio_node`: 音声キュー抽出（並列実行）
+  - `depth_node`: 深度推定・分析（並列実行）
   - `join_modalities`: fan-in バリア（ラッチ機構）
   - `fuse_modalities`: モダリティ結果の統合
   - `update_world_model`: 世界モデル更新
-  - `determine_next_action_llm`: 知覚推論 + 総合安全判断を統合実行（**LLM がない場合は `_heuristic_assessment` にフォールバック**）
-    * ステップ1: YOLO/VLM/音声からハザード推定 → ir.hazards, ir.unobserved を LLM 出力で上書き
+  - `determine_next_action_llm`: 知覚推論 + 総合安全判断を統合実行（**LLM がない場合は固定値 SafetyAssessment を返す**）
+    * ステップ1: VLM/音声からハザード推定 → ir に格納
     * ステップ2: 推定ハザード + 世界モデル + 前回判断から SafetyAssessment 生成
-  - `emit_output`: フレーム出力
+    * フォールバック: LLM 未設定/失敗時は `risk_level="low"`, `action_type="monitor"` の固定値を返す
+  - `emit_output`: フレーム出力（`frame_id`, `assessment`, `vision_analysis`, `audio`, `depth_analysis` を含む）
   - `bump_step`: ステップカウント
 - **`build_agent()`**: LangGraph グラフ構築（fan-out/fan-in 実装、状態拡張）
 
@@ -170,13 +171,15 @@ python finetuning/train_dummy.py --epochs 3
    - どちらも設定なし → llm = None
 
 2. agent.py#determine_next_action_llm():
-   - runtime.context["llm"] が None → _heuristic_assessment(state) へフォールバック
-   - LLM 実行エラー → 例外キャッチして _heuristic_assessment へ降格
+   - runtime.context["llm"] が None → 固定値 SafetyAssessment を返す
+   - LLM 実行エラー → 例外をキャッチして固定値 SafetyAssessment を返す
+   - ir=None (モダリティ処理失敗) → 固定値 SafetyAssessment で継続動作
 
-3. ヒューリスティック: 世界モデルから SafetyAssessment を生成
-   - 高リスク未確認領域あり → focus_region（観測指示）
-   - 低信度ハザード存在 → increase_safety（安全強化指示）
-   - その他 → continue_observation（継続観測指示）
+3. 固定値フォールバック:
+   - risk_level="low", action_type="monitor", priority=0.0
+   - safety_status="継続観測中"
+   - temporal_status="unknown", evidence=None
+   → 安全側を取り、継続的に観測可能にする設計
 ```
 
 ### OpenAI vs vLLM
@@ -191,6 +194,41 @@ python finetuning/train_dummy.py --epochs 3
 | **オフライン対応** | ✗ | ✓ |
 
 **ポイント**: LLM なしでも E2E テストが通るため、初期開発・CI/CD が容易
+
+### データ出力構造（`data/perception_results.json`）
+
+フレーム単位の分析結果を `frames` 配列で保存：
+
+```json
+{
+  "frames": [
+    {
+      "frame_id": "t0",
+      "video_timestamp": 0.0,
+      "assessment": {
+        "risk_level": "low",
+        "action_type": "monitor",
+        "reason": "..."
+      },
+      "vision_analysis": {
+        "scene_description": "...",
+        "critical_points": [...]
+      },
+      "audio": [...],
+      "depth_analysis": {...},
+      "errors": []
+    }
+  ]
+}
+```
+
+**構造の特徴**:
+- `frame_id`: フレーム一意ID
+- `assessment`: LLM / 固定値による安全判断
+- `vision_analysis`: VLM 分析結果（scene_description, critical_points, blind_spots）
+- `audio`: 音声キュー（AudioCue リスト）
+- `depth_analysis`: 深度推定結果（scene_description, depth_layers）
+- `errors`: モダリティ処理エラー
 
 ## input / output フォルダ用途
 

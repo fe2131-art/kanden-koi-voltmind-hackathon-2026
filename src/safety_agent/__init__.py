@@ -4,9 +4,7 @@ from .agent import AgentState, ContextSchema, OpenAICompatLLM, build_agent
 from .schema import (
     AssessmentEvidence,
     AudioCue,
-    BoundingBox,
     CameraPose,
-    DetectedObject,
     Observation,
     ObservationProvider,
     PerceptionIR,
@@ -18,9 +16,7 @@ __version__ = "0.1.0"
 __all__ = [
     "AssessmentEvidence",
     "AudioCue",
-    "BoundingBox",
     "CameraPose",
-    "DetectedObject",
     "Observation",
     "ObservationProvider",
     "PerceptionIR",

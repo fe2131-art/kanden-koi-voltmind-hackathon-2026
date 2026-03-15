@@ -11,27 +11,26 @@ Observation Input (image + audio)
          ↓
 [ingest_observation] (観測データ取得・リセット)
     ↓ (fan-out: Command + Send API)
-    ├─→ [yolo_node]         (物体検出: ultralytics)
     ├─→ [vlm_node]          (画像分析: OpenAI Vision API)
-    └─→ [audio_node]        (音声解析: キーワード抽出)
+    ├─→ [audio_node]        (音声解析: キーワード抽出)
+    └─→ [depth_node]        (深度推定: Depth Anything 3)
     ↓ (各ノードが join_modalities へ)
 [join_modalities] (fan-in バリア + ラッチ)
     ├─ 全モダリティ揃うまで待機
     └─ barrier_obs_id で重複実行を防止
     ↓
 [fuse_modalities] (モダリティ統合)
-    ├─ PerceptionIR 生成（objects, audio, vision_description）
-    └─ （Perceiver は LLM へ統合）
+    ├─ PerceptionIR 生成（vision_analysis, audio, depth_analysis）
+    └─ モダリティエラーをまとめて記録
     ↓
 [update_world_model] (世界状態更新)
     └─ ハザード融合 + 未確認領域リスク順
     ↓
 [determine_next_action_llm] (知覚推論 + 総合安全判断【統合】)
     ├─ LLM あり:
-    │  ├─ ステップ1: 知覚推論（YOLO/VLM/音声からハザード推定）
-    │  ├─ ステップ2: 安全判断（SafetyAssessment 生成）
-    │  └─ ir.hazards, ir.unobserved を LLM 出力で更新
-    └─ LLM なし: ヒューリスティック判断
+    │  ├─ ステップ1: 知覚推論（VLM/音声からハザード推定）
+    │  └─ ステップ2: 安全判断（SafetyAssessment 生成）
+    └─ LLM なし / エラー時: 固定値 SafetyAssessment（risk_level=low, action_type=monitor）を返す
     ↓
 [emit_output] (フレーム出力)
     └─ latest_output に集約 → streaming 出力
@@ -83,12 +82,12 @@ Perceiver.estimate(obs, objects, audio_cues, vision_description)
 → PerceptionIR (objects, hazards, unobserved, audio, vision_description)
 ```
 
-### 4. 世界モデル（`src/safety_agent/schema.py`）
+### 4. Pydantic スキーマ（`src/safety_agent/schema.py`）
 
-Pydantic スキーマで状態管理：
-- `WorldModel`: 全体状態（fused_hazards, outstanding_unobserved, last_assessment）
-- `PerceptionIR`: フレーム単位の内部表現
+状態管理スキーマ：
+- `PerceptionIR`: フレーム単位の知覚統合結果（vision_analysis, audio, depth_analysis）
 - `SafetyAssessment`: LLM による総合安全判断（risk_level, safety_status, detected_hazards, action_type, target_region, reason, priority）
+- `Observation`: 入力観測データ（image_path, audio_path, camera_pose）
 
 ## データフロー
 
@@ -103,16 +102,16 @@ Input: Observation (image_path + audio_text)
    - barrier_obs_id, latest_output をリセット
    - yolo_node, vlm_node, audio_node に Command + Send で並列送信
   ↓
-2. yolo_node, vlm_node, audio_node (真の並列実行)
-   a) yolo_node (enable_yolo=true の場合)
-      - YOLO 物体検出（CPU: ~1-2s）
-      - DetectedObject リスト返却
-   b) vlm_node
+2. vlm_node, audio_node, depth_node (真の並列実行)
+   a) vlm_node
       - VLM 画像分析（HTTP I/O: ~20-30s）
-      - 検出結果と VLM テキストを統合
-   c) audio_node (enable_audio=true の場合)
+      - VisionAnalysisResult（critical_points, blind_spots）返却
+   b) audio_node (enable_audio=true の場合)
       - audio_text からキーワード抽出
       - AudioCue リスト返却
+   c) depth_node (enable_depth=true の場合)
+      - 深度推定・分析
+      - DepthAnalysisResult 返却
    ↓ （各ノードが join_modalities へ）
 3. join_modalities (fan-in バリア)
    - expected_modalities がすべて received_modalities に揃うまで待機
@@ -120,14 +119,14 @@ Input: Observation (image_path + audio_text)
    - 全て揃ったら fuse_modalities へ遷移
   ↓
 4. fuse_modalities
-   - modality_results から yolo, vlm, audio を取得
-   - PerceptionIR（objects, audio, vision_description）生成
-   - （Perceiver の推論は LLM に統合されたため、基本的な PerceptionIR のみ）
+   - modality_results から vlm, audio, depth を取得
+   - PerceptionIR（vision_analysis, audio, depth_analysis）生成
+   - モダリティエラーをまとめて記録
   ↓
 5. update_world_model
-   - fused_hazards を信度で統合
-   - outstanding_unobserved をリスク順にソート
+   - PerceptionIR のハザード情報を記録
    - 前回の SafetyAssessment を保持
+   - 状態遷移のために assessment を更新
   ↓
 6. determine_next_action_llm 【知覚推論 + 安全判断を統合実行】
    a) LLM あり: 2ステップで実行
@@ -207,9 +206,8 @@ LLM 未設定時のフォールバック：
 ```yaml
 agent:
   max_steps: 1                    # フレーム処理数（-1: 全フレーム）
-  enable_yolo: false              # YOLO 物体検出の有効/無効
-  enable_audio: false             # 音声解析の有効/無効（Speech-to-Text 未実装）
-  max_outstanding_regions: 6      # LLM が検討する未確認領域の上限数
+  enable_audio: true              # 音声解析の有効/無効
+  enable_depth: true              # 深度推定の有効/無効
   context_history_size: 1         # LLM に渡す前回判断の数（0=なし, 1=前回のみ）
 
 llm:
