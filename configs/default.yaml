@@ -14,7 +14,7 @@ llm:
 
   # vLLM settings (local server)
   vllm:
-    base_url: "http://localhost:8000/v1"
+    base_url: "http://voltmind-001:8000/v1"
     model: "Qwen/Qwen3.5-9B"
     api_key: "EMPTY"
     timeout_s: 60.0
@@ -87,3 +87,10 @@ tokens:
 thresholds:
   risk_stop_threshold: 0.2      # Stop if max unobserved risk <= this
   hazard_focus_threshold: 0.6   # Enforce high-risk unobserved coverage
+
+# TTS (Text-to-Speech) 設定 — Qwen3-TTS バッチ合成
+tts:
+  model: "Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice"
+  sample_rate: 12000   # Qwen3-TTS ネイティブサンプルレート (12kHz)
+  voice: "Vivian"      # 話者名
+  language: "Japanese" # 合成言語

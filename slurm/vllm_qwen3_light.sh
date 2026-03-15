@@ -45,6 +45,10 @@ echo "=========================================="
 
 cd "$WORK_DIR"
 
+# GPU 割り当て: 音声モデル(GPU 0)と共存するため GPU 1 を使用
+# Slurm が自動割り当てしない場合に明示指定
+export CUDA_VISIBLE_DEVICES=1
+
 # キャッシュ（作業者単位で永続化）
 export UV_CACHE_DIR="$HOME/.cache/uv"
 export HF_HOME="$HOME/data/hf_cache"
@@ -66,6 +70,7 @@ uv run vllm serve "$MODEL" \
   --max-model-len 8192 \
   --gpu-memory-utilization 0.90 \
   --enable-prefix-caching \
+  --enforce-eager \
   > "vllm_${SLURM_JOB_ID}.log" 2>&1 &
 # --reasoning-parser qwen3 は Qwen3 thinking モデル用。必要なら上記に追加。
 

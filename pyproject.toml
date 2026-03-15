@@ -22,12 +22,14 @@ dependencies = [
     "opencv-python",
     "huggingface_hub>=0.34.0,<1.0",
     "torch==2.10.0",
+    "torchaudio==2.10.0",
     "vllm[audio]>=0.11.0",
     "qwen-vl-utils>=0.0.14",
     "xformers",
     "depth-anything-3",
     "librosa",
     "soundfile",
+    "qwen-tts>=0.1.0",
     "autoawq",
     # "flash-attn>=2.8.3",
     # "ninja"
@@ -35,6 +37,7 @@ dependencies = [
 
 [tool.uv.sources]
 torch = [{ index = "torch-cu129" }]
+torchaudio = [{ index = "torch-cu129" }]
 vllm  = [{ index = "vllm-nightly" }]
 xformers  = [{ index = "xformers-cu128" }]
 depth-anything-3 = { path = "./external/Depth-Anything-3", editable = true }
