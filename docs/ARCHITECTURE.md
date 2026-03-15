@@ -11,27 +11,26 @@ Observation Input (image + audio)
          ↓
 [ingest_observation] (観測データ取得・リセット)
     ↓ (fan-out: Command + Send API)
-    ├─→ [yolo_node]         (物体検出: ultralytics)
     ├─→ [vlm_node]          (画像分析: OpenAI Vision API)
-    └─→ [audio_node]        (音声解析: キーワード抽出)
+    ├─→ [audio_node]        (音声解析: キーワード抽出)
+    └─→ [depth_node]        (深度推定: Depth Anything 3)
     ↓ (各ノードが join_modalities へ)
 [join_modalities] (fan-in バリア + ラッチ)
     ├─ 全モダリティ揃うまで待機
     └─ barrier_obs_id で重複実行を防止
     ↓
 [fuse_modalities] (モダリティ統合)
-    ├─ PerceptionIR 生成（objects, audio, vision_description）
-    └─ （Perceiver は LLM へ統合）
+    ├─ PerceptionIR 生成（vision_analysis, audio, depth_analysis）
+    └─ モダリティエラーをまとめて記録
     ↓
 [update_world_model] (世界状態更新)
     └─ ハザード融合 + 未確認領域リスク順
     ↓
 [determine_next_action_llm] (知覚推論 + 総合安全判断【統合】)
     ├─ LLM あり:
-    │  ├─ ステップ1: 知覚推論（YOLO/VLM/音声からハザード推定）
-    │  ├─ ステップ2: 安全判断（SafetyAssessment 生成）
-    │  └─ ir.hazards, ir.unobserved を LLM 出力で更新
-    └─ LLM なし: ヒューリスティック判断
+    │  ├─ ステップ1: 知覚推論（VLM/音声からハザード推定）
+    │  └─ ステップ2: 安全判断（SafetyAssessment 生成）
+    └─ LLM なし / エラー時: 固定値 SafetyAssessment（risk_level=low, action_type=monitor）を返す
     ↓
 [emit_output] (フレーム出力)
     └─ latest_output に集約 → streaming 出力
@@ -103,16 +102,16 @@ Input: Observation (image_path + audio_text)
    - barrier_obs_id, latest_output をリセット
    - yolo_node, vlm_node, audio_node に Command + Send で並列送信
   ↓
-2. yolo_node, vlm_node, audio_node (真の並列実行)
-   a) yolo_node (enable_yolo=true の場合)
-      - YOLO 物体検出（CPU: ~1-2s）
-      - DetectedObject リスト返却
-   b) vlm_node
+2. vlm_node, audio_node, depth_node (真の並列実行)
+   a) vlm_node
       - VLM 画像分析（HTTP I/O: ~20-30s）
-      - 検出結果と VLM テキストを統合
-   c) audio_node (enable_audio=true の場合)
+      - VisionAnalysisResult（critical_points, blind_spots）返却
+   b) audio_node (enable_audio=true の場合)
       - audio_text からキーワード抽出
       - AudioCue リスト返却
+   c) depth_node (enable_depth=true の場合)
+      - 深度推定・分析
+      - DepthAnalysisResult 返却
    ↓ （各ノードが join_modalities へ）
 3. join_modalities (fan-in バリア)
    - expected_modalities がすべて received_modalities に揃うまで待機
@@ -120,9 +119,9 @@ Input: Observation (image_path + audio_text)
    - 全て揃ったら fuse_modalities へ遷移
   ↓
 4. fuse_modalities
-   - modality_results から yolo, vlm, audio を取得
-   - PerceptionIR（objects, audio, vision_description）生成
-   - （Perceiver の推論は LLM に統合されたため、基本的な PerceptionIR のみ）
+   - modality_results から vlm, audio, depth を取得
+   - PerceptionIR（vision_analysis, audio, depth_analysis）生成
+   - モダリティエラーをまとめて記録
   ↓
 5. update_world_model
    - fused_hazards を信度で統合

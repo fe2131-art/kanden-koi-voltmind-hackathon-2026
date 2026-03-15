@@ -10,7 +10,6 @@ from __future__ import annotations
 import base64
 import json
 import logging
-import os
 import re
 import threading
 from dataclasses import dataclass, field
@@ -24,8 +23,6 @@ from openai import OpenAI
 
 from .schema import (
     AudioCue,
-    BoundingBox,
-    DetectedObject,
     VisionAnalysisResult,
     VisionOverallAssessment,
 )
@@ -40,8 +37,7 @@ logger = logging.getLogger(__name__)
 class ModalityResult:
     """vision_node / audio_node が AgentState に書き込む統一結果型。"""
 
-    modality_name: str  # "vision" | "audio" | "lidar" etc.
-    objects: list[DetectedObject] = field(default_factory=list)
+    modality_name: str  # "vision" | "audio" | "depth" etc.
     audio_cues: list[AudioCue] = field(default_factory=list)
     description: Optional[str] = None  # VLM テキスト出力
     extra: dict[str, Any] = field(default_factory=dict)

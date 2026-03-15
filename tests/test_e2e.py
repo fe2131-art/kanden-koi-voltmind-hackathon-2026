@@ -122,7 +122,6 @@ def test_e2e_agent_no_llm():
     assert out["latest_output"] is not None
     assert out["latest_output"]["frame_id"] is not None
     assert out["latest_output"]["assessment"] is not None
-    assert "objects" in out["latest_output"]
     assert "audio" in out["latest_output"]
     # vision_analysis は LLM なしでは None（VisionAnalyzer なし）
     assert "vision_analysis" in out["latest_output"]

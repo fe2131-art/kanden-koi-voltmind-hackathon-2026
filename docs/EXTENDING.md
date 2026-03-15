@@ -15,25 +15,27 @@ Safety View Agent は拡張可能な設計になっています。新しいセ�
 ```python
 class LidarAnalyzer:
     """LiDAR 点群からの物体検出"""
-    
+
     def __init__(self, model_path: str = "default_model.pth"):
         self.model = load_model(model_path)
         self._lock = threading.Lock()
-    
-    def analyze(self, lidar_data_path: str) -> list[DetectedObject]:
-        """LiDAR データを処理"""
+
+    def analyze(self, lidar_data_path: str) -> ModalityResult:
+        """LiDAR データを処理して ModalityResult を返す"""
         with self._lock:
             point_cloud = read_pcd(lidar_data_path)
             detections = self.model.predict(point_cloud)
-            
-            return [
-                DetectedObject(
-                    class_name=d.class_name,
-                    confidence=d.confidence,
-                    bbox=BoundingBox(...)
-                )
-                for d in detections
-            ]
+
+            # audio_cues に検出結果をテキスト化して格納
+            description = f"LiDAR detections: {len(detections)} objects"
+
+            return ModalityResult(
+                modality_name="lidar",
+                audio_cues=[],  # LiDAR は音声キューなし
+                description=description,
+                extra={"detections": detections},
+                error=None,
+            )
 ```
 
 #### Step 2: LangGraph ノードを追加
@@ -50,19 +52,20 @@ def lidar_node(state: AgentState, runtime: RunnableConfig) -> Dict:
         return {"modality_results": {}}
     
     try:
-        objects = analyzer.analyze(obs.lidar_path)
+        detections = analyzer.analyze(obs.lidar_path)
         result = ModalityResult(
             modality_name="lidar",
-            objects=objects,
             audio_cues=[],
-            description="LiDAR detected objects"
+            description="LiDAR detected objects",
+            extra={"detections": detections},
+            error=None
         )
     except Exception as e:
         result = ModalityResult(
             modality_name="lidar",
-            objects=[],
             audio_cues=[],
             description="",
+            extra={},
             error=str(e)
         )
     
@@ -278,9 +281,11 @@ logger.debug(f"Input: {data}")
 def test_lidar_analyzer():
     analyzer = LidarAnalyzer("models/test.pth")
     result = analyzer.analyze("data/test.pcd")
-    
-    assert isinstance(result, list)
-    assert all(isinstance(obj, DetectedObject) for obj in result)
+
+    assert isinstance(result, ModalityResult)
+    assert result.modality_name == "lidar"
+    assert result.description is not None
+    assert result.extra.get("detections") is not None
 ```
 
 ## トラブルシューティング

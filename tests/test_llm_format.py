@@ -1,6 +1,7 @@
 """Test LLM output format validation for SafetyAssessment."""
 
 import json
+
 from src.safety_agent.schema import SafetyAssessment
 
 

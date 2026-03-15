@@ -928,11 +928,12 @@ def main():
         shutil.move(perception_results_file, archived_file)
         logger.info(f"Archived perception_results.json → {archived_file}")
 
-    # Clean up data/frames before processing
-    frames_dir = "data/frames"
-    if os.path.exists(frames_dir):
-        shutil.rmtree(frames_dir)
-    os.makedirs(frames_dir, exist_ok=True)
+    # Clean up data directories before processing
+    # Note: data/audio is NOT cleared as it contains source audio files used by multiple runs
+    for data_dir in ["data/frames", "data/depth", "data/voice"]:
+        if os.path.exists(data_dir):
+            shutil.rmtree(data_dir)
+        os.makedirs(data_dir, exist_ok=True)
 
     # Load video/audio formats from config
     video_formats_cfg = video_cfg.get("formats", {})

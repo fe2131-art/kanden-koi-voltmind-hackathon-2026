@@ -102,27 +102,6 @@ class VisionAnalysisResult(BaseModel):
     overall_assessment: VisionOverallAssessment
 
 
-# ─── YOLO 検出結果 ────────────────────────────────────────────────────────────
-# YOLODetector.detect() の出力。PerceptionIR.objects に格納。
-
-
-class BoundingBox(BaseModel):
-    """YOLO 検出ボックスの座標（正規化）。"""
-
-    x1: float
-    y1: float
-    x2: float
-    y2: float
-
-
-class DetectedObject(BaseModel):
-    """YOLO で検出された1オブジェクト。PerceptionIR.objects の要素。"""
-
-    label: str
-    confidence: float = Field(ge=0, le=1)
-    bbox: Optional[BoundingBox] = None
-
-
 # ─── 音声キュー ───────────────────────────────────────────────────────────────
 # AudioAnalyzer.analyze() の出力。PerceptionIR.audio に格納。
 
@@ -172,11 +151,10 @@ class CameraPose(BaseModel):
 
 
 class PerceptionIR(BaseModel):
-    """1フレーム分の知覚統合結果（YOLO + VLM + 音声 + 深度）。AgentState.ir に格納。"""
+    """1フレーム分の知覚統合結果（VLM + 音声 + 深度）。AgentState.ir に格納。"""
 
     obs_id: str
     camera_pose: Optional[CameraPose] = None
-    objects: List[DetectedObject] = Field(default_factory=list)  # YOLO 出力
     audio: List[AudioCue] = Field(default_factory=list)  # 音声出力
     vision_analysis: Optional[VisionAnalysisResult] = None  # VLM 出力
     depth_analysis: Optional[DepthAnalysisResult] = None  # 深度解析出力

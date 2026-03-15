@@ -633,7 +633,6 @@ def fuse_modalities(
     audio = results.get("audio")
     depth = results.get("depth")
 
-    objects = []
     audio_cues = audio.audio_cues if audio and audio.audio_cues else []
     vision_analysis = vlm.extra.get("vision_analysis") if vlm else None
     depth_analysis = depth.extra.get("depth_analysis") if depth else None
@@ -643,7 +642,6 @@ def fuse_modalities(
     ir = PerceptionIR(
         obs_id=obs.obs_id,
         camera_pose=obs.camera_pose,
-        objects=objects,
         audio=audio_cues,
         vision_analysis=vision_analysis,
         depth_analysis=depth_analysis,
@@ -735,7 +733,6 @@ def determine_next_action_llm(
             if ir.vision_analysis
             else None
         ),
-        "detected_objects": [o.model_dump() for o in ir.objects[:10]],
         "audio_cues": [a.model_dump() for a in ir.audio],
         "previous_assessment": (
             last_assessment.model_dump()
@@ -828,7 +825,6 @@ def emit_output(state: AgentState) -> Dict[str, Any]:
             if ir and ir.depth_analysis
             else None
         ),
-        "objects": ir_dump.get("objects", []),
         "audio": ir_dump.get("audio", []),
         "assessment": assessment.model_dump(exclude_none=True) if assessment else None,
         "errors": errors,

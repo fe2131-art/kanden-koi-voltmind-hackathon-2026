@@ -3,12 +3,10 @@
 from src.safety_agent.schema import (
     AssessmentEvidence,
     AudioCue,
-    BoundingBox,
     CameraPose,
     CriticalPoint,
     DepthAnalysisResult,
     DepthZoneDescription,
-    DetectedObject,
     NormalizedBBox,
     Observation,
     ObservationProvider,
@@ -18,19 +16,6 @@ from src.safety_agent.schema import (
     VisionBlindSpot,
     VisionOverallAssessment,
 )
-
-
-def test_bounding_box():
-    bbox = BoundingBox(x1=0.1, y1=0.2, x2=0.8, y2=0.9)
-    assert bbox.x1 == 0.1
-    assert bbox.y2 == 0.9
-
-
-def test_detected_object():
-    bbox = BoundingBox(x1=0.1, y1=0.2, x2=0.8, y2=0.9)
-    obj = DetectedObject(label="person", confidence=0.95, bbox=bbox)
-    assert obj.label == "person"
-    assert obj.confidence == 0.95
 
 
 def test_audio_cue():
@@ -51,11 +36,10 @@ def test_perception_ir():
     ir = PerceptionIR(
         obs_id="t0",
         camera_pose=CameraPose(),
-        objects=[],
         audio=[],
     )
     assert ir.obs_id == "t0"
-    assert len(ir.objects) == 0
+    assert len(ir.audio) == 0
 
 
 def test_safety_assessment():
