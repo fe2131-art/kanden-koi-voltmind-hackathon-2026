@@ -2,11 +2,9 @@
 
 # Agent parameters
 agent:
-  max_steps: 2    # デフォルト：2フレーム実行
-  enable_yolo: false
+  max_steps: -1    # -1 = 動画全体を実行、N = 最初のN フレームのみ
   enable_audio: true
-  enable_depth: false
-  max_outstanding_regions: 6        # 次に観測すべき候補領域の検討数上限
+  enable_depth: true
   context_history_size: 1           # LLM に渡す前回結果の数（0=なし, 1=前回のみ）
 
 # LLM configuration
@@ -67,7 +65,7 @@ data:
 # Video and Audio processing
 video:
   fps: 1.0            # フレーム抽出レート (0.5-2.0 推奨)
-  max_frames: 30      # 最大フレーム数 (0 = 無制限)
+  max_frames: 0       # 最大フレーム数 (0 = 無制限、全フレーム処理用)
   clear_frames: false # true = 実行前に data/frames/ を削除して再実行
   formats:
     extensions: [".mp4", ".avi", ".mov", ".mkv", ".webm"]

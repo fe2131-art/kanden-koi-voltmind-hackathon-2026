@@ -61,9 +61,6 @@ url = "https://download.pytorch.org/whl/cu128"
 explicit = true
 
 [project.optional-dependencies]
-yolo = [
-    "ultralytics>=8.0"
-]
 finetune = [
     "transformers>=4.30",
     "peft>=0.4",

@@ -9,7 +9,7 @@ from src.safety_agent.schema import (
 
 
 def test_e2e_agent_no_llm():
-    """Test that agent runs end-to-end without LLM (heuristic fallback)."""
+    """Test that agent runs end-to-end without LLM (default assessment)."""
     # Setup observations
     obs_list = [
         Observation(
@@ -48,12 +48,11 @@ def test_e2e_agent_no_llm():
         "errors": [],
     }
 
-    # Context with NO LLM (llm=None forces heuristic fallback)
+    # Context with NO LLM (llm=None uses default assessment)
     context = {
         "provider": provider,
         "llm": None,
         "vision_analyzer": None,
-        "yolo_detector": None,
         "audio_analyzer": AudioAnalyzer(),
         "depth_estimator": None,
         "prompts": {
@@ -69,9 +68,11 @@ def test_e2e_agent_no_llm():
         },
         "config": {"audio": {"window_seconds": 3.0}},
         "chat_max_tokens": 2000,
-        "max_outstanding_regions": 6,
         "context_history_size": 1,
-        "expected_modalities": ["yolo", "vlm", "audio"],  # yolo/vlm に分割（depth は enable=false）
+        "expected_modalities": [
+            "vlm",
+            "audio",
+        ],  # vlm/audio に分割（depth は enable=false）
         "run_mode": "until_provider_ends",  # provider が None を返すまで継続
     }
 
@@ -87,7 +88,12 @@ def test_e2e_agent_no_llm():
 
     # Verify assessment is not None
     assert out["assessment"] is not None
-    assert out["assessment"].action_type in ["emergency_stop", "inspect_region", "mitigate", "monitor"]
+    assert out["assessment"].action_type in [
+        "emergency_stop",
+        "inspect_region",
+        "mitigate",
+        "monitor",
+    ]
     assert out["assessment"].risk_level in ["high", "medium", "low"]
 
     # Verify last_assessment is carried over
@@ -115,7 +121,6 @@ def test_e2e_agent_no_llm():
     assert out["latest_output"] is not None
     assert out["latest_output"]["frame_id"] is not None
     assert out["latest_output"]["assessment"] is not None
-    assert "objects" in out["latest_output"]
     assert "audio" in out["latest_output"]
     # vision_analysis は LLM なしでは None（VisionAnalyzer なし）
     assert "vision_analysis" in out["latest_output"]

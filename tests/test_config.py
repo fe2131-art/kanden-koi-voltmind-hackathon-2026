@@ -139,9 +139,7 @@ def test_agent_config():
 
     # Check agent config
     assert "max_steps" in agent_cfg
-    assert "enable_yolo" in agent_cfg
     assert isinstance(agent_cfg["max_steps"], int)
-    assert isinstance(agent_cfg["enable_yolo"], bool)
 
 
 def test_data_mode_config():
@@ -171,19 +169,22 @@ def test_prepare_observations_mode_selection():
     config = {
         "data": {"mode": "manual"},
         "video": {"fps": 1.0, "max_frames": 30, "clear_frames": False},
-        "audio": {"output_filename": "audio.wav", "sample_rate": 16000, "channels": 1, "codec": "pcm_s16le"},
+        "audio": {
+            "output_filename": "audio.wav",
+            "sample_rate": 16000,
+            "channels": 1,
+            "codec": "pcm_s16le",
+        },
     }
 
     # Mock find_video to return None and load_frames to return empty list
     import pytest
+
     with patch("run.find_video", return_value=None):
         with patch("run.load_frames", return_value=[]):
             with pytest.raises(FileNotFoundError, match="フレームが見つかりません"):
                 prepare_observations(
-                    config,
-                    {".mp4", ".avi"},
-                    "frame_{timestamp}s.jpg",
-                    config["audio"]
+                    config, {".mp4", ".avi"}, "frame_{timestamp}s.jpg", config["audio"]
                 )
 
     # Test inspesafe mode selection (should raise FileNotFoundError due to nonexistent path)
@@ -192,19 +193,25 @@ def test_prepare_observations_mode_selection():
             "mode": "inspesafe",
             "inspesafe": {
                 "dataset_path": "/nonexistent/InspecSafe-V1",
-                "session": "test/session"
-            }
+                "session": "test/session",
+            },
         },
         "video": {"fps": 1.0, "max_frames": 30, "clear_frames": False},
-        "audio": {"output_filename": "audio.wav", "sample_rate": 16000, "channels": 1, "codec": "pcm_s16le"},
+        "audio": {
+            "output_filename": "audio.wav",
+            "sample_rate": 16000,
+            "channels": 1,
+            "codec": "pcm_s16le",
+        },
     }
 
     # Should attempt to use inspesafe path and raise FileNotFoundError
     import pytest
+
     with pytest.raises(FileNotFoundError, match="セッションが見つかりません"):
         prepare_observations(
             config_inspesafe,
             {".mp4", ".avi"},
             "frame_{timestamp}s.jpg",
-            config_inspesafe["audio"]
+            config_inspesafe["audio"],
         )

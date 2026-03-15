@@ -8,24 +8,21 @@ vision_node / audio_node で並列実行され、fuse_modalities で統合され
 from __future__ import annotations
 
 import base64
-from io import BytesIO
 import json
 import logging
-import os
 import re
 import threading
 from dataclasses import dataclass, field
+from io import BytesIO
 from pathlib import Path
 from typing import Any, Optional
+
 import librosa
 import soundfile as sf
-
 from openai import OpenAI
 
 from .schema import (
     AudioCue,
-    BoundingBox,
-    DetectedObject,
     VisionAnalysisResult,
     VisionOverallAssessment,
 )
@@ -40,8 +37,7 @@ logger = logging.getLogger(__name__)
 class ModalityResult:
     """vision_node / audio_node が AgentState に書き込む統一結果型。"""
 
-    modality_name: str  # "vision" | "audio" | "lidar" etc.
-    objects: list[DetectedObject] = field(default_factory=list)
+    modality_name: str  # "vision" | "audio" | "depth" etc.
     audio_cues: list[AudioCue] = field(default_factory=list)
     description: Optional[str] = None  # VLM テキスト出力
     extra: dict[str, Any] = field(default_factory=dict)
@@ -49,8 +45,6 @@ class ModalityResult:
 
 
 # ─── VisionAnalyzer（VLM） ─────────────────────────────────────
-
-
 
 
 class VisionAnalyzer:
@@ -128,11 +122,7 @@ class VisionAnalyzer:
 
         # 4) より柔軟な Markdown コードブロック抽出
         # バックティックの後に改行がない場合や、前後に空白・テキストがある場合に対応
-        m = re.search(
-            r"```(?:json)?\s*([\s\S]*?)```",
-            text,
-            flags=re.DOTALL
-        )
+        m = re.search(r"```(?:json)?\s*([\s\S]*?)```", text, flags=re.DOTALL)
         if m:
             candidate = m.group(1).strip()
             try:
@@ -195,7 +185,10 @@ class VisionAnalyzer:
             content = [
                 {"type": "text", "text": prompt},
                 {"type": "image_url", "image_url": {"url": prev_url, "detail": "high"}},
-                {"type": "image_url", "image_url": {"url": current_url, "detail": "high"}},
+                {
+                    "type": "image_url",
+                    "image_url": {"url": current_url, "detail": "high"},
+                },
             ]
 
         try:
@@ -215,17 +208,21 @@ class VisionAnalyzer:
             raw = response.choices[0].message.content or ""
             parsed = self._parse_vision_json(raw)
             if parsed is None:
-                logger.warning(f"[vision_analyze] VLM response could not be parsed as JSON. First 300 chars:\n{raw[:300]}")
+                logger.warning(
+                    f"[vision_analyze] VLM response could not be parsed as JSON. First 300 chars:\n{raw[:300]}"
+                )
                 # フォールバック: scene_description のみで VisionAnalysisResult を構築
                 return VisionAnalysisResult(
                     scene_description=raw[:500] if raw else "No response",
-                    overall_assessment=VisionOverallAssessment(severity="unknown", reason="JSON parse failed")
+                    overall_assessment=VisionOverallAssessment(
+                        severity="unknown", reason="JSON parse failed"
+                    ),
                 )
 
             return VisionAnalysisResult.model_validate(parsed)
 
         except Exception as e:
-            logger.error(f"Vision API error: {e}")
+            logger.error(f"Vision API error: {e}", exc_info=True)
             return None
 
     @staticmethod
@@ -264,7 +261,10 @@ class VisionAnalyzer:
         else:
             content = [
                 {"type": "text", "text": prompt},
-                {"type": "image_url", "image_url": {"url": image_url, "detail": "high"}},
+                {
+                    "type": "image_url",
+                    "image_url": {"url": image_url, "detail": "high"},
+                },
             ]
 
         try:
@@ -292,102 +292,17 @@ class VisionAnalyzer:
                 )
                 # フォールバック: 生テキストを scene_description として返し、depth_layers はデフォルト値
                 return {
-                    "scene_description": raw[:500] if raw else "VLM response could not be parsed",
+                    "scene_description": raw[:500]
+                    if raw
+                    else "VLM response could not be parsed",
                     "depth_layers": [],
                 }
 
             return parsed
 
         except Exception as e:
-            logger.error(f"Vision API error (depth analysis): {e}")
+            logger.error(f"Vision API error (depth analysis): {e}", exc_info=True)
             return None
-
-
-# ─── YOLODetector ──────────────────────────────────────────────
-
-
-class YOLODetector:
-    """YOLO モデルをラップ。スレッドセーフのため Lock を保持。"""
-
-    def __init__(self, model_path: str = "yolov8n.pt") -> None:
-        try:
-            from ultralytics import YOLO
-
-            self._model = YOLO(model_path)
-        except ImportError:
-            self._model = None
-        self._lock = threading.Lock()  # ultralytics はスレッドセーフでないため
-
-    def detect(self, image_path: str) -> list[DetectedObject]:
-        """YOLO 検出を実行。マルチスレッド対応。"""
-        if not image_path or not os.path.exists(image_path):
-            return self._simple_image_analysis(image_path)
-
-        if not self._model:
-            return self._simple_image_analysis(image_path)
-
-        try:
-            with self._lock:
-                res = self._model(image_path, verbose=False)[0]
-            out: list[DetectedObject] = []
-            for b in res.boxes:
-                cls = int(b.cls.item())
-                conf = float(b.conf.item())
-                label = self._model.names.get(cls, str(cls))
-                xyxy = b.xyxy[0].tolist()
-                out.append(
-                    DetectedObject(
-                        label=label,
-                        confidence=conf,
-                        bbox=BoundingBox(
-                            x1=xyxy[0], y1=xyxy[1], x2=xyxy[2], y2=xyxy[3]
-                        ),
-                    )
-                )
-            if out:
-                logger.debug(f"YOLO detected {len(out)} objects")
-            return out
-        except Exception as e:
-            logger.warning(f"YOLO detection failed: {e}, using simple analysis")
-            return self._simple_image_analysis(image_path)
-
-    def _simple_image_analysis(self, image_path: str) -> list[DetectedObject]:
-        """YOLO が利用できない場合のフォールバック。"""
-        if not image_path or not os.path.exists(image_path):
-            return []
-
-        try:
-            from PIL import Image
-
-            img = Image.open(image_path)
-            width, height = img.size
-
-            objects = []
-            file_size_mb = os.path.getsize(image_path) / (1024 * 1024)
-
-            if file_size_mb > 0.1:
-                objects.append(
-                    DetectedObject(
-                        label="foreground_object",
-                        confidence=0.5,
-                        bbox=BoundingBox(x1=0.1, y1=0.1, x2=0.9, y2=0.8),
-                    )
-                )
-
-            aspect_ratio = width / height if height > 0 else 1.0
-            if aspect_ratio > 1.5:
-                objects.append(
-                    DetectedObject(
-                        label="background_landscape",
-                        confidence=0.6,
-                        bbox=BoundingBox(x1=0.0, y1=0.5, x2=1.0, y2=1.0),
-                    )
-                )
-
-            return objects
-        except Exception as e:
-            logger.warning(f"Simple image analysis error: {e}")
-            return []
 
 
 # ─── AudioAnalyzer ──────────────────────────────────────────────
@@ -469,12 +384,16 @@ class AudioAnalyzer:
         total_samples = len(audio)
 
         if video_timestamp is None:
-            logger.warning("Audio timestamp missing; using full audio without trimming.")
+            logger.warning(
+                "Audio timestamp missing; using full audio without trimming."
+            )
             trimmed = audio
         else:
             end_sample = int(max(0.0, video_timestamp) * sr)
             end_sample = min(end_sample, total_samples)
-            lookback_seconds = self.window_seconds if window_seconds is None else window_seconds
+            lookback_seconds = (
+                self.window_seconds if window_seconds is None else window_seconds
+            )
             lookback_samples = int(max(0.0, lookback_seconds) * sr)
             start_sample = max(0, end_sample - lookback_samples)
             trimmed = audio[start_sample:end_sample]
@@ -485,7 +404,6 @@ class AudioAnalyzer:
         buffer = BytesIO()
         sf.write(buffer, trimmed, sr, format="WAV")
         return base64.b64encode(buffer.getvalue()).decode("utf-8")
-
 
     def _normalize_audio_events(
         self,
@@ -533,19 +451,18 @@ class AudioAnalyzer:
             return []
 
         if not self.client or not self.model:
-            logger.warning("AudioAnalyzer client is not configured; returning empty cues.")
+            logger.warning(
+                "AudioAnalyzer client is not configured; returning empty cues."
+            )
             return []
 
         if prompt is None:
-            base_prompt = (
-                self.default_prompt
-                or (
-                    "Analyze the audio clip and return only hazard-related or attention-worthy "
-                    "audio events as JSON. Output only "
-                    "{\"events\": [{\"cue\": \"short_event_name\", \"severity\": \"low|medium|high|critical|unknown\", "
-                    "\"evidence\": \"short evidence\"}]}. "
-                    "If there is no relevant event, return {\"events\": []}."
-                )
+            base_prompt = self.default_prompt or (
+                "Analyze the audio clip and return only hazard-related or attention-worthy "
+                "audio events as JSON. Output only "
+                '{"events": [{"cue": "short_event_name", "severity": "low|medium|high|critical|unknown", '
+                '"evidence": "short evidence"}]}. '
+                'If there is no relevant event, return {"events": []}.'
             )
             if previous_vision_summary:
                 prompt = (
@@ -560,22 +477,24 @@ class AudioAnalyzer:
         if max_tokens is None:
             max_tokens = self.max_tokens or 2048
 
-        audio_base64 = self._encode_audio_window(
-            audio_input,
-            self.sample_rate,
-            video_timestamp=video_timestamp,
-            window_seconds=window_seconds,
-        )
-
-        if not audio_base64:
-            return []
-
-        content = [
-            {"type": "text", "text": prompt},
-            {"type": "input_audio", "input_audio": {"data": audio_base64, "format": "wav"}},
-        ]
-
         try:
+            audio_base64 = self._encode_audio_window(
+                audio_input,
+                self.sample_rate,
+                video_timestamp=video_timestamp,
+                window_seconds=window_seconds,
+            )
+
+            if not audio_base64:
+                return []
+
+            content = [
+                {"type": "text", "text": prompt},
+                {
+                    "type": "input_audio",
+                    "input_audio": {"data": audio_base64, "format": "wav"},
+                },
+            ]
             create_kwargs: dict[str, Any] = {
                 "model": self.model,
                 "messages": [{"role": "user", "content": content}],
@@ -596,8 +515,9 @@ class AudioAnalyzer:
                 return []
             return self._normalize_audio_events(events)
         except Exception as e:
-            logger.error(f"Audio API error: {e}")
+            logger.error(f"Audio API error: {e}", exc_info=True)
             return []
+
 
 # ─── DepthEstimator（Depth Anything 3） ──────────────────────────
 
@@ -615,17 +535,26 @@ class DepthEstimator:
         self.process_res = process_res
         self._model = None
         self._device = None
+        self._lock = threading.Lock()
 
         try:
             import torch
             from depth_anything_3.api import DepthAnything3
 
             self._device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-            resolved_model_id = self._resolve_model_id(model_family, model_size, model_id)
-            self._model = DepthAnything3.from_pretrained(resolved_model_id).to(self._device)
-            logger.info(f"DepthEstimator initialized: {resolved_model_id} on {self._device}")
+            resolved_model_id = self._resolve_model_id(
+                model_family, model_size, model_id
+            )
+            self._model = DepthAnything3.from_pretrained(resolved_model_id).to(
+                self._device
+            )
+            logger.info(
+                f"DepthEstimator initialized: {resolved_model_id} on {self._device}"
+            )
         except ImportError as e:
-            logger.warning(f"depth_anything_3 not available: {e}. DepthEstimator will not work.")
+            logger.warning(
+                f"depth_anything_3 not available: {e}. DepthEstimator will not work."
+            )
         except Exception as e:
             logger.warning(f"Failed to initialize DepthEstimator: {e}")
 
@@ -737,12 +666,13 @@ class DepthEstimator:
         try:
             import numpy as np
 
-            # 推論実行
-            prediction = self._model.inference(
-                [str(image_path)],
-                process_res=self.process_res,
-                process_res_method="upper_bound_resize",
-            )
+            # 推論実行（GPU は スレッドセーフでないため lock で保護）
+            with self._lock:
+                prediction = self._model.inference(
+                    [str(image_path)],
+                    process_res=self.process_res,
+                    process_res_method="upper_bound_resize",
+                )
 
             depth = prediction.depth[0].astype(np.float32)
             rgb = prediction.processed_images[0].astype(np.uint8)
@@ -754,5 +684,5 @@ class DepthEstimator:
             return side_by_side_bytes
 
         except Exception as e:
-            logger.error(f"Depth estimation failed: {e}")
+            logger.error(f"Depth estimation failed: {e}", exc_info=True)
             return None

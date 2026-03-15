@@ -3,6 +3,7 @@ import logging
 import os
 import shutil
 import subprocess
+import sys
 import time
 from pathlib import Path
 from typing import Optional
@@ -16,7 +17,6 @@ from safety_agent.modality_nodes import (
     AudioAnalyzer,
     DepthEstimator,
     VisionAnalyzer,
-    YOLODetector,
 )
 from safety_agent.schema import CameraPose, Observation, ObservationProvider
 from util.logger import setup_logger
@@ -76,7 +76,7 @@ def get_llm(config: dict) -> Optional[OpenAICompatLLM]:
         # OpenAI API
         api_key = os.getenv("OPENAI_API_KEY")
         if not api_key:
-            logger.warning("OPENAI_API_KEY not set, using heuristic fallback")
+            logger.warning("OPENAI_API_KEY not set, using default assessment")
             return None
 
         openai_cfg = llm_config.get("openai", {})
@@ -108,10 +108,14 @@ def get_llm(config: dict) -> Optional[OpenAICompatLLM]:
         model = vllm_cfg.get("model")
 
         if not base_url:
-            logger.warning("LLM base_url not set in configs/default.yaml, using heuristic fallback")
+            logger.warning(
+                "LLM base_url not set in configs/default.yaml, using default assessment"
+            )
             return None
         if not model:
-            logger.warning("LLM model not set in configs/default.yaml, using heuristic fallback")
+            logger.warning(
+                "LLM model not set in configs/default.yaml, using default assessment"
+            )
             return None
 
         api_key = vllm_cfg.get("api_key", "EMPTY")
@@ -163,7 +167,9 @@ def get_vlm(config: dict, prompts: dict) -> Optional[VisionAnalyzer]:
         llm_openai = llm_config.get("openai", {})
 
         # モデル: VLM設定 > 環境変数 > LLM設定(fallback)
-        model = os.getenv("VLM_MODEL") or vlm_openai.get("model") or llm_openai.get("model")
+        model = (
+            os.getenv("VLM_MODEL") or vlm_openai.get("model") or llm_openai.get("model")
+        )
         if not model:
             raise ValueError(
                 "VLM モデル名が未設定です。"
@@ -210,7 +216,6 @@ def get_vlm(config: dict, prompts: dict) -> Optional[VisionAnalyzer]:
         _vlm_url = vlm_vllm.get("base_url")
         _llm_url = llm_vllm.get("base_url")
         base_url = _vlm_url if _vlm_url is not None else _llm_url
-
 
         # モデル: VLM設定 > 環境変数 > LLM設定
         model = vlm_vllm.get("model") or llm_vllm.get("model")
@@ -271,7 +276,9 @@ def get_alm(config: dict, prompts: dict) -> Optional[AudioAnalyzer]:
         alm_openai = alm_config.get("openai", {})
         llm_openai = llm_config.get("openai", {})
 
-        model = os.getenv("ALM_MODEL") or alm_openai.get("model") or llm_openai.get("model")
+        model = (
+            os.getenv("ALM_MODEL") or alm_openai.get("model") or llm_openai.get("model")
+        )
         if not model:
             raise ValueError(
                 "ALM モデル名が未設定です。"
@@ -405,6 +412,7 @@ def split_video_to_frames(
     cap = cv2.VideoCapture(str(video_path))
     if not cap.isOpened():
         logger.warning(f"Could not open video: {video_path}")
+        cap.release()
         return [], []
 
     source_fps = cap.get(cv2.CAP_PROP_FPS)
@@ -448,7 +456,9 @@ def split_video_to_frames(
 
     cap.release()
 
-    logger.info(f"Extracted {len(frame_paths)} frames from {Path(video_path).name} at {target_fps} FPS")
+    logger.info(
+        f"Extracted {len(frame_paths)} frames from {Path(video_path).name} at {target_fps} FPS"
+    )
     return frame_paths, video_timestamps
 
 
@@ -479,9 +489,21 @@ def extract_audio(
     # Check if ffprobe is available and if video has audio
     try:
         result = subprocess.run(
-            ["ffprobe", "-v", "error", "-select_streams", "a:0",
-             "-show_entries", "stream=codec_type", "-of", "csv=p=0", str(video_path)],
-            capture_output=True, text=True, timeout=5
+            [
+                "ffprobe",
+                "-v",
+                "error",
+                "-select_streams",
+                "a:0",
+                "-show_entries",
+                "stream=codec_type",
+                "-of",
+                "csv=p=0",
+                str(video_path),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=5,
         )
         if not result.stdout.strip():
             logger.warning(f"Video has no audio track: {Path(video_path).name}")
@@ -494,14 +516,31 @@ def extract_audio(
     audio_path = audio_dir / audio_output_filename
     try:
         subprocess.run(
-            ["ffmpeg", "-y", "-i", str(video_path),
-             "-vn", "-acodec", audio_codec, "-ar", str(audio_sample_rate),
-             "-ac", str(audio_channels), str(audio_path)],
-            capture_output=True, timeout=30, check=True
+            [
+                "ffmpeg",
+                "-y",
+                "-i",
+                str(video_path),
+                "-vn",
+                "-acodec",
+                audio_codec,
+                "-ar",
+                str(audio_sample_rate),
+                "-ac",
+                str(audio_channels),
+                str(audio_path),
+            ],
+            capture_output=True,
+            timeout=30,
+            check=True,
         )
         logger.info(f"Extracted audio to {audio_path.name}")
         return audio_path
-    except (FileNotFoundError, subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
+    except (
+        FileNotFoundError,
+        subprocess.CalledProcessError,
+        subprocess.TimeoutExpired,
+    ) as e:
         logger.warning(f"Could not extract audio: {e}")
         return None
 
@@ -520,11 +559,13 @@ def load_frames(frames_dir: str = "data/frames") -> list[Path]:
         return []
 
     image_extensions = {".jpg", ".jpeg", ".png", ".bmp"}
-    frame_files = sorted([
-        f
-        for f in frames_path.iterdir()
-        if f.is_file() and f.suffix.lower() in image_extensions
-    ])
+    frame_files = sorted(
+        [
+            f
+            for f in frames_path.iterdir()
+            if f.is_file() and f.suffix.lower() in image_extensions
+        ]
+    )
 
     if frame_files:
         logger.info(f"Found {len(frame_files)} frame(s) in {frames_dir}/")
@@ -578,10 +619,16 @@ def save_analysis_results(
 
         existing_data["frames"].append(result)
 
-    # ファイルに保存
-    with open(results_file, "w", encoding="utf-8") as f:
-        json.dump(existing_data, f, ensure_ascii=False, indent=2)
-    frame_count = len(analysis_results.get('frames', []))
+    # ファイルに保存（アトミック書き込みで破損防止）
+    try:
+        tmp = results_file.with_suffix(".tmp")
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(existing_data, f, ensure_ascii=False, indent=2)
+        os.replace(tmp, results_file)
+    except (IOError, TypeError, OSError) as e:
+        logger.error(f"Failed to save results to {results_file}: {e}")
+        return
+    frame_count = len(analysis_results.get("frames", []))
     logger.info(f"Results appended to {results_file} ({frame_count} frames)")
 
 
@@ -705,10 +752,14 @@ def _process_infrared_inspesafe(
     if frame_paths:
         logger.info(f"[inspesafe] {len(frame_paths)} 赤外線フレーム展開完了")
         # Create timestamp map (same format as RGB processing)
-        infrared_timestamps_map = {f"ir_{i}": ts for i, ts in enumerate(video_timestamps)}
+        infrared_timestamps_map = {
+            f"ir_{i}": ts for i, ts in enumerate(video_timestamps)
+        }
         return frame_paths, infrared_timestamps_map
     else:
-        logger.warning(f"No frames extracted from infrared video: {infrared_video_path}")
+        logger.warning(
+            f"No frames extracted from infrared video: {infrared_video_path}"
+        )
         return [], {}
 
 
@@ -764,7 +815,9 @@ def prepare_observations(
             clear_frames=video_cfg.get("clear_frames", False),
         )
         if frame_paths:
-            video_timestamps_map = {f"img_{i}": ts for i, ts in enumerate(video_timestamps)}
+            video_timestamps_map = {
+                f"img_{i}": ts for i, ts in enumerate(video_timestamps)
+            }
 
     # Load frame images from data/frames
     frame_files = load_frames("data/frames")
@@ -815,18 +868,22 @@ def run_and_log_agent(
     final_state: dict = {}
     prev_latest_obs_id: str | None = None
 
-    for state in agent.stream(initial_state, context=context, stream_mode="values"):
-        latest = state.get("latest_output")
-        if "latest_output" in state and latest:
-            frame_id = latest.get("frame_id")
-            # フレームが更新されたときのみ追加（重複回避）
-            if frame_id != prev_latest_obs_id:
-                all_frame_outputs.append(latest)
-                prev_latest_obs_id = frame_id
-                # フレーム処理後、コールバックがあれば即時実行
-                if on_frame_callback:
-                    on_frame_callback(latest)
-        final_state = state
+    try:
+        for state in agent.stream(initial_state, context=context, stream_mode="values"):
+            latest = state.get("latest_output")
+            if "latest_output" in state and latest:
+                frame_id = latest.get("frame_id")
+                # フレームが更新されたときのみ追加（重複回避）
+                if frame_id != prev_latest_obs_id:
+                    all_frame_outputs.append(latest)
+                    prev_latest_obs_id = frame_id
+                    # フレーム処理後、コールバックがあれば即時実行
+                    if on_frame_callback:
+                        on_frame_callback(latest)
+            final_state = state
+    except Exception as e:
+        logger.error(f"Agent streaming error: {e}", exc_info=True)
+        # 収集済みのフレームを返す
 
     # Log agent results
     if final_state.get("selected"):
@@ -836,7 +893,9 @@ def run_and_log_agent(
         )
 
     if final_state.get("assessment"):
-        logger.info(f"Assessment: {final_state['assessment'].action_type} risk={final_state['assessment'].risk_level}")
+        logger.info(
+            f"Assessment: {final_state['assessment'].action_type} risk={final_state['assessment'].risk_level}"
+        )
 
     if final_state.get("errors"):
         logger.warning(f"Errors: {len(final_state['errors'])}")
@@ -863,25 +922,36 @@ def main():
     if os.path.exists(perception_results_file):
         os.makedirs(results_archive_dir, exist_ok=True)
         timestamp = time.strftime("%Y%m%d_%H%M%S")
-        archived_file = os.path.join(results_archive_dir, f"perception_results_{timestamp}.json")
+        archived_file = os.path.join(
+            results_archive_dir, f"perception_results_{timestamp}.json"
+        )
         shutil.move(perception_results_file, archived_file)
         logger.info(f"Archived perception_results.json → {archived_file}")
 
-    # Clean up data/frames before processing
-    frames_dir = "data/frames"
-    if os.path.exists(frames_dir):
-        shutil.rmtree(frames_dir)
-    os.makedirs(frames_dir, exist_ok=True)
+    # Clean up data directories before processing
+    # Note: data/audio is NOT cleared as it contains source audio files used by multiple runs
+    for data_dir in ["data/frames", "data/depth", "data/voice"]:
+        if os.path.exists(data_dir):
+            shutil.rmtree(data_dir)
+        os.makedirs(data_dir, exist_ok=True)
 
     # Load video/audio formats from config
     video_formats_cfg = video_cfg.get("formats", {})
-    video_extensions = set(video_formats_cfg.get("extensions", [".mp4", ".avi", ".mov", ".mkv", ".webm"]))
-    frame_output_format = video_formats_cfg.get("frame_output", "frame_{timestamp}s.jpg")
+    video_extensions = set(
+        video_formats_cfg.get("extensions", [".mp4", ".avi", ".mov", ".mkv", ".webm"])
+    )
+    frame_output_format = video_formats_cfg.get(
+        "frame_output", "frame_{timestamp}s.jpg"
+    )
 
     # Prepare observations from video and frames
-    obs_list, video_timestamps_map = prepare_observations(
-        config, video_extensions, frame_output_format, audio_cfg
-    )
+    try:
+        obs_list, video_timestamps_map = prepare_observations(
+            config, video_extensions, frame_output_format, audio_cfg
+        )
+    except FileNotFoundError as e:
+        logger.error(f"Data preparation failed: {e}")
+        sys.exit(1)
 
     # Apply max_steps filter to obs_list
     max_steps_cfg = agent_cfg.get("max_steps", 1)
@@ -901,25 +971,22 @@ def main():
     provider = ObservationProvider(obs_list)
     llm = get_llm(config)
     vision_analyzer = get_vlm(config, prompts)
-    audio_analyzer = get_alm(config, prompts) if agent_cfg.get("enable_audio", False) else None
+    audio_analyzer = (
+        get_alm(config, prompts) if agent_cfg.get("enable_audio", False) else None
+    )
 
     # Build agent
     agent = build_agent()
 
     # Initialize modality analyzers for fan-out nodes
-    yolo_detector = None
-    if agent_cfg.get("enable_yolo", False):
-        try:
-            yolo_detector = YOLODetector("yolov8n.pt")
-        except Exception as e:
-            logger.warning(f"Failed to initialize YOLO: {e}, using fallback")
-
     depth_estimator = None
     if agent_cfg.get("enable_depth", False):
         try:
             depth_estimator = DepthEstimator()
         except Exception as e:
-            logger.warning(f"Failed to initialize DepthEstimator: {e}, depth estimation will not be available")
+            logger.warning(
+                f"Failed to initialize DepthEstimator: {e}, depth estimation will not be available"
+            )
 
     # Initial state (with modality_results for fan-in)
     initial_state: AgentState = {
@@ -940,7 +1007,7 @@ def main():
     }
 
     # Build expected_modalities based on enabled features
-    expected_modalities = ["yolo", "vlm"]  # Vision is always expected
+    expected_modalities = ["vlm"]  # Vision is always expected
     if agent_cfg.get("enable_audio", False):
         expected_modalities.append("audio")
     if agent_cfg.get("enable_depth", False):
@@ -951,13 +1018,11 @@ def main():
         "provider": provider,
         "llm": llm,
         "vision_analyzer": vision_analyzer,
-        "yolo_detector": yolo_detector,
         "audio_analyzer": audio_analyzer,
         "depth_estimator": depth_estimator,
         "prompts": prompts,
         "config": config,  # depth_node で config.get("tokens", ...) 使用
         "chat_max_tokens": tokens_cfg.get("chat_max_tokens", 2000),
-        "max_outstanding_regions": agent_cfg.get("max_outstanding_regions", 6),
         "context_history_size": agent_cfg.get("context_history_size", 1),
         "expected_modalities": expected_modalities,
         "run_mode": "until_provider_ends",  # provider が None を返すまで継続
@@ -974,7 +1039,9 @@ def main():
 
     # Run and log agent with per-frame callback
     _, all_frame_outputs = run_and_log_agent(
-        agent, initial_state, context,
+        agent,
+        initial_state,
+        context,
         on_frame_callback=_on_frame,
     )
 
