@@ -288,6 +288,45 @@ uv run python scripts/depth_anything_3/smoke_test_da3.py \
   --model metric
 ```
 
+## オプション: vLLM-Omni セットアップ
+
+マルチモーダル推論機能（Vision + Audio 統合）を使用する場合は、vLLM-Omni をセットアップしてください。
+
+### セットアップ手順
+
+#### 1. vLLM-Omni をクローン
+
+```bash
+git clone https://github.com/vllm-project/vllm-omni.git external/vllm-omni
+```
+
+#### 2. 依存関係をインストール
+
+既に `pyproject.toml` に vLLM-Omni が記載されているため、以下を実行：
+
+```bash
+uv sync --extra dev
+```
+
+このコマンドで自動的に vLLM-Omni がビルド・インストールされます。
+
+#### 3. 動作確認
+
+```bash
+# vLLM-Omni がインストールされたか確認
+python -c "import vllm_omni; print('vLLM-Omni installed successfully')"
+```
+
+### 使用方法
+
+vLLM-Omni は以下の機能を提供します：
+
+- **マルチモーダル推論**: Vision + Audio 入力の統合処理
+- **効率的な推論**: vLLM の最適化技術を活用
+- **拡張可能な設計**: カスタムモデルの統合
+
+詳細は [vLLM-Omni 公式ドキュメント](https://github.com/vllm-project/vllm-omni) を参照。
+
 ## ヘルプが必要な場合
 
 - Issues: プロジェクトの GitHub Issues を確認

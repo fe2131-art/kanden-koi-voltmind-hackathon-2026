@@ -13,7 +13,7 @@ authors = [
 ]
 
 dependencies = [
-    "pydantic>=2.12.5",
+    "pydantic>=2.12.3",
     "langgraph>=1.0.10",
     "langchain-core>=1.2.16",
     "httpx>=0.24.0",
@@ -22,10 +22,12 @@ dependencies = [
     "opencv-python",
     "huggingface_hub>=0.34.0,<1.0",
     "torch==2.10.0",
-    "vllm[audio]>=0.11.0",
+    "torchaudio==2.10.0",
+    "vllm[audio]>=0.17.1",
     "qwen-vl-utils>=0.0.14",
     "xformers",
     "depth-anything-3",
+    "vllm-omni",
     "librosa",
     "soundfile",
     "autoawq",
@@ -35,9 +37,11 @@ dependencies = [
 
 [tool.uv.sources]
 torch = [{ index = "torch-cu129" }]
-vllm  = [{ index = "vllm-nightly" }]
+torchaudio = [{ index = "torch-cu129" }]
+# vllm  = [{ index = "vllm-nightly" }]
 xformers  = [{ index = "xformers-cu128" }]
 depth-anything-3 = { path = "./external/Depth-Anything-3", editable = true }
+vllm-omni = { path = "./external/vllm-omni", editable = true }
 
 [tool.uv]
 no-build-isolation-package = ["flash-attn"]
@@ -50,10 +54,10 @@ name = "torch-cu129"
 url = "https://download.pytorch.org/whl/cu129"
 explicit = true
 
-[[tool.uv.index]]
-name = "vllm-nightly"
-url = "https://wheels.vllm.ai/nightly"
-explicit = true
+# [[tool.uv.index]]
+# name = "vllm-nightly"
+# url = "https://wheels.vllm.ai/nightly"
+# explicit = true
 
 [[tool.uv.index]]
 name = "xformers-cu128"
