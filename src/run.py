@@ -5,7 +5,6 @@ import shutil
 import subprocess
 import sys
 import time
-import torch
 from pathlib import Path
 from typing import Optional
 
@@ -21,7 +20,6 @@ from safety_agent.modality_nodes import (
 )
 from safety_agent.schema import CameraPose, Observation, ObservationProvider
 from tts.synthesize import synthesize_frame
-from tts.synthesize import _load_model
 from util.logger import setup_logger
 
 # .env ファイルから環境変数を読み込む
@@ -1032,13 +1030,9 @@ def main():
     }
 
     # TTS 初期化（フレーム単位合成用）
+    # サーバモード専用（ローカルモード対応は廃止）
     tts_cfg = config.get("tts", {})
     tts_server_url: Optional[str] = tts_cfg.get("server_url") or None
-    tts_model = None
-    if not tts_server_url and tts_cfg.get("model"):
-        # ローカルモード: モデルを一度だけロード
-        _tts_device = "cuda" if torch.cuda.is_available() else "cpu"
-        tts_model = _load_model(tts_cfg["model"], _tts_device)
 
     # フレーム処理時のコールバック関数定義
     def _on_frame(frame_output: dict) -> None:
@@ -1051,7 +1045,7 @@ def main():
         synthesize_frame(
             frame=frame_output,
             outdir=Path("data/voice"),
-            model=tts_model,
+            model=None,
             server_url=tts_server_url,
             voice=tts_cfg.get("voice", "Vivian"),
             language=tts_cfg.get("language", "Japanese"),
