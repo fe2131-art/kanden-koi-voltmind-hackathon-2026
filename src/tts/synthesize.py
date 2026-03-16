@@ -244,6 +244,64 @@ def _synthesize_via_server(
         return None
 
 
+def synthesize_frame(
+    frame: dict,
+    outdir: Path,
+    model=None,
+    server_url: Optional[str] = None,
+    voice: str = "Vivian",
+    language: str = "Japanese",
+    instruct: Optional[str] = None,
+    sample_rate: int = 12000,
+    temperature: Optional[float] = None,
+    top_p: Optional[float] = None,
+    top_k: Optional[int] = None,
+    repetition_penalty: Optional[float] = None,
+) -> Optional[Path]:
+    """フレーム1件分のTTSを合成してWAVを保存する。
+
+    - server_url 指定時 → _synthesize_via_server() 経由
+    - model 指定時    → synthesize_text() 経由（ローカル）
+    - どちらも None   → 無音WAVをフォールバック出力
+    """
+    ts = float(frame.get("video_timestamp") or 0.0)
+    outdir.mkdir(parents=True, exist_ok=True)
+    out_path = outdir / f"frame_{ts:.1f}s.wav"
+    text = frame_to_tts_text(frame)
+    logger.info(f"TTS合成中 {out_path.name}: {text!r}")
+
+    if server_url is not None:
+        result = _synthesize_via_server(
+            text, server_url, voice, language, instruct,
+            sample_rate, temperature, top_p, top_k, repetition_penalty,
+        )
+    elif model is not None:
+        result = synthesize_text(
+            text, model, voice=voice, language=language, instruct=instruct,
+            temperature=temperature, top_p=top_p, top_k=top_k,
+            repetition_penalty=repetition_penalty,
+        )
+        if result is not None:
+            waveform, native_sr = result
+            if sample_rate != native_sr:
+                import librosa
+                waveform = librosa.resample(waveform, orig_sr=native_sr, target_sr=sample_rate)
+            result = (waveform, sample_rate)
+    else:
+        logger.warning("TTS: model も server_url も未設定 → 無音WAVを出力")
+        _write_silent_wav(out_path, sample_rate=sample_rate)
+        return out_path
+
+    if result is not None:
+        waveform, sr = result
+        sf.write(str(out_path), waveform, sr)
+        duration = len(waveform) / sr
+        logger.info(f"TTS保存完了: {out_path.name} ({duration:.2f}s)")
+    else:
+        _write_silent_wav(out_path, sample_rate=sample_rate)
+    return out_path
+
+
 def run_batch(
     input_path: Path,
     outdir: Path,
