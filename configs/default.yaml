@@ -90,7 +90,8 @@ thresholds:
 
 # TTS (Text-to-Speech) 設定 — Qwen3-TTS バッチ合成
 tts:
-  # サーバ URL（vllm-omni で起動したサーバ: python src/tts/server.py）
+  # サーバ URL（vllm-omni で起動したサーバ: slurm/qwen_tts_server.sh または
+  # vllm-omni serve <MODEL> --omni --host 0.0.0.0 --port 8010 --task-type CustomVoice）
   # null の場合はローカルにモデルをロードして合成する（後方互換）
   server_url: "http://localhost:8010"
   model: "Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice"
