@@ -53,6 +53,16 @@ kanden-koi-voltmind-hackathon-2026/
 ├── configs/
 │   └── default.yaml
 │
+├── external/                   # 外部依存パッケージ（editable install）
+│   ├── Depth-Anything-3/       # 深度推定モデル
+│   └── vllm-omni/              # マルチモーダル推論フレームワーク
+│
+├── scripts/
+│   └── depth_anything_3/       # Depth-Anything-3 セットアップ・テスト
+│       ├── setup_external_deps.sh
+│       ├── smoke_test_da3.py
+│       └── patches/
+│
 ├── pyproject.toml              # uv / hatchling 設定
 ├── .gitignore
 └── CLAUDE.md                   # このファイル
@@ -64,6 +74,21 @@ kanden-koi-voltmind-hackathon-2026/
 ```bash
 uv sync --extra dev
 ```
+
+**外部依存パッケージのセットアップ（初回のみ）:**
+
+```bash
+# 1. Depth-Anything-3（深度推定機能）
+git clone https://github.com/ByteDance-Seed/Depth-Anything-3.git external/Depth-Anything-3
+
+# 2. vLLM-Omni（マルチモーダル推論）
+git clone https://github.com/vllm-project/vllm-omni.git external/vllm-omni
+
+# 3. 再度 uv sync で両方をビルド・インストール
+uv sync --extra dev
+```
+
+詳細は [SETUP.md](docs/SETUP.md) を参照。
 
 ### 環境をアクティベート
 ```
