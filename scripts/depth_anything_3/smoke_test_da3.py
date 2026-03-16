@@ -177,7 +177,9 @@ def main() -> None:
 
     print(f"[INFO] depth shape   = {depth.shape}")
     print(f"[INFO] depth dtype   = {depth.dtype}")
-    print(f"[INFO] depth min/max = {float(np.min(depth)):.6f} / {float(np.max(depth)):.6f}")
+    print(
+        f"[INFO] depth min/max = {float(np.min(depth)):.6f} / {float(np.max(depth)):.6f}"
+    )
 
     np.save(outdir / "depth_raw.npy", depth)
 
@@ -202,7 +204,9 @@ def main() -> None:
                 f"{float(np.min(depth_m)):.6f} / {float(np.max(depth_m)):.6f} [m]"
             )
         else:
-            print("[INFO] metric モデルですが --focal-px 未指定のため depth_m.npy は保存しません。")
+            print(
+                "[INFO] metric モデルですが --focal-px 未指定のため depth_m.npy は保存しません。"
+            )
 
     print(f"[INFO] saved files under: {outdir}")
 
