@@ -45,10 +45,6 @@ echo "=========================================="
 
 cd "$WORK_DIR"
 
-# GPU 割り当て: 音声モデル(GPU 0)と共存するため GPU 1 を使用
-# Slurm が自動割り当てしない場合に明示指定
-export CUDA_VISIBLE_DEVICES=1
-
 # キャッシュ（作業者単位で永続化）
 export UV_CACHE_DIR="$HOME/.cache/uv"
 export HF_HOME="$HOME/data/hf_cache"

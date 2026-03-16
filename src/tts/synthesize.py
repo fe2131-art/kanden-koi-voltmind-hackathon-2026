@@ -198,11 +198,13 @@ def _synthesize_via_server(
     top_p: Optional[float],
     top_k: Optional[int],
     repetition_penalty: Optional[float],
+    task_type: Optional[str] = None,
 ) -> Optional[tuple[np.ndarray, int]]:
-    """TTS サーバ経由でテキストを合成する。
+    """TTS サーバ経由でテキストを合成する（vllm-omni 互換）。
 
     Args:
         server_url: TTS サーバのベース URL（例: http://localhost:8010）。
+        task_type: vllm-omni のタスクタイプ（CustomVoice / VoiceDesign / Base）。
 
     Returns:
         (waveform, sample_rate) タプル（成功時）、または None（失敗時）。
@@ -214,10 +216,12 @@ def _synthesize_via_server(
         "input": text,
         "voice": voice,
         "language": language,
-        "sample_rate": sample_rate,
     }
+    if task_type is not None:
+        payload["task_type"] = task_type
+    # vllm-omni は "instructions" フィールドを使用する（FastAPI 版の "instruct" から変更）
     if instruct is not None:
-        payload["instruct"] = instruct
+        payload["instructions"] = instruct
     if temperature is not None:
         payload["temperature"] = temperature
     if top_p is not None:
@@ -257,6 +261,7 @@ def synthesize_frame(
     top_p: Optional[float] = None,
     top_k: Optional[int] = None,
     repetition_penalty: Optional[float] = None,
+    task_type: Optional[str] = None,
 ) -> Optional[Path]:
     """フレーム1件分のTTSを合成してWAVを保存する。
 
@@ -274,6 +279,7 @@ def synthesize_frame(
         result = _synthesize_via_server(
             text, server_url, voice, language, instruct,
             sample_rate, temperature, top_p, top_k, repetition_penalty,
+            task_type=task_type,
         )
     elif model is not None:
         result = synthesize_text(
@@ -316,6 +322,7 @@ def run_batch(
     repetition_penalty: Optional[float] = None,
     dry_run: bool = False,
     server_url: Optional[str] = None,
+    task_type: Optional[str] = None,
 ) -> None:
     """フレームリストを読み込み、WAV ファイルを一括生成する。
 
@@ -367,6 +374,7 @@ def run_batch(
                 top_p=top_p,
                 top_k=top_k,
                 repetition_penalty=repetition_penalty,
+                task_type=task_type,
             )
             if result is not None:
                 waveform, sr = result
@@ -489,7 +497,8 @@ def main() -> None:
     sample_rate: int = int(tts_cfg.get("sample_rate", 12000))
     voice: str = tts_cfg.get("voice", "Vivian")
     language: str = tts_cfg.get("language", "Japanese")
-    instruct: Optional[str] = tts_cfg.get("instruct") or None
+    instruct: Optional[str] = tts_cfg.get("instructions") or tts_cfg.get("instruct") or None
+    task_type: Optional[str] = tts_cfg.get("task_type") or None
     temperature: Optional[float] = tts_cfg.get("temperature")
     top_p: Optional[float] = tts_cfg.get("top_p")
     top_k: Optional[int] = tts_cfg.get("top_k")
@@ -500,7 +509,7 @@ def main() -> None:
     if server_url:
         logger.info(f"TTS server_url: {server_url}")
     if instruct:
-        logger.info(f"instruct: {instruct!r}")
+        logger.info(f"instructions: {instruct!r}")
 
     run_batch(
         input_path=args.input,
@@ -516,6 +525,7 @@ def main() -> None:
         repetition_penalty=repetition_penalty,
         dry_run=args.dry_run,
         server_url=server_url,
+        task_type=task_type,
     )
 
 

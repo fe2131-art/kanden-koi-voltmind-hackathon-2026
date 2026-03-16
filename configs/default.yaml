@@ -90,15 +90,16 @@ thresholds:
 
 # TTS (Text-to-Speech) 設定 — Qwen3-TTS バッチ合成
 tts:
-  # サーバ URL（qwen_tts_server.sh で起動した FastAPI サーバ）
+  # サーバ URL（vllm-omni で起動したサーバ: python src/tts/server.py）
   # null の場合はローカルにモデルをロードして合成する（後方互換）
   server_url: "http://localhost:8010"
   model: "Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice"
+  task_type: "CustomVoice"  # vllm-omni タスクタイプ（CustomVoice / VoiceDesign / Base）
   sample_rate: 24000   # 出力サンプルレート（ネイティブ 12kHz → librosa でアップサンプル）
   voice: "Vivian"      # 話者名
   language: "Japanese" # 合成言語
-  # 音声スタイル指示（1.7B CustomVoice のみ有効）
-  instruct: "あなたは日本人のアナウンサーです。自然な日本語のイントネーションで、明瞭かつ流暢に発話してください。感情表現を適切に込めて、聞き取りやすい速度で話してください。"
+  # 音声スタイル指示（1.7B CustomVoice のみ有効）— vllm-omni では "instructions" フィールド
+  instructions: "NHKのアナウンサーが標準語で読み上げるように、日本語のピッチアクセントを正確に守って話してください。各単語のアクセント核を意識し、句末は自然に下降させてください。"
   # 生成パラメータ（イントネーション安定化）
   temperature: 0.8
   top_p: 0.9

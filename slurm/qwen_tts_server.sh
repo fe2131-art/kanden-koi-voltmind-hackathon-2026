@@ -70,7 +70,7 @@ PORT=8010
 
 echo
 echo "---- Starting Qwen TTS server ----"
-TTS_MODEL="$MODEL" uv run uvicorn src.tts.server:app \
+TTS_MODEL="$MODEL" uv run python src/tts/server.py \
   --host 0.0.0.0 \
   --port "$PORT" \
   > "qwen_tts_server_${SLURM_JOB_ID:-local}.log" 2>&1 &
