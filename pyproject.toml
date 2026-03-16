@@ -106,7 +106,12 @@ select = [
     "F",    # pyflakes
     "I",    # isort
 ]
-ignore = ["E501"]  # line-too-long
+ignore = [
+    "E501",  # line-too-long
+]
+extend-select = [
+    "E402",  # module-level import not at top
+]
 
 [tool.ruff.lint.isort]
 known-first-party = ["safety_agent"]

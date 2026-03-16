@@ -25,11 +25,14 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import io
 import json
 import logging
 from pathlib import Path
 from typing import Optional
 
+import httpx
+import librosa
 import numpy as np
 import soundfile as sf
 import yaml
@@ -69,7 +72,9 @@ def frame_to_tts_text(frame: dict) -> str:
 # ---------------------------------------------------------------------------
 
 
-def _write_silent_wav(path: Path, duration_s: float = 1.0, sample_rate: int = 12000) -> None:
+def _write_silent_wav(
+    path: Path, duration_s: float = 1.0, sample_rate: int = 12000
+) -> None:
     """フォールバック用: 無音の WAV ファイルを書き出す。
 
     モデルロード失敗や合成エラー時に呼ばれ、パイプラインが
@@ -125,7 +130,7 @@ def _load_model(model_name: str, device: str):
         )
         logger.info("TTS モデルのロードが完了しました。")
         return model
-    except Exception as e:
+    except (RuntimeError, ValueError, OSError) as e:
         logger.error(f"TTS モデル '{model_name}' のロードに失敗しました: {e}")
         return None
 
@@ -175,9 +180,12 @@ def synthesize_text(
             **gen_kwargs,
         )
         waveform: np.ndarray = np.asarray(wavs[0], dtype=np.float32)
+        if len(waveform) == 0:
+            logger.warning(f"合成結果が空です (text='{text[:60]}...'): 無音WAVを使用")
+            return None
         return waveform, int(native_sr)
 
-    except Exception as e:
+    except (RuntimeError, ValueError, OSError) as e:
         logger.error(f"合成失敗 (text='{text[:60]}...'): {e}")
         return None
 
@@ -209,7 +217,6 @@ def _synthesize_via_server(
     Returns:
         (waveform, sample_rate) タプル（成功時）、または None（失敗時）。
     """
-    import httpx
 
     url = f"{server_url.rstrip('/')}/v1/audio/speech"
     payload: dict = {
@@ -234,16 +241,22 @@ def _synthesize_via_server(
     try:
         with httpx.Client(timeout=120.0) as client:
             r = client.post(url, json=payload)
+            if 400 <= r.status_code < 500:
+                logger.warning(
+                    f"クライアントエラー ({r.status_code}): {url} - {r.text[:100]}"
+                )
+            elif r.status_code >= 500:
+                logger.error(f"サーバエラー ({r.status_code}): {url}")
             r.raise_for_status()
-
-        import io
-
-        import soundfile as sf
 
         buf = io.BytesIO(r.content)
         waveform, sr = sf.read(buf, dtype="float32")
-        return np.asarray(waveform, dtype=np.float32), int(sr)
-    except Exception as e:
+        waveform = np.asarray(waveform, dtype=np.float32)
+        if len(waveform) == 0:
+            logger.warning("サーバから空の波形が返されました: 無音WAVを使用")
+            return None
+        return waveform, int(sr)
+    except (OSError, httpx.RequestError, httpx.HTTPStatusError) as e:
         logger.error(f"サーバ合成失敗 ({url}): {e}")
         return None
 
@@ -277,21 +290,36 @@ def synthesize_frame(
 
     if server_url is not None:
         result = _synthesize_via_server(
-            text, server_url, voice, language, instruct,
-            sample_rate, temperature, top_p, top_k, repetition_penalty,
+            text,
+            server_url,
+            voice,
+            language,
+            instruct,
+            sample_rate,
+            temperature,
+            top_p,
+            top_k,
+            repetition_penalty,
             task_type=task_type,
         )
     elif model is not None:
         result = synthesize_text(
-            text, model, voice=voice, language=language, instruct=instruct,
-            temperature=temperature, top_p=top_p, top_k=top_k,
+            text,
+            model,
+            voice=voice,
+            language=language,
+            instruct=instruct,
+            temperature=temperature,
+            top_p=top_p,
+            top_k=top_k,
             repetition_penalty=repetition_penalty,
         )
         if result is not None:
             waveform, native_sr = result
             if sample_rate != native_sr:
-                import librosa
-                waveform = librosa.resample(waveform, orig_sr=native_sr, target_sr=sample_rate)
+                waveform = librosa.resample(
+                    waveform, orig_sr=native_sr, target_sr=sample_rate
+                )
             result = (waveform, sample_rate)
     else:
         logger.warning("TTS: model も server_url も未設定 → 無音WAVを出力")
@@ -406,7 +434,8 @@ def run_batch(
             continue
 
         result = synthesize_text(
-            text, model,
+            text,
+            model,
             voice=voice,
             language=language,
             instruct=instruct,
@@ -419,8 +448,9 @@ def run_batch(
         if result is not None:
             waveform, native_sr = result
             if sample_rate != native_sr:
-                import librosa
-                waveform = librosa.resample(waveform, orig_sr=native_sr, target_sr=sample_rate)
+                waveform = librosa.resample(
+                    waveform, orig_sr=native_sr, target_sr=sample_rate
+                )
                 logger.info(f"  リサンプル: {native_sr} Hz → {sample_rate} Hz")
             sf.write(str(out_path), waveform, sample_rate)
             duration = len(waveform) / sample_rate
@@ -491,20 +521,26 @@ def main() -> None:
             cfg = yaml.safe_load(f) or {}
         tts_cfg = cfg.get("tts", {})
     else:
-        logger.warning(f"設定ファイルが見つかりません: {args.config}（デフォルト値を使用）")
+        logger.warning(
+            f"設定ファイルが見つかりません: {args.config}（デフォルト値を使用）"
+        )
 
     model_name: str = tts_cfg.get("model", "Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice")
     sample_rate: int = int(tts_cfg.get("sample_rate", 12000))
     voice: str = tts_cfg.get("voice", "Vivian")
     language: str = tts_cfg.get("language", "Japanese")
-    instruct: Optional[str] = tts_cfg.get("instructions") or tts_cfg.get("instruct") or None
+    instruct: Optional[str] = (
+        tts_cfg.get("instructions") or tts_cfg.get("instruct") or None
+    )
     task_type: Optional[str] = tts_cfg.get("task_type") or None
     temperature: Optional[float] = tts_cfg.get("temperature")
     top_p: Optional[float] = tts_cfg.get("top_p")
     top_k: Optional[int] = tts_cfg.get("top_k")
     repetition_penalty: Optional[float] = tts_cfg.get("repetition_penalty")
     # --server-mode のときのみ設定ファイルの server_url を使用する
-    server_url: Optional[str] = (tts_cfg.get("server_url") or None) if args.server_mode else None
+    server_url: Optional[str] = (
+        (tts_cfg.get("server_url") or None) if args.server_mode else None
+    )
 
     if server_url:
         logger.info(f"TTS server_url: {server_url}")
