@@ -115,8 +115,3 @@ scripts/depth_anything_3/data
 .DS_Store
 .AppleDouble
 .LSOverride
-
-# ==========================================
-# gradio
-# ==========================================]
-.gradio/
