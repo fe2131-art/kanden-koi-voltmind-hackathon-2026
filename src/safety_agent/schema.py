@@ -133,6 +133,26 @@ class DepthAnalysisResult(BaseModel):
     depth_layers: List[DepthZoneDescription] = Field(default_factory=list)
 
 
+class InfraredAnalysisResult(BaseModel):
+    """赤外線画像解析結果。PerceptionIR.infrared_analysis に格納。"""
+
+    scene_description: str
+    hot_spots: List[str] = Field(default_factory=list)  # 異常高温領域の説明リスト
+
+
+class TemporalAnalysisResult(BaseModel):
+    """時系列（前後フレーム比較）変化検出結果。PerceptionIR.temporal_analysis に格納。"""
+
+    scene_description: str = Field(
+        description="前後フレームの比較サマリ。変化があれば説明、変化がなければ 'no change' または 'no apparent changes' と記述"
+    )
+    change_detected: bool  # 明らかな変化があったか（VLM が true/false を返す）
+    changes: List[str] = Field(
+        default_factory=list,
+        description="実際に確認できた変化の具体的説明リスト。変化がなければ空配列 []",
+    )
+
+
 # ─── カメラ姿勢 ───────────────────────────────────────────────────────────────
 # Observation と PerceptionIR に付属するメタ情報。現在は値が入らないことが多い。
 
@@ -151,13 +171,15 @@ class CameraPose(BaseModel):
 
 
 class PerceptionIR(BaseModel):
-    """1フレーム分の知覚統合結果（VLM + 音声 + 深度）。AgentState.ir に格納。"""
+    """1フレーム分の知覚統合結果（VLM + 音声 + 深度 + 赤外線 + 時系列変化）。AgentState.ir に格納。"""
 
     obs_id: str
     camera_pose: Optional[CameraPose] = None
     audio: List[AudioCue] = Field(default_factory=list)  # 音声出力
     vision_analysis: Optional[VisionAnalysisResult] = None  # VLM 出力
     depth_analysis: Optional[DepthAnalysisResult] = None  # 深度解析出力
+    infrared_analysis: Optional[InfraredAnalysisResult] = None  # 赤外線画像解析出力
+    temporal_analysis: Optional[TemporalAnalysisResult] = None  # 時系列変化検出出力
     modality_errors: List[str] = Field(default_factory=list)  # 各モダリティのエラー
 
 
@@ -226,6 +248,7 @@ class Observation:
     prev_image_path: Optional[str] = None  # 前フレームの画像パス（2枚比較用）
     audio_path: Optional[str] = None  # 音声ファイルパス（推奨）
     audio_text: Optional[str] = None  # 音声文字起こしやテキスト入力（後方互換）
+    infrared_image_path: Optional[str] = None  # 赤外線フレームパス
     camera_pose: Optional[CameraPose] = None
     video_timestamp: Optional[float] = None  # 動画内の秒数
 
