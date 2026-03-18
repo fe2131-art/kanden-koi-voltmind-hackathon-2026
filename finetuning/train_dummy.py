@@ -1,9 +1,12 @@
 """Dummy training script for testing (CPU-only, no real model training)."""
+
 import json
 import os
 
 
-def load_dummy_data(data_file: str = "finetuning/data/samples/dummy_instructions.jsonl"):
+def load_dummy_data(
+    data_file: str = "finetuning/data/samples/dummy_instructions.jsonl",
+):
     """Load dummy training data."""
     if not os.path.exists(data_file):
         print(f"⚠️  Data file not found: {data_file}")
@@ -53,7 +56,12 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser(description="Dummy training script")
     parser.add_argument("--epochs", type=int, default=3, help="Number of epochs")
-    parser.add_argument("--data", type=str, default="finetuning/data/samples/dummy_instructions.jsonl", help="Data file path")
+    parser.add_argument(
+        "--data",
+        type=str,
+        default="finetuning/data/samples/dummy_instructions.jsonl",
+        help="Data file path",
+    )
     args = parser.parse_args()
 
     train_dummy(num_epochs=args.epochs)

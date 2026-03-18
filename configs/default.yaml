@@ -6,6 +6,7 @@ agent:
   enable_audio: true
   enable_depth: true
   enable_infrared: true            # 赤外線画像解析有効化（enable_infrared: true でアクティベート）
+  enable_temporal: true            # 時系列変化検出有効化（前後フレーム比較、enable_temporal: true でアクティベート）
   context_history_size: 1           # LLM に渡す前回結果の数（0=なし, 1=前回のみ）
 
 # LLM configuration

@@ -17,9 +17,14 @@ from io import BytesIO
 from pathlib import Path
 from typing import Any, Optional
 
+import cv2
 import librosa
+import numpy as np
 import soundfile as sf
+import torch
+from depth_anything_3.api import DepthAnything3
 from openai import OpenAI
+from PIL import Image
 
 from .schema import (
     AudioCue,
@@ -537,26 +542,16 @@ class DepthEstimator:
         self._device = None
         self._lock = threading.Lock()
 
-        try:
-            import torch
-            from depth_anything_3.api import DepthAnything3
-
-            self._device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-            resolved_model_id = self._resolve_model_id(
-                model_family, model_size, model_id
-            )
-            self._model = DepthAnything3.from_pretrained(resolved_model_id).to(
-                self._device
-            )
-            logger.info(
-                f"DepthEstimator initialized: {resolved_model_id} on {self._device}"
-            )
-        except ImportError as e:
-            logger.warning(
-                f"depth_anything_3 not available: {e}. DepthEstimator will not work."
-            )
-        except Exception as e:
-            logger.warning(f"Failed to initialize DepthEstimator: {e}")
+        self._device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        resolved_model_id = self._resolve_model_id(
+            model_family, model_size, model_id
+        )
+        self._model = DepthAnything3.from_pretrained(resolved_model_id).to(
+            self._device
+        )
+        logger.info(
+            f"DepthEstimator initialized: {resolved_model_id} on {self._device}"
+        )
 
     def _resolve_model_id(
         self,
@@ -598,8 +593,6 @@ class DepthEstimator:
         percentile_high: float = 98.0,
     ) -> Any:  # np.ndarray
         """深度を Turbo カラーマップで可視化。近いほど暖色、遠いほど寒色。"""
-        import cv2
-        import numpy as np
 
         depth = depth.astype(np.float32)
         valid = np.isfinite(depth)
@@ -630,11 +623,6 @@ class DepthEstimator:
         depth_vis_rgb: Any,  # np.ndarray
     ) -> bytes:
         """RGB と深度可視化を side-by-side で合成し、PNG バイト列を返す。"""
-        from io import BytesIO
-
-        import cv2
-        import numpy as np
-        from PIL import Image
 
         if rgb.shape[:2] != depth_vis_rgb.shape[:2]:
             depth_vis_rgb = cv2.resize(
@@ -664,8 +652,6 @@ class DepthEstimator:
             return None
 
         try:
-            import numpy as np
-
             # 推論実行（GPU は スレッドセーフでないため lock で保護）
             with self._lock:
                 prediction = self._model.inference(
@@ -714,10 +700,6 @@ class InfraredImageAnalyzer:
             赤外線画像がグレースケールの場合、.convert("RGB") で 3 チャネルに変換。
             RGB サイズに赤外線をリサイズしてから結合する。
         """
-        from io import BytesIO
-
-        import numpy as np
-        from PIL import Image
 
         if not Path(rgb_path).exists():
             logger.warning(f"RGB image not found: {rgb_path}")
@@ -737,6 +719,50 @@ class InfraredImageAnalyzer:
             infrared = np.array(inf_img)
 
         merged = np.concatenate([rgb, infrared], axis=1)
+        buf = BytesIO()
+        Image.fromarray(merged).save(buf, format="PNG")
+        return buf.getvalue()
+
+
+class TemporalImageAnalyzer:
+    """現フレームと前フレームを横並び結合し VLM で変化を分析するクラス。
+    外部推論モデルは不要。画像結合のみ担当。
+    """
+
+    @staticmethod
+    def make_temporal_bytes(current_path: str, prev_path: str) -> Optional[bytes]:
+        """現フレームと前フレームを横並び結合し PNG バイト列を返す。
+
+        Args:
+            current_path: 現フレームのパス（左側）
+            prev_path: 前フレームのパス（右側）
+
+        Returns:
+            PNG バイト列。どちらかのファイルが存在しない場合は None。
+
+        Note:
+            左: 前フレーム、右: 現フレーム（時系列順）の順に並べる。
+            両フレームのサイズが異なる場合は、現フレームのサイズに合わせてリサイズする。
+        """
+        if not Path(current_path).exists():
+            logger.warning(f"Current frame not found: {current_path}")
+            return None
+        if not Path(prev_path).exists():
+            logger.warning(f"Previous frame not found: {prev_path}")
+            return None
+
+        current = np.array(Image.open(current_path).convert("RGB"))
+        prev = np.array(Image.open(prev_path).convert("RGB"))
+
+        # サイズを current に合わせてリサイズ
+        if current.shape[:2] != prev.shape[:2]:
+            prev_img = Image.fromarray(prev).resize(
+                (current.shape[1], current.shape[0]), Image.Resampling.LANCZOS
+            )
+            prev = np.array(prev_img)
+
+        # 左: 前フレーム, 右: 現フレーム（時系列順に左→右）
+        merged = np.concatenate([prev, current], axis=1)
         buf = BytesIO()
         Image.fromarray(merged).save(buf, format="PNG")
         return buf.getvalue()

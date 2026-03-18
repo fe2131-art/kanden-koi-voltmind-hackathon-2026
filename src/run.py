@@ -17,6 +17,7 @@ from safety_agent.modality_nodes import (
     AudioAnalyzer,
     DepthEstimator,
     InfraredImageAnalyzer,
+    TemporalImageAnalyzer,
     VisionAnalyzer,
 )
 from safety_agent.schema import CameraPose, Observation, ObservationProvider
@@ -709,9 +710,7 @@ def prepare_observations_inspesafe(
     frame_paths = load_frames("data/frames")
 
     # 赤外線フレームを stem → path マップにする
-    infrared_path_map = {
-        fp.stem: str(fp.resolve()) for fp in infrared_frames
-    }
+    infrared_path_map = {fp.stem: str(fp.resolve()) for fp in infrared_frames}
 
     obs_list = [
         Observation(
@@ -1014,6 +1013,15 @@ def main():
                 f"Failed to initialize InfraredImageAnalyzer: {e}, infrared analysis will not be available"
             )
 
+    temporal_analyzer = None
+    if agent_cfg.get("enable_temporal", False):
+        try:
+            temporal_analyzer = TemporalImageAnalyzer()
+        except Exception as e:
+            logger.warning(
+                f"Failed to initialize TemporalImageAnalyzer: {e}, temporal analysis will not be available"
+            )
+
     # Initial state (with modality_results for fan-in)
     initial_state: AgentState = {
         "messages": [],
@@ -1040,6 +1048,8 @@ def main():
         expected_modalities.append("depth")
     if agent_cfg.get("enable_infrared", False):
         expected_modalities.append("infrared")
+    if agent_cfg.get("enable_temporal", False):
+        expected_modalities.append("temporal")
 
     # Context (with modality analyzers for fan-out nodes)
     context = {
@@ -1049,6 +1059,7 @@ def main():
         "audio_analyzer": audio_analyzer,
         "depth_estimator": depth_estimator,
         "infrared_analyzer": infrared_analyzer,
+        "temporal_analyzer": temporal_analyzer,
         "prompts": prompts,
         "config": config,  # depth_node で config.get("tokens", ...) 使用
         "chat_max_tokens": tokens_cfg.get("chat_max_tokens", 2000),
