@@ -1,7 +1,7 @@
 """E2E smoke test for Safety View Agent (LLM-free)."""
 
 from src.safety_agent.agent import AgentState, build_agent
-from src.safety_agent.modality_nodes import AudioAnalyzer
+from src.safety_agent.modality_nodes import AudioAnalyzer, InfraredImageAnalyzer
 from src.safety_agent.schema import (
     Observation,
     ObservationProvider,
@@ -55,6 +55,7 @@ def test_e2e_agent_no_llm():
         "vision_analyzer": None,
         "audio_analyzer": AudioAnalyzer(),
         "depth_estimator": None,
+        "infrared_analyzer": InfraredImageAnalyzer(),
         "prompts": {
             "vision_analysis": {
                 "default_prompt": "テスト用プロンプト（LLM 未使用のため内容は問わない）"

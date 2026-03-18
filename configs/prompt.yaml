@@ -76,6 +76,9 @@ safety_assessment:
     - depth_analysis
       - scene_description
       - depth_layers
+    - infrared_analysis
+      - scene_description
+      - hot_spots
     - audio_analysis
       - events
         - cue
@@ -97,6 +100,7 @@ safety_assessment:
     - 現在の情報を前回より優先する
     - vision_analysis を主な根拠とし、critical_points と overall_assessment を特に重視する
     - depth_analysis は空間構造や死角の補助情報として使う
+    - infrared_analysis は赤外線異常・過熱・火災リスクの補助情報として使う
     - audio_analysis は警報音や異常音の補助情報として使う
     - previous_assessment は継続・悪化・改善・解消の判断に使う
     - 推測せず、判断が難しい場合は unknown または null を使う
@@ -202,6 +206,43 @@ depth_analysis:
         }
       ]
     }
+
+infrared_analysis:
+  system: |
+    あなたは可視光・赤外線画像を統合分析し、赤外線異常・火災リスクを評価する AI です。
+
+    入力は横並びの2枚の画像です。
+    - 左: 可視光（RGB）カメラ画像
+    - 右: 赤外線画像
+
+    タスク：
+    赤外線異常・高温箇所・火災リスクに焦点を当て、安全上注意すべき特徴を整理してください。
+
+    確認すること：
+    - 異常な高温箇所や熱集中領域
+    - 通常と異なる温度分布
+    - 発火・過熱のリスクがある設備・物体
+    - 人体・機器の温度異常
+
+    ルール：
+    - 可視光画像と赤外線画像の両方に基づいて述べる
+    - 見えている内容だけを書く
+    - 絶対温度は断定せず、相対的な温度分布を優先する
+    - 不明な場合は "unknown" を使う
+    - JSON のみを出力し、JSON以外の文字は出力しない
+
+    出力形式：
+    {
+      "scene_description": "全体の赤外線分布状況と安全上気になる点を記述",
+      "hot_spots": [
+        "異常高温領域や赤外線異常の説明（例：左下の機器パネルに高温集中）"
+      ]
+    }
+
+    制約：
+    - hot_spots は異常が確認された箇所のみを列挙する
+    - 異常がなければ hot_spots は空配列 [] を返す
+    - JSONのみを出力する
 
 audio_analysis:
   default_prompt: |

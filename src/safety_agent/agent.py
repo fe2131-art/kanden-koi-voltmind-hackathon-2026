@@ -14,11 +14,13 @@ from typing_extensions import Annotated, TypedDict
 from .modality_nodes import (
     AudioAnalyzer,
     DepthEstimator,
+    InfraredImageAnalyzer,
     ModalityResult,
     VisionAnalyzer,
 )
 from .schema import (
     DepthAnalysisResult,
+    InfraredAnalysisResult,
     Observation,
     ObservationProvider,
     PerceptionIR,
@@ -316,6 +318,7 @@ class ContextSchema(TypedDict):
     vision_analyzer: Optional[VisionAnalyzer]
     audio_analyzer: AudioAnalyzer
     depth_estimator: Optional[DepthEstimator]
+    infrared_analyzer: Optional[InfraredImageAnalyzer]
     prompts: dict  # プロンプト設定全体
     config: dict
     chat_max_tokens: int
@@ -359,6 +362,10 @@ def ingest_observation(state: AgentState, runtime: Runtime[ContextSchema]) -> Co
     # enable_depth=true の場合のみ depth_node を追加
     if "depth" in runtime.context["expected_modalities"]:
         sends.append(Send("depth_node", {"observation": obs}))
+
+    # enable_infrared=true の場合のみ infrared_node を追加
+    if "infrared" in runtime.context["expected_modalities"]:
+        sends.append(Send("infrared_node", {"observation": obs}))
 
     return Command(
         update={
@@ -566,6 +573,86 @@ def depth_node(state: AgentState, runtime: Runtime[ContextSchema]) -> Command:
     )
 
 
+def infrared_node(state: AgentState, runtime: Runtime[ContextSchema]) -> Command:
+    """赤外線画像ノード：RGB と赤外線フレームを side-by-side 結合して VLM で分析。"""
+    obs = state.get("observation")
+    error = None
+    infrared_analysis = None
+
+    infrared_analyzer = runtime.context.get("infrared_analyzer")
+    vision_analyzer = runtime.context.get("vision_analyzer")
+    prompts = runtime.context.get("prompts", {})
+    config = runtime.context.get("config", {})
+
+    if (
+        infrared_analyzer
+        and vision_analyzer
+        and obs
+        and obs.image_path
+        and obs.infrared_image_path
+    ):
+        try:
+            side_by_side_bytes = infrared_analyzer.make_side_by_side_bytes(
+                obs.image_path, obs.infrared_image_path
+            )
+            if side_by_side_bytes is None:
+                error = "infrared: failed to create side-by-side image"
+            else:
+                infrared_prompt = (
+                    prompts.get("infrared_analysis", {}).get("system")
+                    or (
+                        "左が可視光カメラ画像、右が赤外線画像です。"
+                        "異常箇所・高温箇所・火災リスクを JSON で出力してください。"
+                        '{"scene_description": "...", "hot_spots": ["..."]}'
+                    )
+                )
+                vision_max_tokens = config.get("tokens", {}).get(
+                    "vision_max_completion_tokens", 4096
+                )
+                raw_result = vision_analyzer.analyze_bytes_raw(
+                    side_by_side_bytes,
+                    media_type="image/png",
+                    prompt=infrared_prompt,
+                    max_tokens=vision_max_tokens,
+                )
+                if raw_result is None:
+                    error = "infrared: VLM analysis failed"
+                else:
+                    try:
+                        infrared_analysis = (
+                            InfraredAnalysisResult.model_validate(raw_result)
+                        )
+                    except Exception as e:
+                        error = f"infrared: validation error: {e}"
+        except Exception as e:
+            error = f"infrared: {e}"
+    elif not infrared_analyzer:
+        error = "infrared: analyzer not available"
+    elif not vision_analyzer:
+        error = "infrared: vision_analyzer not available"
+    elif not obs or not obs.image_path or not obs.infrared_image_path:
+        error = "infrared: RGB or infrared image path not available"
+
+    result = ModalityResult(
+        modality_name="infrared",
+        extra={"infrared_analysis": infrared_analysis} if infrared_analysis else {},
+        error=error,
+    )
+    return Command(
+        update={
+            "modality_results": {"infrared": result},
+            "received_modalities": ["infrared"],
+            "messages": [
+                {
+                    "role": "assistant",
+                    "content": f"[infrared] {'ok' if infrared_analysis else 'none'}",
+                }
+            ],
+        },
+        goto="join_modalities",
+    )
+
+
 def join_modalities(state: AgentState, runtime: Runtime[ContextSchema]) -> Command:
     """
     Fan-in バリア + ラッチ：全て期待するモダリティが受け取ったかを確認。
@@ -631,10 +718,12 @@ def fuse_modalities(
     vlm = results.get("vlm")
     audio = results.get("audio")
     depth = results.get("depth")
+    infrared = results.get("infrared")
 
     audio_cues = audio.audio_cues if audio and audio.audio_cues else []
     vision_analysis = vlm.extra.get("vision_analysis") if vlm else None
     depth_analysis = depth.extra.get("depth_analysis") if depth else None
+    infrared_analysis = infrared.extra.get("infrared_analysis") if infrared else None
     modality_errors = [r.error for r in results.values() if r.error]
 
     # PerceptionIR を作成
@@ -644,6 +733,7 @@ def fuse_modalities(
         audio=audio_cues,
         vision_analysis=vision_analysis,
         depth_analysis=depth_analysis,
+        infrared_analysis=infrared_analysis,
         modality_errors=modality_errors,
     )
 
@@ -730,6 +820,16 @@ def determine_next_action_llm(
         "vision_analysis": (
             ir.vision_analysis.model_dump(exclude_none=True, by_alias=True)
             if ir.vision_analysis
+            else None
+        ),
+        "depth_analysis": (
+            ir.depth_analysis.model_dump(exclude_none=True)
+            if ir.depth_analysis
+            else None
+        ),
+        "infrared_analysis": (
+            ir.infrared_analysis.model_dump(exclude_none=True)
+            if ir.infrared_analysis
             else None
         ),
         "audio_cues": [a.model_dump() for a in ir.audio],
@@ -824,6 +924,11 @@ def emit_output(state: AgentState) -> Dict[str, Any]:
             if ir and ir.depth_analysis
             else None
         ),
+        "infrared_analysis": (
+            ir.infrared_analysis.model_dump(exclude_none=True)
+            if ir and ir.infrared_analysis
+            else None
+        ),
         "audio": ir_dump.get("audio", []),
         "assessment": assessment.model_dump(exclude_none=True) if assessment else None,
         "errors": errors,
@@ -874,6 +979,7 @@ def build_agent():
     builder.add_node("vlm_node", vlm_node)
     builder.add_node("audio_node", audio_node)
     builder.add_node("depth_node", depth_node)
+    builder.add_node("infrared_node", infrared_node)
     builder.add_node("join_modalities", join_modalities)  # ラッチ付き fan-in バリア
     builder.add_node("fuse_modalities", fuse_modalities)
     builder.add_node("determine_next_action_llm", determine_next_action_llm)

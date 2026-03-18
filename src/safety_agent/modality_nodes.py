@@ -686,3 +686,57 @@ class DepthEstimator:
         except Exception as e:
             logger.error(f"Depth estimation failed: {e}", exc_info=True)
             return None
+
+
+# ─── InfraredImageAnalyzer（赤外線画像分析） ─────────────────────────────────
+
+
+class InfraredImageAnalyzer:
+    """RGB フレームと赤外線フレームを side-by-side 結合し VLM で分析するクラス。
+
+    外部推論モデルは不要。画像結合のみ担当。
+    DepthEstimator と異なり、赤外線フレームはすでに抽出済みのため、
+    画像読み込み・結合・VLM 送信のみを実行する。
+    """
+
+    @staticmethod
+    def make_side_by_side_bytes(rgb_path: str, infrared_path: str) -> Optional[bytes]:
+        """RGB 画像と赤外線画像を横並びに結合し PNG バイト列を返す。
+
+        Args:
+            rgb_path: RGB フレームファイルパス
+            infrared_path: 赤外線フレームファイルパス
+
+        Returns:
+            Side-by-side PNG バイト列。どちらかのファイルが存在しない場合は None。
+
+        Note:
+            赤外線画像がグレースケールの場合、.convert("RGB") で 3 チャネルに変換。
+            RGB サイズに赤外線をリサイズしてから結合する。
+        """
+        from io import BytesIO
+
+        import numpy as np
+        from PIL import Image
+
+        if not Path(rgb_path).exists():
+            logger.warning(f"RGB image not found: {rgb_path}")
+            return None
+        if not Path(infrared_path).exists():
+            logger.warning(f"Infrared image not found: {infrared_path}")
+            return None
+
+        rgb = np.array(Image.open(rgb_path).convert("RGB"))
+        infrared = np.array(Image.open(infrared_path).convert("RGB"))
+
+        # サイズを RGB に合わせてリサイズ
+        if rgb.shape[:2] != infrared.shape[:2]:
+            inf_img = Image.fromarray(infrared).resize(
+                (rgb.shape[1], rgb.shape[0]), Image.Resampling.LANCZOS
+            )
+            infrared = np.array(inf_img)
+
+        merged = np.concatenate([rgb, infrared], axis=1)
+        buf = BytesIO()
+        Image.fromarray(merged).save(buf, format="PNG")
+        return buf.getvalue()

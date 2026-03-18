@@ -16,6 +16,7 @@ from safety_agent.agent import AgentState, OpenAICompatLLM, build_agent
 from safety_agent.modality_nodes import (
     AudioAnalyzer,
     DepthEstimator,
+    InfraredImageAnalyzer,
     VisionAnalyzer,
 )
 from safety_agent.schema import CameraPose, Observation, ObservationProvider
@@ -661,12 +662,15 @@ def prepare_observations_inspesafe(
     if not session_dir.exists():
         raise FileNotFoundError(f"セッションが見つかりません: {session_dir}")
 
-    # 赤外線動画からフレーム抽出（利用可能な場合）
-    # TODO: 赤外線フレーム統合機能は将来実装予定（マルチモーダル分析に統合）
+    # 赤外線動画からフレーム抽出＋ RGB フレームとマルチモーダル統合
     video_cfg = config.get("video", {})
     infrared_videos = sorted(session_dir.glob("*_infrared_*.mp4"))
+    infrared_frames = []
     if infrared_videos:
-        _process_infrared_inspesafe(infrared_videos[0], video_cfg, frame_output_format)
+        # Note: infrared_ts_map is discarded as RGB timestamps are used for all frames
+        infrared_frames, _ = _process_infrared_inspesafe(
+            infrared_videos[0], video_cfg, frame_output_format
+        )
 
     # 動画ファイル（*_visible_*.mp4）を取得
     rgb_videos = sorted(session_dir.glob("*_visible_*.mp4"))
@@ -703,12 +707,19 @@ def prepare_observations_inspesafe(
 
     # Observation リスト構築（load_frames を再利用）
     frame_paths = load_frames("data/frames")
+
+    # 赤外線フレームを stem → path マップにする
+    infrared_path_map = {
+        fp.stem: str(fp.resolve()) for fp in infrared_frames
+    }
+
     obs_list = [
         Observation(
             obs_id=f"img_{i}",
             image_path=str(fp.resolve()),
             prev_image_path=str(frame_paths[i - 1].resolve()) if i > 0 else None,
             audio_path="data/audio/audio.wav",
+            infrared_image_path=infrared_path_map.get(fp.stem),
             camera_pose=CameraPose(pan_deg=0, tilt_deg=0, zoom=1),
             video_timestamp=video_timestamps_map.get(f"img_{i}"),
         )
@@ -823,12 +834,18 @@ def prepare_observations(
     frame_files = load_frames("data/frames")
     if frame_files:
         logger.info(f"Processing {len(frame_files)} frame image(s)")
+
+        # Load infrared frames if available
+        infrared_files = load_frames("data/infrared_frames")
+        infrared_path_map = {fp.stem: str(fp.absolute()) for fp in infrared_files}
+
         obs_list = [
             Observation(
                 obs_id=f"img_{i}",
                 image_path=str(frame_path.absolute()),
                 prev_image_path=str(frame_files[i - 1].absolute()) if i > 0 else None,
                 audio_path="data/audio/audio.wav",
+                infrared_image_path=infrared_path_map.get(frame_path.stem),
                 camera_pose=CameraPose(pan_deg=0, tilt_deg=0, zoom=1),
                 video_timestamp=video_timestamps_map.get(f"img_{i}"),
             )
@@ -988,6 +1005,15 @@ def main():
                 f"Failed to initialize DepthEstimator: {e}, depth estimation will not be available"
             )
 
+    infrared_analyzer = None
+    if agent_cfg.get("enable_infrared", False):
+        try:
+            infrared_analyzer = InfraredImageAnalyzer()
+        except Exception as e:
+            logger.warning(
+                f"Failed to initialize InfraredImageAnalyzer: {e}, infrared analysis will not be available"
+            )
+
     # Initial state (with modality_results for fan-in)
     initial_state: AgentState = {
         "messages": [],
@@ -1012,6 +1038,8 @@ def main():
         expected_modalities.append("audio")
     if agent_cfg.get("enable_depth", False):
         expected_modalities.append("depth")
+    if agent_cfg.get("enable_infrared", False):
+        expected_modalities.append("infrared")
 
     # Context (with modality analyzers for fan-out nodes)
     context = {
@@ -1020,6 +1048,7 @@ def main():
         "vision_analyzer": vision_analyzer,
         "audio_analyzer": audio_analyzer,
         "depth_estimator": depth_estimator,
+        "infrared_analyzer": infrared_analyzer,
         "prompts": prompts,
         "config": config,  # depth_node で config.get("tokens", ...) 使用
         "chat_max_tokens": tokens_cfg.get("chat_max_tokens", 2000),
