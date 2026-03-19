@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import List, Literal, Optional
+from typing import Any, Dict, List, Literal, Optional
 
 from pydantic import BaseModel, Field
 
@@ -74,6 +74,7 @@ class NormalizedBBox(BaseModel):
 class CriticalPoint(BaseModel):
     """画像中の危険箇所。位置を特定できる重要な危険。"""
 
+    region_id: str
     description: str
     normalized_bbox: Optional[NormalizedBBox] = None
     severity: Literal["low", "medium", "high", "critical", "unknown"] = "unknown"
@@ -82,15 +83,10 @@ class CriticalPoint(BaseModel):
 class VisionBlindSpot(BaseModel):
     """画像中の死角・見えにくい場所。"""
 
+    region_id: str
     description: str
     position: str
-
-
-class VisionOverallAssessment(BaseModel):
-    """画像全体の安全レベル評価。"""
-
-    severity: Literal["low", "medium", "high", "critical", "unknown"]
-    reason: str
+    severity: Literal["low", "medium", "high", "critical", "unknown"] = "unknown"
 
 
 class VisionAnalysisResult(BaseModel):
@@ -99,7 +95,8 @@ class VisionAnalysisResult(BaseModel):
     scene_description: str
     critical_points: List[CriticalPoint] = Field(default_factory=list)
     blind_spots: List[VisionBlindSpot] = Field(default_factory=list)
-    overall_assessment: VisionOverallAssessment
+    overall_risk: Literal["low", "medium", "high", "critical", "unknown"] = "unknown"
+    confidence_score: float = Field(default=0.0, ge=0.0, le=1.0)
 
 
 # ─── 音声キュー ───────────────────────────────────────────────────────────────
@@ -112,6 +109,14 @@ class AudioCue(BaseModel):
     cue: str  # e.g. "vehicle_approaching"
     severity: Literal["low", "medium", "high", "critical", "unknown"]
     evidence: str  # 根拠説明
+
+
+class AudioAnalysisResult(BaseModel):
+    """音声解析ノードの出力スキーマ。prompt.yaml audio_analysis の出力形式に対応。"""
+
+    events: List[AudioCue] = Field(default_factory=list)
+    overall_risk: Literal["low", "medium", "high", "critical", "unknown"] = "unknown"
+    confidence_score: float = Field(default=0.0, ge=0.0, le=1.0)
 
 
 # ─── 深度解析結果 ──────────────────────────────────────────────────────────────
@@ -129,28 +134,45 @@ class DepthZoneDescription(BaseModel):
 class DepthAnalysisResult(BaseModel):
     """Depth Anything 3 による深度解析結果。PerceptionIR.depth_analysis に格納。"""
 
-    scene_description: str
     depth_layers: List[DepthZoneDescription] = Field(default_factory=list)
+    overall_risk: Literal["low", "medium", "high", "critical", "unknown"] = "unknown"
+    confidence_score: float = Field(default=0.0, ge=0.0, le=1.0)
+
+
+class InfraredHotSpot(BaseModel):
+    """赤外線画像中の高温箇所。"""
+
+    region_id: str
+    description: str
+    severity: Literal["low", "medium", "high", "critical", "unknown"] = "unknown"
 
 
 class InfraredAnalysisResult(BaseModel):
     """赤外線画像解析結果。PerceptionIR.infrared_analysis に格納。"""
 
-    scene_description: str
-    hot_spots: List[str] = Field(default_factory=list)  # 異常高温領域の説明リスト
+    hot_spots: List[InfraredHotSpot] = Field(default_factory=list)
+    overall_risk: Literal["low", "medium", "high", "critical", "unknown"] = "unknown"
+    confidence_score: float = Field(default=0.0, ge=0.0, le=1.0)
+
+
+class TemporalChange(BaseModel):
+    """時系列で検出された変化。"""
+
+    region_id: str
+    description: str
+    severity: Literal["low", "medium", "high", "critical", "unknown"] = "unknown"
 
 
 class TemporalAnalysisResult(BaseModel):
     """時系列（前後フレーム比較）変化検出結果。PerceptionIR.temporal_analysis に格納。"""
 
-    scene_description: str = Field(
-        description="前後フレームの比較サマリ。変化があれば説明、変化がなければ 'no change' または 'no apparent changes' と記述"
-    )
     change_detected: bool  # 明らかな変化があったか（VLM が true/false を返す）
-    changes: List[str] = Field(
+    changes: List[TemporalChange] = Field(
         default_factory=list,
         description="実際に確認できた変化の具体的説明リスト。変化がなければ空配列 []",
     )
+    overall_risk: Literal["low", "medium", "high", "critical", "unknown"] = "unknown"
+    confidence_score: float = Field(default=0.0, ge=0.0, le=1.0)
 
 
 # ─── カメラ姿勢 ───────────────────────────────────────────────────────────────
@@ -183,17 +205,53 @@ class PerceptionIR(BaseModel):
     modality_errors: List[str] = Field(default_factory=list)  # 各モダリティのエラー
 
 
+# ─── 信念状態（Belief State） ─────────────────────────────────────────────────
+# update_belief_state_llm() が生成し、AgentState.belief_state に格納される。
+# フレーム間の危険状態の継続・悪化・改善・解消を LLM が管理する。
+
+
+class HazardTrack(BaseModel):
+    """継続中の個別危険状態。BeliefState.hazard_tracks の要素。"""
+
+    hazard_id: str
+    hazard_type: Literal[
+        "visible_hazard",
+        "blind_spot",
+        "overheat",
+        "abnormal_sound",
+        "scene_change",
+        "obstacle",
+        "equipment_anomaly",
+        "unknown",
+    ]
+    region_id: Optional[str] = None
+    status: Literal[
+        "new", "persistent", "worsening", "improving", "resolved", "unknown"
+    ]
+    severity: Literal["low", "medium", "high", "critical", "unknown"]
+    confidence_score: float = Field(ge=0.0, le=1.0)
+    supporting_modalities: List[
+        Literal["vision", "audio", "depth", "infrared", "temporal"]
+    ] = Field(default_factory=list)
+    evidence: List[str] = Field(default_factory=list)
+
+
+class BeliefState(BaseModel):
+    """LLM が管理する時系列危険状態の内部表現。AgentState.belief_state に格納。
+
+    hazard_tracks: 継続中の危険状態のリスト（フレームをまたいで更新される）
+    overall_risk:  全体リスクレベル（hazard_tracks から総合判断）
+    recommended_focus_regions: 次フレームで注視すべき領域
+    """
+
+    hazard_tracks: List[HazardTrack] = Field(default_factory=list)
+    overall_risk: Literal["low", "medium", "high", "critical", "unknown"] = "unknown"
+    recommended_focus_regions: List[str] = Field(default_factory=list)
+
+
 # ─── 安全判断 ─────────────────────────────────────────────────────────────────
 # determine_next_action_llm() が生成し、
 # AgentState.assessment と WorldModel.last_assessment に格納される。
-
-
-class AssessmentEvidence(BaseModel):
-    """SafetyAssessment の判断根拠（モダリティ別）。SafetyAssessment.evidence に格納。"""
-
-    vision: List[str] = Field(default_factory=list)  # VLM 分析から使った根拠
-    audio: List[str] = Field(default_factory=list)  # 音声キューから使った根拠
-    previous: List[str] = Field(default_factory=list)  # 前回判断から参照した根拠
 
 
 class SafetyAssessment(BaseModel):
@@ -225,11 +283,11 @@ class SafetyAssessment(BaseModel):
     reason: str
     priority: float = Field(ge=0, le=1)
 
-    # 時系列・根拠
+    # 時系列・信頼度
     temporal_status: Literal[
         "new", "persistent", "worsening", "improving", "resolved", "unknown"
     ] = "unknown"
-    evidence: Optional[AssessmentEvidence] = None
+    confidence_score: float = Field(default=0.0, ge=0.0, le=1.0)
 
 
 # =============================================================================
@@ -270,3 +328,53 @@ class ObservationProvider:
         o = self._obs[self._i]
         self._i += 1
         return o
+
+
+# =============================================================================
+# vLLM Structured Outputs 用 JSON スキーマ生成
+# =============================================================================
+
+
+# スキーママップ：型名 → Pydantic モデルクラス
+_SCHEMA_MAP: Dict[str, type] = {
+    "vision_analysis": VisionAnalysisResult,
+    "depth_analysis": DepthAnalysisResult,
+    "infrared_analysis": InfraredAnalysisResult,
+    "temporal_analysis": TemporalAnalysisResult,
+    "audio_analysis": AudioAnalysisResult,
+    "belief_state": BeliefState,
+    "safety_assessment": SafetyAssessment,
+}
+
+SchemaType = Literal[
+    "vision_analysis",
+    "depth_analysis",
+    "infrared_analysis",
+    "temporal_analysis",
+    "audio_analysis",
+    "belief_state",
+    "safety_assessment",
+]
+
+
+def get_json_schema(schema_type: SchemaType) -> Dict[str, Any]:
+    """指定されたスキーマ型の JSON Schema を返す。
+
+    Pydantic モデルの model_json_schema() で自動生成するため、
+    モデル定義の変更時に自動追従する。
+
+    Args:
+        schema_type: スキーマ型名
+
+    Returns:
+        vLLM Structured Outputs で使用可能な JSON Schema 辞書
+
+    Raises:
+        ValueError: unknown schema_type
+    """
+    if schema_type not in _SCHEMA_MAP:
+        raise ValueError(
+            f"Unknown schema_type: {schema_type}. "
+            f"Allowed values: {list(_SCHEMA_MAP.keys())}"
+        )
+    return _SCHEMA_MAP[schema_type].model_json_schema()

@@ -207,19 +207,22 @@ http://localhost:5173
 # プロジェクトルートで実行
 cd /home/tetsutani/work/kanden-koi-voltmind-hackathon-2026
 
-# 観測デモモードで実行（入力ファイルなしでも動作）
-python src/run.py --mode demo
+# 設定ファイルの data.mode に応じて自動実行
+python src/run.py
 
-# または、InspecSafe-V1 データセットで実行
-python src/run.py --mode inspesafe --session /path/to/session
-
-# または、マニュアルモードで実行
-python src/run.py --mode manual
+# または、設定ファイルを指定
+python src/run.py --config configs/default.yaml
 ```
+
+**対応モード** (configs/default.yaml の `data.mode` で設定):
+- `manual`: `data/videos/` のビデオを自動展開
+- `inspesafe`: InspecSafe-V1 データセットのセッションを指定（後述）
+- `demo`: デモ観測モード（サンプルデータで実行）
 
 実行中：
 - `data/frames/` に RGB フレーム画像が生成
-- `data/perception_results.json` が更新される
+- `data/infrared_frames/` に赤外線フレームが生成（inspesafe モードのみ）
+- `data/perception_results.json` が更新される（frames 配列が増加）
 - React UI が自動的にデータをストリーミング表示
 
 ### トラブルシューティング：セットアップ時のエラー
@@ -315,14 +318,21 @@ targetTime = video.currentTime - D(秒)
 **シナリオ: InspecSafe-V1 データセットでデモを実行**
 
 ```bash
+# 【事前準備】configs/default.yaml を編集
+# data:
+#   mode: "inspesafe"
+#   inspesafe:
+#     dataset_path: "../InspecSafe-V1"
+#     session: "train/Other_modalities/58132919535743_20251118_session_1400_2#bowenguanshang-you"
+
 # ターミナル A: WebSocket サーバー起動
 python src/apps/server.py
 
 # ターミナル B: Vite dev server 起動（src/apps で実行）
 npm run dev
 
-# ターミナル C: エージェント実行
-python src/run.py --mode inspesafe --session "/path/to/dataset"
+# ターミナル C: エージェント実行（config 自動読み込み）
+python src/run.py
 
 # → ブラウザで http://localhost:5173 を開く
 # → Status: OPEN を確認
@@ -334,31 +344,45 @@ python src/run.py --mode inspesafe --session "/path/to/dataset"
 
 ### サーバー → クライアント
 
-#### Detection メッセージ
+#### フレーム分析結果メッセージ
 
 ```json
 {
   "t": 2.5,
-  "t_sent": 2.95,
-  "text": "人物を検出 (0.85)",
-  "detections": [
+  "video_timestamp": 2.5,
+  "text": "Robot in motion - Normal operation",
+  "frame_id": "frame_2.500s.jpg",
+  "assessment": {
+    "risk_level": "low",
+    "action_type": "monitor",
+    "reason": "Normal operation detected"
+  },
+  "critical_points": [
     {
-      "label": "person",
-      "score": 0.85,
+      "description": "Robot moving",
+      "severity": "low",
       "bbox": [0.3, 0.2, 0.7, 0.9]
     }
-  ]
+  ],
+  "scene_description": "Industrial workspace with robot moving at normal speed",
+  "depth_image_path": "/depth/frame_2.500s.jpg",
+  "voice_path": "/voice/frame_2.500s.wav"
 }
 ```
 
 **フィールド:**
-- `t`: サーバー側の時刻（秒）
-- `t_sent`: メッセージ送信時刻（秒）
-- `text`: 人間向けテキスト
-- `detections`: BBox 配列
-  - `label`: 物体名
-  - `score`: 信度（0～1）
-  - `bbox`: 正規化座標 `[x1, y1, x2, y2]`
+- `t`: フレームタイムスタンプ（秒）
+- `video_timestamp`: 動画内での時刻（秒、指定時は video_timestamp を優先）
+- `text`: 人間向けシーン説明テキスト
+- `frame_id`: フレーム識別子（ファイル名）
+- `assessment`: 安全性評価（risk_level, action_type, reason）
+- `critical_points`: 注意が必要なポイント配列
+  - `description`: ポイント説明
+  - `severity`: 重要度（low, medium, high）
+  - `bbox`: 正規化座標 `[x_min, y_min, x_max, y_max]`
+- `scene_description`: シーン詳細説明
+- `depth_image_path`: 深度画像へのパス（オプション）
+- `voice_path`: 対応音声ファイルへのパス（オプション）
 
 ## トラブルシューティング
 
@@ -752,12 +776,18 @@ const drawFrame = useCallback(() => {
 
 ```
 data/perception_results.json
+  ├─ frames[] 配列（フラット構造）
+  │
   ↓
-server.py (監視)
+server.py (監視・増分ストリーミング)
+  ├─ 前回の frames 数をトラック
+  ├─ vision_analysis.critical_points → normalized_bbox 変換
+  │
   ↓
-WebSocket ストリーム
+WebSocket メッセージ送信
+  │
   ↓
-App.jsx (受信)
+App.jsx (受信・バッファに追加)
   ↓
 Canvas 描画
 ```
@@ -767,14 +797,19 @@ Canvas 描画
 ### 2. タイムスタンプ同期
 
 ```javascript
-// フレームオブジェクトのフィールド:
+// フレームオブジェクトのフィールド（フラット構造）:
 {
   "frame_id": "frame_0.000s.jpg",
   "video_timestamp": 0.0,           // ← 動画内での時刻（秒）
   "timestamp": 1710349200.123,      // ← Unix timestamp
-  "vision_summary": "...",
-  "hazards": [...],
-  ...
+  "vision_summary": "...",           // VLM 分析結果（scene_description, critical_points, blind_spots）
+  "objects": [...],                 // 検出オブジェクト
+  "hazards": [...],                 // 推定ハザード
+  "audio": [...],                   // 音声キュー
+  "unobserved": [...],              // 未観測領域
+  "assessment": {...},              // LLM / 固定値による安全判断
+  "world_state": {...},             // 世界モデル（known_hazards, blind_spots）
+  "errors": []                       // エラー情報
 }
 
 // App.jsx での同期:
@@ -923,7 +958,7 @@ jq '.frames | length' data/perception_results.json
 
 ---
 
-**最終更新:** 2026-03-15
-**バージョン:** v1.1 (Detailed Edition)
+**最終更新:** 2026-03-19
+**バージョン:** v1.2 (Frames API Integration)
 **対象:** Safety View Agent - React Demo App
 **セットアップ難易度:** ⭐⭐☆☆☆ (簡単)

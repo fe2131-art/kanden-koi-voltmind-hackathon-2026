@@ -2,13 +2,13 @@ import json
 import logging
 import re
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Literal, Optional
 
-import httpx
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.message import add_messages
 from langgraph.runtime import Runtime
 from langgraph.types import Command, Send
+from openai import OpenAI
 from typing_extensions import Annotated, TypedDict
 
 from .modality_nodes import (
@@ -20,6 +20,7 @@ from .modality_nodes import (
     VisionAnalyzer,
 )
 from .schema import (
+    BeliefState,
     DepthAnalysisResult,
     InfraredAnalysisResult,
     Observation,
@@ -27,61 +28,10 @@ from .schema import (
     PerceptionIR,
     SafetyAssessment,
     TemporalAnalysisResult,
+    get_json_schema,
 )
 
 logger = logging.getLogger(__name__)
-
-
-def _get_json_schema_for_vllm() -> Dict[str, Any]:
-    """vLLM の Structured Outputs 用 JSON スキーマを生成。"""
-    return {
-        "type": "object",
-        "properties": {
-            "risk_level": {"type": "string", "enum": ["high", "medium", "low"]},
-            "safety_status": {"type": "string"},
-            "detected_hazards": {
-                "type": "array",
-                "items": {"type": "string"},
-                "default": [],
-            },
-            "action_type": {
-                "type": "string",
-                "enum": ["emergency_stop", "inspect_region", "mitigate", "monitor"],
-            },
-            "target_region": {"type": ["string", "null"]},
-            "reason": {"type": "string"},
-            "priority": {"type": "number", "minimum": 0, "maximum": 1},
-            "temporal_status": {
-                "type": "string",
-                "enum": [
-                    "new",
-                    "persistent",
-                    "worsening",
-                    "improving",
-                    "resolved",
-                    "unknown",
-                ],
-            },
-            "evidence": {
-                "type": ["object", "null"],  # Optional: null の場合あり
-                "properties": {
-                    "vision": {"type": "array", "items": {"type": "string"}},
-                    "audio": {"type": "array", "items": {"type": "string"}},
-                    "previous": {"type": "array", "items": {"type": "string"}},
-                },
-                "required": ["vision", "audio", "previous"],
-            },
-        },
-        "required": [
-            "risk_level",
-            "safety_status",
-            "detected_hazards",
-            "action_type",
-            "reason",
-            "priority",
-            "temporal_status",
-        ],
-    }
 
 
 # =========================
@@ -90,6 +40,8 @@ def _get_json_schema_for_vllm() -> Dict[str, Any]:
 
 
 class OpenAICompatLLM:
+    """OpenAI SDK を使った LLM クライアント。vLLM と OpenAI API の両方に対応。"""
+
     def __init__(
         self,
         base_url: str,
@@ -98,96 +50,108 @@ class OpenAICompatLLM:
         timeout_s: float = 60.0,
         is_vllm: bool = False,
     ):
-        self.base_url = base_url.rstrip("/")
+        # vLLM 用に base_url を正規化（/v1 の追加）
+        normalized_url = base_url.rstrip("/")
+        if is_vllm or "localhost" in base_url:
+            if not normalized_url.endswith("/v1"):
+                normalized_url = f"{normalized_url}/v1"
+
+        self.client = OpenAI(
+            api_key=api_key or "EMPTY",
+            base_url=normalized_url,
+            timeout=timeout_s,
+        )
         self.model = model
-        self.api_key = api_key
-        self.timeout_s = timeout_s
-        self.is_vllm = (
-            is_vllm or "localhost" in base_url
-        )  # ローカルサーバーなら vLLM と判定
+        self.is_vllm = is_vllm or "localhost" in base_url
         # GPT-5 系モデルは max_tokens ではなく max_completion_tokens を使用
         self._use_max_completion_tokens = "gpt-5" in model.lower()
 
-    def _build_payload(
-        self,
-        messages: list,
-        max_tokens: int = 800,
-        response_format: Optional[Dict] = None,
-    ) -> Dict[str, Any]:
-        """モデル固有のトークンパラメータでペイロードを構築する。"""
-        payload = {
-            "model": self.model,
-            "messages": messages,
-        }
-        # GPT-5系モデルはカスタム temperature をサポートしないため、デフォルト値を使用
-        if not self._use_max_completion_tokens:
-            payload["temperature"] = 0.2
-
-        if self._use_max_completion_tokens:
-            payload["max_completion_tokens"] = max_tokens
-        else:
-            payload["max_tokens"] = max_tokens
-        if response_format:
-            payload["response_format"] = response_format
-        return payload
-
     def chat_json(
-        self, system: str, user: str, max_tokens: int = 800
+        self,
+        system: str,
+        user: str,
+        max_tokens: int = 800,
+        schema_type: Literal["belief_state", "safety_assessment"] = "safety_assessment",
     ) -> Dict[str, Any]:
-        url = f"{self.base_url}/chat/completions"
-        headers = {"Authorization": f"Bearer {self.api_key}"}
+        """JSON 出力を期待するチャット API 呼び出し。
+
+        Args:
+            system: システムプロンプト
+            user: ユーザーメッセージ
+            max_tokens: 最大トークン数
+            schema_type: "belief_state" または "safety_assessment"
+
+        Returns:
+            パースされた JSON 辞書
+        """
         messages = [
             {"role": "system", "content": system},
             {"role": "user", "content": user},
         ]
 
-        # vLLM: Structured Outputs で JSON スキーマを指定（安定化）
+        # response_format の構築（vLLM と OpenAI で異なる）
         if self.is_vllm:
-            payload = self._build_payload(
-                messages,
-                max_tokens,
-                {
-                    "type": "json_schema",
-                    "json_schema": {
-                        "name": "SafetyAssessmentOutput",
-                        "schema": _get_json_schema_for_vllm(),
-                        "strict": True,
-                    },
+            response_format = {
+                "type": "json_schema",
+                "json_schema": {
+                    "name": f"{schema_type}_output",
+                    "schema": get_json_schema(schema_type),
+                    "strict": True,
                 },
-            )
-        # OpenAI: json_object フォーマットを試す（gpt-5-nano はサポートしない可能性）
-        elif not self._use_max_completion_tokens:
-            payload = self._build_payload(messages, max_tokens, {"type": "json_object"})
+            }
         else:
-            # gpt-5-nano は response_format をサポートしないためスキップ
-            payload = self._build_payload(messages, max_tokens)
+            # OpenAI（gpt-5-nano はサポートしない可能性）
+            response_format = {"type": "json_object"}
 
-        with httpx.Client(timeout=self.timeout_s) as client:
-            r = client.post(url, headers=headers, json=payload)
-            if r.status_code >= 400:
-                # response_format なしで再試行（フォールバック）
-                payload_no_format = self._build_payload(messages, max_tokens)
-                r = client.post(url, headers=headers, json=payload_no_format)
-            r.raise_for_status()
-            data = r.json()
-            content = data["choices"][0]["message"]["content"]
-
-            # デバッグ: 空応答を確認
-            if not content or content.strip() == "":
-                logger.warning(
-                    f"LLM returned empty response | Status: {r.status_code} | "
-                    f"User message (first 500 chars): {user[:500]}..."
+        try:
+            # gpt-5 系は max_completion_tokens を使用
+            if self._use_max_completion_tokens:
+                response = self.client.chat.completions.create(
+                    model=self.model,
+                    messages=messages,
+                    max_completion_tokens=max_tokens,
+                    response_format=response_format,
                 )
-                logger.debug(f"Full API response: {data}")
-                raise ValueError("LLMが空の応答を返しました")
+            else:
+                response = self.client.chat.completions.create(
+                    model=self.model,
+                    messages=messages,
+                    max_tokens=max_tokens,
+                    response_format=response_format,
+                )
+        except Exception as e:
+            # response_format なしで再試行
+            logger.warning(
+                f"LLM with response_format failed: {e}. Retrying without format."
+            )
+            if self._use_max_completion_tokens:
+                response = self.client.chat.completions.create(
+                    model=self.model,
+                    messages=messages,
+                    max_completion_tokens=max_tokens,
+                )
+            else:
+                response = self.client.chat.completions.create(
+                    model=self.model,
+                    messages=messages,
+                    max_tokens=max_tokens,
+                )
 
-            try:
-                return _robust_json_loads(content)
-            except ValueError as e:
-                # JSON パースエラーの場合、詳細をログに記録
-                logger.error(f"LLM JSON パースエラー: {str(e)}")
-                logger.debug(f"LLM raw output (first 3000 chars):\n{content[:3000]}")
-                raise
+        content = response.choices[0].message.content
+
+        # デバッグ: 空応答を確認
+        if not content or content.strip() == "":
+            logger.warning(
+                f"LLM returned empty response | User message (first 500 chars): {user[:500]}..."
+            )
+            raise ValueError("LLMが空の応答を返しました")
+
+        try:
+            return _robust_json_loads(content)
+        except ValueError as e:
+            logger.error(f"LLM JSON パースエラー: {str(e)}")
+            logger.debug(f"LLM raw output (first 3000 chars):\n{content[:3000]}")
+            raise
 
 
 def _robust_json_loads(text: str) -> Dict[str, Any]:
@@ -260,6 +224,18 @@ def _unique_append_with_reset(left: List[str], right: List[str]) -> List[str]:
     return sorted(set((left or []) + (right or [])))
 
 
+def _first_write_wins(left: Optional[str], right: Optional[str]) -> Optional[str]:
+    """一度セットされた obs_id は上書きしない（ラッチ）。
+    right=None はリセット信号として優先され、常に None を返す。
+    left が None のときのみ right の値を採用する（最初の書き込みがラッチ）。
+    """
+    if right is None:
+        return None  # リセット信号が最優先
+    if left is not None:
+        return left  # ラッチ: 非 None の最初の書き込みを保持
+    return right
+
+
 _MAX_MESSAGES = 20
 
 
@@ -300,15 +276,20 @@ class AgentState(TypedDict):
     # fan-in バリア：受け取ったモダリティ名（センチネルでリセット可能）
     received_modalities: Annotated[List[str], _unique_append_with_reset]
 
-    # ラッチ：同フレーム内で fuse_modalities が2回以上実行されるのを防止
-    barrier_obs_id: Optional[str]
+    # ラッチ：同フレーム内で fuse_modalities が2回以上実行されるのを防止（first-writer-wins reducer）
+    barrier_obs_id: Annotated[Optional[str], _first_write_wins]
 
     latest_output: Optional[Dict[str, Any]]
     last_vision_summary: Optional[str]
 
-    # 前フレーム、現フレームの安全判断
-    last_assessment: Optional[SafetyAssessment]  # フレーム間の引き継ぎ
+    # 現フレームの安全判断
     assessment: Optional[SafetyAssessment]  # 現フレームの判断
+    assessment_history: List[
+        SafetyAssessment
+    ]  # 判断履歴（determine_next_action_llm で trim）
+
+    # 信念状態：危険のトラッキング（フレーム間の引き継ぎ）
+    belief_state: Optional[BeliefState]
 
     done: bool
     errors: Annotated[List[str], _sliding_window_errors]
@@ -325,7 +306,9 @@ class ContextSchema(TypedDict):
     prompts: dict  # プロンプト設定全体
     config: dict
     chat_max_tokens: int
-    context_history_size: int  # LLM に渡す前回結果の数（0=なし, 1=前回のみ）
+    context_history_size: (
+        int  # LLM に渡す前回判断の数（0=なし, 1=直近1フレーム, N=直近Nフレーム）
+    )
     expected_modalities: List[str]
     # run_mode: "until_provider_ends" | "stop_when_safe"
     run_mode: str
@@ -536,16 +519,6 @@ def depth_node(state: AgentState, runtime: Runtime[ContextSchema]) -> Command:
                     # ステップ3: JSON を DepthAnalysisResult に型変換
                     try:
                         depth_analysis = DepthAnalysisResult.model_validate(raw_result)
-                        # フォールバック検出: scene_description が error message の場合
-                        if (
-                            depth_analysis.scene_description
-                            and "could not be parsed"
-                            in depth_analysis.scene_description
-                        ):
-                            logger.debug(
-                                "Depth analysis returned fallback response (VLM レスポンスが不正)"
-                            )
-                            # fallback response の場合もエラーを記録するが depth_analysis は保持
                     except Exception as e:
                         logger.warning(f"Failed to validate depth analysis result: {e}")
                         error = f"depth: validation error: {e}"
@@ -610,7 +583,7 @@ def infrared_node(state: AgentState, runtime: Runtime[ContextSchema]) -> Command
                 ) or (
                     "左が可視光カメラ画像、右が赤外線画像です。"
                     "異常箇所・高温箇所・火災リスクを JSON で出力してください。"
-                    '{"scene_description": "...", "hot_spots": ["..."]}'
+                    '{"hot_spots": [{"region_id": "infrared_hotspot_0", "description": "...", "severity": "unknown"}], "overall_risk": "unknown", "confidence_score": 0.0}'
                 )
                 vision_max_tokens = config.get("tokens", {}).get(
                     "vision_max_completion_tokens", 4096
@@ -689,7 +662,7 @@ def temporal_node(state: AgentState, runtime: Runtime[ContextSchema]) -> Command
                 ) or (
                     "左が前フレーム、右が現フレームです。"
                     "2フレーム間の変化を分析し、JSON で出力してください。"
-                    '{"scene_description": "...", "change_detected": true/false, "changes": ["..."]}'
+                    '{"change_detected": false, "changes": [{"region_id": "temporal_change_0", "description": "...", "severity": "unknown"}], "overall_risk": "unknown", "confidence_score": 0.0}'
                 )
                 vision_max_tokens = config.get("tokens", {}).get(
                     "vision_max_completion_tokens", 4096
@@ -836,74 +809,48 @@ def fuse_modalities(
     }
 
 
-def determine_next_action_llm(
+def update_belief_state_llm(
     state: AgentState, runtime: Runtime[ContextSchema]
 ) -> Dict[str, Any]:
-    """VLM/音声から、次に起こすべき行動を LLM で決定。前フレーム結果を参照。
+    """信念状態更新ノード：全モダリティの知覚結果から危険状態を継続管理する。
 
-    フレーム間の状態引き継ぎ：
-    - last_assessment: 前フレームの判断（LLM 入力で参照用）
-    - assessment: 現フレームで新しく計算した判断
+    危険のトラッキング：
+    - previous_belief_state: 前フレームの belief_state（フレーム間の継続性判断用）
+    - belief_state: 現フレームで更新した belief_state
 
-    返却時に両キーに同じ値を入れる理由：
-    次フレームでこの値が last_assessment（前フレーム判断）として参照されるため。
+    返却時に belief_state キーに新しい値を入れる理由：
+    次フレームでこの値が previous_belief_state として参照されるため。
     ingest_observation でリセットされないため、フレーム間で正しく引き継がれる。
     """
     ir = state.get("ir")
     if ir is None:
-        logger.warning(
-            "IR is None in determine_next_action_llm, returning default assessment"
-        )
-        assessment = SafetyAssessment(
-            risk_level="low",
-            safety_status="継続観測中",
-            detected_hazards=[],
-            action_type="monitor",
-            reason="IR 未生成のため継続監視",
-            priority=0.0,
-            temporal_status="unknown",
-            evidence=None,
-        )
+        # ir が未生成の場合、previous belief_state をそのまま維持
         return {
-            "assessment": assessment,
-            "last_assessment": assessment,
-            "errors": ["No IR, used default assessment"],
+            "belief_state": state.get("belief_state"),
+            "errors": ["No IR in update_belief_state_llm"],
             "messages": [
                 {
                     "role": "assistant",
-                    "content": "[assess] no IR -> default",
+                    "content": "[belief] no IR -> skip",
                 }
             ],
         }
 
     llm = runtime.context.get("llm")
     if llm is None:
-        logger.warning("LLM not configured, returning default assessment")
-        assessment = SafetyAssessment(
-            risk_level="low",
-            safety_status="継続観測中",
-            detected_hazards=[],
-            action_type="monitor",
-            reason="LLM 未設定のため継続監視",
-            priority=0.0,
-            temporal_status="unknown",
-            evidence=None,
-        )
+        # LLM が未設定の場合、previous belief_state をそのまま維持
         return {
-            "assessment": assessment,
-            "last_assessment": assessment,
+            "belief_state": state.get("belief_state"),
             "messages": [
                 {
                     "role": "assistant",
-                    "content": "[assess] LLM not configured -> default",
+                    "content": "[belief] LLM not configured -> skip",
                 }
             ],
         }
 
     # コンテキスト構築
-    context_history_size = runtime.context.get("context_history_size", 1)
-
-    last_assessment = state.get("last_assessment")
+    previous_belief_state = state.get("belief_state")
     context_data = {
         "vision_analysis": (
             ir.vision_analysis.model_dump(exclude_none=True, by_alias=True)
@@ -926,12 +873,174 @@ def determine_next_action_llm(
             else None
         ),
         "audio_cues": [a.model_dump() for a in ir.audio],
-        "previous_assessment": (
-            last_assessment.model_dump()
-            if context_history_size >= 1 and last_assessment
+        "previous_belief_state": (
+            previous_belief_state.model_dump(exclude_none=True)
+            if previous_belief_state
             else None
         ),
+        "step": state["step"],
     }
+
+    # prompt.yaml の belief_update セクションから取得
+    belief_cfg = runtime.context["prompts"].get("belief_update", {})
+    system = belief_cfg.get("system", "").strip()
+
+    try:
+        chat_max_tokens = runtime.context["chat_max_tokens"]
+        # chat_json() 経由で vLLM/OpenAI 両対応、retry ロジック搭載
+        raw = llm.chat_json(
+            system=system,
+            user=json.dumps(context_data, ensure_ascii=False),
+            max_tokens=chat_max_tokens,
+            schema_type="belief_state",
+        )
+        # BeliefState を直接検証
+        belief_state = BeliefState.model_validate(raw)
+        # 新しい belief_state を次フレームに引き継ぎ
+        return {
+            "belief_state": belief_state,
+            "messages": [
+                {
+                    "role": "assistant",
+                    "content": f"[belief] ok hazards={len(belief_state.hazard_tracks)} risk={belief_state.overall_risk}",
+                }
+            ],
+        }
+
+    except Exception as e:
+        logger.error(
+            "Belief state update failed, keeping previous belief_state", exc_info=True
+        )
+        error_summary = f"{type(e).__name__}: {str(e)[:150]}"
+        return {
+            "belief_state": previous_belief_state,
+            "errors": [f"Belief state update failed: {error_summary}"],
+            "messages": [
+                {
+                    "role": "assistant",
+                    "content": "[belief] failed -> keep previous",
+                }
+            ],
+        }
+
+
+def determine_next_action_llm(
+    state: AgentState, runtime: Runtime[ContextSchema]
+) -> Dict[str, Any]:
+    """VLM/音声から、次に起こすべき行動を LLM で決定。belief_state と前フレーム結果を参照。
+
+    フレーム間の状態引き継ぎ：
+    - last_assessment: 前フレームの判断（LLM 入力で参照用）
+    - assessment: 現フレームで新しく計算した判断
+
+    返却時に両キーに同じ値を入れる理由：
+    次フレームでこの値が last_assessment（前フレーム判断）として参照されるため。
+    ingest_observation でリセットされないため、フレーム間で正しく引き継がれる。
+    """
+    # 履歴長の上限を事前取得（全 return 文で使用）
+    context_history_size = runtime.context.get("context_history_size", 0)
+
+    ir = state.get("ir")
+    if ir is None:
+        logger.warning(
+            "IR is None in determine_next_action_llm, returning default assessment"
+        )
+        assessment = SafetyAssessment(
+            risk_level="low",
+            safety_status="継続観測中",
+            detected_hazards=[],
+            action_type="monitor",
+            reason="IR 未生成のため継続監視",
+            priority=0.0,
+            temporal_status="unknown",
+            confidence_score=0.0,
+        )
+        # 履歴を trim
+        history = list(state.get("assessment_history", []))
+        history.append(assessment)
+        if context_history_size > 0:
+            history = history[-context_history_size:]
+        else:
+            history = []
+        return {
+            "assessment": assessment,
+            "assessment_history": history,
+            "errors": ["No IR, used default assessment"],
+            "messages": [
+                {
+                    "role": "assistant",
+                    "content": "[assess] no IR -> default",
+                }
+            ],
+        }
+
+    llm = runtime.context.get("llm")
+    if llm is None:
+        logger.warning("LLM not configured, returning default assessment")
+        assessment = SafetyAssessment(
+            risk_level="low",
+            safety_status="継続観測中",
+            detected_hazards=[],
+            action_type="monitor",
+            reason="LLM 未設定のため継続監視",
+            priority=0.0,
+            temporal_status="unknown",
+            confidence_score=0.0,
+        )
+        # 履歴を trim
+        history = list(state.get("assessment_history", []))
+        history.append(assessment)
+        if context_history_size > 0:
+            history = history[-context_history_size:]
+        else:
+            history = []
+        return {
+            "assessment": assessment,
+            "assessment_history": history,
+            "messages": [
+                {
+                    "role": "assistant",
+                    "content": "[assess] LLM not configured -> default",
+                }
+            ],
+        }
+
+    # コンテキスト構築
+    belief_state = state.get("belief_state")
+    assessment_history = state.get("assessment_history", [])
+
+    context_data = {
+        "vision_analysis": (
+            ir.vision_analysis.model_dump(exclude_none=True, by_alias=True)
+            if ir.vision_analysis
+            else None
+        ),
+        "depth_analysis": (
+            ir.depth_analysis.model_dump(exclude_none=True)
+            if ir.depth_analysis
+            else None
+        ),
+        "infrared_analysis": (
+            ir.infrared_analysis.model_dump(exclude_none=True)
+            if ir.infrared_analysis
+            else None
+        ),
+        "temporal_analysis": (
+            ir.temporal_analysis.model_dump(exclude_none=True)
+            if ir.temporal_analysis
+            else None
+        ),
+        "audio_cues": [a.model_dump() for a in ir.audio],
+        "belief_state": (
+            belief_state.model_dump(exclude_none=True) if belief_state else None
+        ),
+    }
+
+    # context_history_size > 0 のときのみ previous_assessments を追加（キー自体を除外）
+    if context_history_size > 0 and assessment_history:
+        context_data["previous_assessments"] = [
+            a.model_dump() for a in assessment_history[-context_history_size:]
+        ]
 
     # prompt.yaml の safety_assessment セクションから取得
     next_action_cfg = runtime.context["prompts"].get("safety_assessment", {})
@@ -943,14 +1052,21 @@ def determine_next_action_llm(
             system=system,
             user=json.dumps(context_data, ensure_ascii=False),
             max_tokens=chat_max_tokens,
+            schema_type="safety_assessment",
         )
 
         # SafetyAssessment を直接取得
         assessment = SafetyAssessment.model_validate(raw)
-        # LLM で計算した judgment を次フレームの前判断として保存
+        # 履歴を trim
+        history = list(state.get("assessment_history", []))
+        history.append(assessment)
+        if context_history_size > 0:
+            history = history[-context_history_size:]
+        else:
+            history = []
         return {
             "assessment": assessment,
-            "last_assessment": assessment,
+            "assessment_history": history,
             "messages": [
                 {
                     "role": "assistant",
@@ -971,13 +1087,20 @@ def determine_next_action_llm(
             reason="LLM 失敗のため継続監視",
             priority=0.0,
             temporal_status="unknown",
-            evidence=None,
+            confidence_score=0.0,
         )
         # エラーメッセージを最初の 150 文字に制限（JSON パースエラー等が長いため）
         error_summary = f"{type(e).__name__}: {str(e)[:150]}"
+        # 履歴を trim
+        history = list(state.get("assessment_history", []))
+        history.append(assessment)
+        if context_history_size > 0:
+            history = history[-context_history_size:]
+        else:
+            history = []
         return {
             "assessment": assessment,
-            "last_assessment": assessment,
+            "assessment_history": history,
             "errors": [f"LLM assessment failed: {error_summary}"],
             "messages": [
                 {
@@ -1003,6 +1126,7 @@ def emit_output(state: AgentState) -> Dict[str, Any]:
 
     errors = list(state.get("errors", [])) + modality_errors
 
+    belief_state = state.get("belief_state")
     output = {
         "frame_id": obs.obs_id if obs else None,
         "timestamp": None,  # save_analysis_results() で付与
@@ -1028,6 +1152,9 @@ def emit_output(state: AgentState) -> Dict[str, Any]:
             else None
         ),
         "audio": ir_dump.get("audio", []),
+        "belief_state": (
+            belief_state.model_dump(exclude_none=True) if belief_state else None
+        ),
         "assessment": assessment.model_dump(exclude_none=True) if assessment else None,
         "errors": errors,
     }
@@ -1081,6 +1208,7 @@ def build_agent():
     builder.add_node("temporal_node", temporal_node)
     builder.add_node("join_modalities", join_modalities)  # ラッチ付き fan-in バリア
     builder.add_node("fuse_modalities", fuse_modalities)
+    builder.add_node("update_belief_state_llm", update_belief_state_llm)
     builder.add_node("determine_next_action_llm", determine_next_action_llm)
     builder.add_node("emit_output", emit_output)
     builder.add_node("bump_step", bump_step)
@@ -1088,9 +1216,10 @@ def build_agent():
     # エッジ設定
     builder.add_edge(START, "ingest_observation")
     # fan-out: vlm/audio ノードは Command で goto="join_modalities" するため静的エッジは不要
+    builder.add_edge("fuse_modalities", "update_belief_state_llm")  # 信念状態更新
     builder.add_edge(
-        "fuse_modalities", "determine_next_action_llm"
-    )  # PerceptionIR 生成 → 安全判断
+        "update_belief_state_llm", "determine_next_action_llm"
+    )  # 信念状態 → 安全判断
     builder.add_edge("determine_next_action_llm", "emit_output")
     builder.add_edge("emit_output", "bump_step")
     builder.add_conditional_edges("bump_step", should_continue)

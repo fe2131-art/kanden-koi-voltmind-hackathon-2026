@@ -182,12 +182,11 @@ tests/test_e2e.py::test_e2e_agent_no_llm PASSED [100%]
 ```
 data/
 ├── frames/
-│   ├── frame_0s.jpg
-│   ├── frame_1s.jpg
+│   ├── frame_0.000s.jpg
+│   ├── frame_1.005s.jpg
 │   └── ...
 ├── audio.wav
-├── perception_results.json          ← 分析結果（JSON）
-├── agent_execution_summary.txt      ← ログ
+├── perception_results.json          ← 分析結果（JSON、frames 配列形式）
 └── flow.md                          ← グラフ図（Mermaid）
 ```
 
@@ -195,32 +194,89 @@ data/
 
 ```json
 {
-  "perception_results": [
+  "frames": [
     {
-      "obs_id": "img_0",
+      "frame_id": "img_0",
+      "timestamp": "2026-03-19T10:30:45.123456",
       "video_timestamp": 0.0,
-      "ir": {
-        "objects": [],
-        "hazards": [],
-        "unobserved": [
+      "vision_analysis": {
+        "scene_description": "田園風景。道路沿いに建造物...",
+        "critical_points": [
           {
-            "region_id": "blind_left",
-            "risk": 0.4,
-            "suggested_pan_deg": -30.0
+            "region_id": "foreground_center",
+            "description": "道路上の障害物",
+            "severity": "high"
           }
         ],
-        "vision_description": "田園風景。道路沿いに..."
+        "blind_spots": [
+          {
+            "region_id": "blind_left",
+            "description": "左側視界外",
+            "position": "left",
+            "severity": "medium"
+          }
+        ],
+        "overall_risk": "medium",
+        "confidence_score": 0.85
       },
-      "selected_view": {
-        "view_id": "view_blind_left",
-        "pan_deg": -30.0,
-        "tilt_deg": 0.0
-      }
+      "depth_analysis": {
+        "depth_layers": [
+          {
+            "zone": "near",
+            "description": "前方5m以内に障害物"
+          }
+        ],
+        "overall_risk": "medium",
+        "confidence_score": 0.78
+      },
+      "infrared_analysis": null,
+      "temporal_analysis": null,
+      "audio": [
+        {
+          "cue": "vehicle_approaching",
+          "severity": "high",
+          "evidence": "エンジン音が聞こえる"
+        }
+      ],
+      "belief_state": {
+        "hazard_tracks": [
+          {
+            "hazard_id": "hazard_1",
+            "hazard_type": "visible_hazard",
+            "region_id": "foreground_center",
+            "status": "new",
+            "severity": "high",
+            "confidence_score": 0.88,
+            "supporting_modalities": ["vision", "depth"]
+          }
+        ],
+        "overall_risk": "high",
+        "recommended_focus_regions": ["foreground_center"]
+      },
+      "assessment": {
+        "risk_level": "high",
+        "safety_status": "危険な物体を検出",
+        "detected_hazards": ["obstacle_in_path"],
+        "action_type": "inspect_region",
+        "target_region": "foreground_center",
+        "reason": "視野内に検出された物体の詳細確認が必要",
+        "priority": 0.9,
+        "temporal_status": "new",
+        "confidence_score": 0.88
+      },
+      "errors": []
     }
-  ],
-  "agent_execution": [...]
+  ]
 }
 ```
+
+**フォーマットの特徴**:
+- `frames` 配列で統一（フラット構造）
+- 各フレームは独立した判断結果を含む
+- `vision_analysis`, `depth_analysis`, `infrared_analysis`, `temporal_analysis` は各モダリティの結果
+- `belief_state` は複数フレームにわたる危険状態の管理
+- `assessment` は LLM による総合安全判断
+- `errors` でモダリティ処理のエラーを記録
 
 ## 設定のカスタマイズ
 
@@ -251,10 +307,12 @@ sed -i 's/max_steps: 1/max_steps: 3/' configs/default.yaml
 python src/run.py
 
 # 結果確認
-python -c "import json; d=json.load(open('data/perception_results.json')); print(f'Frames: {len(d[\"perception_results\"])}')"
+python -c "import json; d=json.load(open('data/perception_results.json')); print(f'Frames: {len(d[\"frames\"])}')"
 ```
 
 **出力**: `Frames: 3`
+
+**注**: `agent_execution` は廃止されました。すべての結果は `frames` 配列に統合されています。
 
 ## トラブルシューティング
 
@@ -324,17 +382,31 @@ python src/run.py
 python -c "import json; d=json.load(open('data/perception_results.json')); print(len(d['perception_results']))"
 ```
 
-### 例 3: OpenAI API で高品質な提案を得る
+### 例 3: OpenAI API で高品質な判断を得る
 
 ```bash
 # APIキー設定
 export OPENAI_API_KEY="sk-..."
 
-# 実行（LLM による次ビュー提案を得られます）
+# 実行（LLM による安全判断を得られます）
 python src/run.py
 
-# JSON で提案内容を確認
-python -c "import json; d=json.load(open('data/perception_results.json')); print(d['agent_execution'][0]['selected_view'])"
+# JSON で判断内容を確認
+python -c "import json; d=json.load(open('data/perception_results.json')); print(json.dumps(d['frames'][0]['assessment'], indent=2))"
+```
+
+**出力例**:
+```json
+{
+  "risk_level": "high",
+  "safety_status": "危険な物体を検出",
+  "detected_hazards": ["obstacle_in_path"],
+  "action_type": "inspect_region",
+  "target_region": "foreground_center",
+  "reason": "視野内に検出された物体の詳細確認が必要",
+  "priority": 0.9,
+  "temporal_status": "new"
+}
 ```
 
 ## 支援が必要な場合

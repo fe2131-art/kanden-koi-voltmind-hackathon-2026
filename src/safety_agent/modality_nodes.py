@@ -29,7 +29,6 @@ from PIL import Image
 from .schema import (
     AudioCue,
     VisionAnalysisResult,
-    VisionOverallAssessment,
 )
 
 logger = logging.getLogger(__name__)
@@ -219,9 +218,8 @@ class VisionAnalyzer:
                 # フォールバック: scene_description のみで VisionAnalysisResult を構築
                 return VisionAnalysisResult(
                     scene_description=raw[:500] if raw else "No response",
-                    overall_assessment=VisionOverallAssessment(
-                        severity="unknown", reason="JSON parse failed"
-                    ),
+                    overall_risk="unknown",
+                    confidence_score=0.0,
                 )
 
             return VisionAnalysisResult.model_validate(parsed)
@@ -301,6 +299,8 @@ class VisionAnalyzer:
                     if raw
                     else "VLM response could not be parsed",
                     "depth_layers": [],
+                    "overall_risk": "unknown",
+                    "confidence_score": 0.0,
                 }
 
             return parsed
@@ -543,12 +543,8 @@ class DepthEstimator:
         self._lock = threading.Lock()
 
         self._device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        resolved_model_id = self._resolve_model_id(
-            model_family, model_size, model_id
-        )
-        self._model = DepthAnything3.from_pretrained(resolved_model_id).to(
-            self._device
-        )
+        resolved_model_id = self._resolve_model_id(model_family, model_size, model_id)
+        self._model = DepthAnything3.from_pretrained(resolved_model_id).to(self._device)
         logger.info(
             f"DepthEstimator initialized: {resolved_model_id} on {self._device}"
         )
