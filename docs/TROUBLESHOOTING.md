@@ -42,11 +42,11 @@ uv --version
 ```bash
 # Python 3.11 以上をインストール
 # macOS:
-brew install python@3.11
+brew install python@3.12
 
 # Ubuntu/Debian:
 sudo apt update
-sudo apt install python3.11 python3.11-venv
+sudo apt install python3.12 python3.12-venv
 
 # Windows:
 # https://www.python.org/downloads/ からインストール
@@ -138,22 +138,21 @@ curl https://api.openai.com/v1/models \
 
 **2. 画像ファイルが存在するか確認**
 ```bash
-# input/ に画像があるか確認
-ls -la input/
+# data/frames/ に画像があるか確認
+ls -la data/frames/
 
 # 画像がない場合はテスト画像を配置
-cp /path/to/test/image.jpg input/
+cp /path/to/test/image.jpg data/frames/frame_0.0s.jpg
 ```
 
 **3. Vision API の権限確認**
 - OpenAI Dashboard: https://platform.openai.com/account/api-keys
-- "gpt-5-nano-2025-08-07" で Vision 呼び出し可能か確認
+- `configs/default.yaml` で指定した OpenAI モデルで Vision 呼び出し可能か確認
 - API キーに実行権限があるか確認
 
 **4. モデル可用性確認**
 ```bash
-# 代わりに gpt-4o を試す
-export OPENAI_MODEL="gpt-4o"
+# 代わりに configs/default.yaml の vlm.openai.model を変更して再実行
 python src/run.py
 ```
 
@@ -246,31 +245,31 @@ pytest tests/test_e2e.py -v
 
 ## ファイル I/O 関連
 
-### 「FileNotFoundError: [Errno 2] No such file or directory: 'input'」
+### 「FileNotFoundError: フレームが見つかりません」
 
-**原因:** input ディレクトリが存在しない
+**原因:** `data/videos/` に動画がなく、`data/frames/` にも画像がない
 
 **解決策:**
 ```bash
-# input ディレクトリを作成
-mkdir -p input
+# フレーム格納先を作成
+mkdir -p data/frames
 
-# output ディレクトリも作成
-mkdir -p output
+# テスト画像を配置
+cp /path/to/test/image.jpg data/frames/frame_0.0s.jpg
 ```
 
-### 「PermissionError: [Errno 13] Permission denied: 'output/...'」
+### 「PermissionError: [Errno 13] Permission denied: 'data/...'」
 
-**原因:** output フォルダに書き込み権限がない
+**原因:** `data/` 配下に書き込み権限がない
 
 **解決策:**
 ```bash
 # 権限を修正
-chmod -R 755 output/
+chmod -R 755 data/
 
 # または再作成
-rm -rf output/
-mkdir output/
+rm -rf data/frames data/depth data/voice
+mkdir -p data/frames data/depth data/voice
 ```
 
 ---
@@ -284,10 +283,10 @@ mkdir output/
 **例:**
 ```yaml
 # 間違い
-model: "gpt-5-nano-2025-08-07"  bad space
+model: "gpt-5-nano"  bad space
 
 # 正しい
-model: "gpt-5-nano-2025-08-07"
+model: "gpt-5-nano"
 ```
 
 **解決策:**
