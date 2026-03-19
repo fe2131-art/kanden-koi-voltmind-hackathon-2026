@@ -64,8 +64,8 @@ uv run vllm serve "$MODEL" \
   --port "$PORT" \
   --tensor-parallel-size 1 \
   --max-model-len 16384 \
-  --max-num-seqs 8 \
-  --gpu-memory-utilization 0.70 \
+  --max-num-seqs 4 \
+  --gpu-memory-utilization 0.90 \
   --reasoning-parser qwen3 \
   --trust-remote-code \
   --skip-mm-profiling \
