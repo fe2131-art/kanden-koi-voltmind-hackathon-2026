@@ -82,8 +82,8 @@ audio:
 
 # LLM トークン設定
 tokens:
-  vision_max_completion_tokens: 2048  # Vision API: 16k コンテキスト対応
-  chat_max_tokens: 4096               # テキスト生成用: 詳細な構造化出力対応
+  vision_max_completion_tokens: 8192  # Vision API: 16k コンテキスト対応
+  chat_max_tokens: 8192               # テキスト生成用: 詳細な構造化出力対応
 
 # Thresholds
 thresholds:
