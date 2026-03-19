@@ -2,6 +2,7 @@
 
 from .agent import AgentState, ContextSchema, OpenAICompatLLM, build_agent
 from .schema import (
+    AssessmentEvidence,
     AudioCue,
     CameraPose,
     Observation,
@@ -13,6 +14,7 @@ from .schema import (
 __version__ = "0.1.0"
 
 __all__ = [
+    "AssessmentEvidence",
     "AudioCue",
     "CameraPose",
     "Observation",

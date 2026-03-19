@@ -2,36 +2,82 @@ import json
 import logging
 import re
 from pathlib import Path
-from typing import Any, Dict, List, Literal, Optional
+from typing import Any, Dict, List, Optional
 
+import httpx
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.message import add_messages
 from langgraph.runtime import Runtime
 from langgraph.types import Command, Send
-from openai import OpenAI
 from typing_extensions import Annotated, TypedDict
 
 from .modality_nodes import (
     AudioAnalyzer,
     DepthEstimator,
-    InfraredImageAnalyzer,
     ModalityResult,
-    TemporalImageAnalyzer,
     VisionAnalyzer,
 )
 from .schema import (
-    BeliefState,
     DepthAnalysisResult,
-    InfraredAnalysisResult,
     Observation,
     ObservationProvider,
     PerceptionIR,
     SafetyAssessment,
-    TemporalAnalysisResult,
-    get_json_schema,
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _get_json_schema_for_vllm() -> Dict[str, Any]:
+    """vLLM の Structured Outputs 用 JSON スキーマを生成。"""
+    return {
+        "type": "object",
+        "properties": {
+            "risk_level": {"type": "string", "enum": ["high", "medium", "low"]},
+            "safety_status": {"type": "string"},
+            "detected_hazards": {
+                "type": "array",
+                "items": {"type": "string"},
+                "default": [],
+            },
+            "action_type": {
+                "type": "string",
+                "enum": ["emergency_stop", "inspect_region", "mitigate", "monitor"],
+            },
+            "target_region": {"type": ["string", "null"]},
+            "reason": {"type": "string"},
+            "priority": {"type": "number", "minimum": 0, "maximum": 1},
+            "temporal_status": {
+                "type": "string",
+                "enum": [
+                    "new",
+                    "persistent",
+                    "worsening",
+                    "improving",
+                    "resolved",
+                    "unknown",
+                ],
+            },
+            "evidence": {
+                "type": ["object", "null"],  # Optional: null の場合あり
+                "properties": {
+                    "vision": {"type": "array", "items": {"type": "string"}},
+                    "audio": {"type": "array", "items": {"type": "string"}},
+                    "previous": {"type": "array", "items": {"type": "string"}},
+                },
+                "required": ["vision", "audio", "previous"],
+            },
+        },
+        "required": [
+            "risk_level",
+            "safety_status",
+            "detected_hazards",
+            "action_type",
+            "reason",
+            "priority",
+            "temporal_status",
+        ],
+    }
 
 
 # =========================
@@ -40,8 +86,6 @@ logger = logging.getLogger(__name__)
 
 
 class OpenAICompatLLM:
-    """OpenAI SDK を使った LLM クライアント。vLLM と OpenAI API の両方に対応。"""
-
     def __init__(
         self,
         base_url: str,
@@ -50,108 +94,96 @@ class OpenAICompatLLM:
         timeout_s: float = 60.0,
         is_vllm: bool = False,
     ):
-        # vLLM 用に base_url を正規化（/v1 の追加）
-        normalized_url = base_url.rstrip("/")
-        if is_vllm or "localhost" in base_url:
-            if not normalized_url.endswith("/v1"):
-                normalized_url = f"{normalized_url}/v1"
-
-        self.client = OpenAI(
-            api_key=api_key or "EMPTY",
-            base_url=normalized_url,
-            timeout=timeout_s,
-        )
+        self.base_url = base_url.rstrip("/")
         self.model = model
-        self.is_vllm = is_vllm or "localhost" in base_url
+        self.api_key = api_key
+        self.timeout_s = timeout_s
+        self.is_vllm = (
+            is_vllm or "localhost" in base_url
+        )  # ローカルサーバーなら vLLM と判定
         # GPT-5 系モデルは max_tokens ではなく max_completion_tokens を使用
         self._use_max_completion_tokens = "gpt-5" in model.lower()
 
-    def chat_json(
+    def _build_payload(
         self,
-        system: str,
-        user: str,
+        messages: list,
         max_tokens: int = 800,
-        schema_type: Literal["belief_state", "safety_assessment"] = "safety_assessment",
+        response_format: Optional[Dict] = None,
     ) -> Dict[str, Any]:
-        """JSON 出力を期待するチャット API 呼び出し。
+        """モデル固有のトークンパラメータでペイロードを構築する。"""
+        payload = {
+            "model": self.model,
+            "messages": messages,
+        }
+        # GPT-5系モデルはカスタム temperature をサポートしないため、デフォルト値を使用
+        if not self._use_max_completion_tokens:
+            payload["temperature"] = 0.2
 
-        Args:
-            system: システムプロンプト
-            user: ユーザーメッセージ
-            max_tokens: 最大トークン数
-            schema_type: "belief_state" または "safety_assessment"
+        if self._use_max_completion_tokens:
+            payload["max_completion_tokens"] = max_tokens
+        else:
+            payload["max_tokens"] = max_tokens
+        if response_format:
+            payload["response_format"] = response_format
+        return payload
 
-        Returns:
-            パースされた JSON 辞書
-        """
+    def chat_json(
+        self, system: str, user: str, max_tokens: int = 800
+    ) -> Dict[str, Any]:
+        url = f"{self.base_url}/chat/completions"
+        headers = {"Authorization": f"Bearer {self.api_key}"}
         messages = [
             {"role": "system", "content": system},
             {"role": "user", "content": user},
         ]
 
-        # response_format の構築（vLLM と OpenAI で異なる）
+        # vLLM: Structured Outputs で JSON スキーマを指定（安定化）
         if self.is_vllm:
-            response_format = {
-                "type": "json_schema",
-                "json_schema": {
-                    "name": f"{schema_type}_output",
-                    "schema": get_json_schema(schema_type),
-                    "strict": True,
+            payload = self._build_payload(
+                messages,
+                max_tokens,
+                {
+                    "type": "json_schema",
+                    "json_schema": {
+                        "name": "SafetyAssessmentOutput",
+                        "schema": _get_json_schema_for_vllm(),
+                        "strict": True,
+                    },
                 },
-            }
+            )
+        # OpenAI: json_object フォーマットを試す（gpt-5-nano はサポートしない可能性）
+        elif not self._use_max_completion_tokens:
+            payload = self._build_payload(messages, max_tokens, {"type": "json_object"})
         else:
-            # OpenAI（gpt-5-nano はサポートしない可能性）
-            response_format = {"type": "json_object"}
+            # gpt-5-nano は response_format をサポートしないためスキップ
+            payload = self._build_payload(messages, max_tokens)
 
-        try:
-            # gpt-5 系は max_completion_tokens を使用
-            if self._use_max_completion_tokens:
-                response = self.client.chat.completions.create(
-                    model=self.model,
-                    messages=messages,
-                    max_completion_tokens=max_tokens,
-                    response_format=response_format,
-                )
-            else:
-                response = self.client.chat.completions.create(
-                    model=self.model,
-                    messages=messages,
-                    max_tokens=max_tokens,
-                    response_format=response_format,
-                )
-        except Exception as e:
-            # response_format なしで再試行
-            logger.warning(
-                f"LLM with response_format failed: {e}. Retrying without format."
-            )
-            if self._use_max_completion_tokens:
-                response = self.client.chat.completions.create(
-                    model=self.model,
-                    messages=messages,
-                    max_completion_tokens=max_tokens,
-                )
-            else:
-                response = self.client.chat.completions.create(
-                    model=self.model,
-                    messages=messages,
-                    max_tokens=max_tokens,
-                )
+        with httpx.Client(timeout=self.timeout_s) as client:
+            r = client.post(url, headers=headers, json=payload)
+            if r.status_code >= 400:
+                # response_format なしで再試行（フォールバック）
+                payload_no_format = self._build_payload(messages, max_tokens)
+                r = client.post(url, headers=headers, json=payload_no_format)
+            r.raise_for_status()
+            data = r.json()
+            content = data["choices"][0]["message"]["content"]
 
-        content = response.choices[0].message.content
+            # デバッグ: 空応答を確認
+            if not content or content.strip() == "":
+                logger.warning(
+                    f"LLM returned empty response | Status: {r.status_code} | "
+                    f"User message (first 500 chars): {user[:500]}..."
+                )
+                logger.debug(f"Full API response: {data}")
+                raise ValueError("LLMが空の応答を返しました")
 
-        # デバッグ: 空応答を確認
-        if not content or content.strip() == "":
-            logger.warning(
-                f"LLM returned empty response | User message (first 500 chars): {user[:500]}..."
-            )
-            raise ValueError("LLMが空の応答を返しました")
-
-        try:
-            return _robust_json_loads(content)
-        except ValueError as e:
-            logger.error(f"LLM JSON パースエラー: {str(e)}")
-            logger.debug(f"LLM raw output (first 3000 chars):\n{content[:3000]}")
-            raise
+            try:
+                return _robust_json_loads(content)
+            except ValueError as e:
+                # JSON パースエラーの場合、詳細をログに記録
+                logger.error(f"LLM JSON パースエラー: {str(e)}")
+                logger.debug(f"LLM raw output (first 3000 chars):\n{content[:3000]}")
+                raise
 
 
 def _robust_json_loads(text: str) -> Dict[str, Any]:
@@ -224,18 +256,6 @@ def _unique_append_with_reset(left: List[str], right: List[str]) -> List[str]:
     return sorted(set((left or []) + (right or [])))
 
 
-def _first_write_wins(left: Optional[str], right: Optional[str]) -> Optional[str]:
-    """一度セットされた obs_id は上書きしない（ラッチ）。
-    right=None はリセット信号として優先され、常に None を返す。
-    left が None のときのみ right の値を採用する（最初の書き込みがラッチ）。
-    """
-    if right is None:
-        return None  # リセット信号が最優先
-    if left is not None:
-        return left  # ラッチ: 非 None の最初の書き込みを保持
-    return right
-
-
 _MAX_MESSAGES = 20
 
 
@@ -276,20 +296,15 @@ class AgentState(TypedDict):
     # fan-in バリア：受け取ったモダリティ名（センチネルでリセット可能）
     received_modalities: Annotated[List[str], _unique_append_with_reset]
 
-    # ラッチ：同フレーム内で fuse_modalities が2回以上実行されるのを防止（first-writer-wins reducer）
-    barrier_obs_id: Annotated[Optional[str], _first_write_wins]
+    # ラッチ：同フレーム内で fuse_modalities が2回以上実行されるのを防止
+    barrier_obs_id: Optional[str]
 
     latest_output: Optional[Dict[str, Any]]
     last_vision_summary: Optional[str]
 
-    # 現フレームの安全判断
+    # 前フレーム、現フレームの安全判断
+    last_assessment: Optional[SafetyAssessment]  # フレーム間の引き継ぎ
     assessment: Optional[SafetyAssessment]  # 現フレームの判断
-    assessment_history: List[
-        SafetyAssessment
-    ]  # 判断履歴（determine_next_action_llm で trim）
-
-    # 信念状態：危険のトラッキング（フレーム間の引き継ぎ）
-    belief_state: Optional[BeliefState]
 
     done: bool
     errors: Annotated[List[str], _sliding_window_errors]
@@ -301,14 +316,10 @@ class ContextSchema(TypedDict):
     vision_analyzer: Optional[VisionAnalyzer]
     audio_analyzer: AudioAnalyzer
     depth_estimator: Optional[DepthEstimator]
-    infrared_analyzer: Optional[InfraredImageAnalyzer]
-    temporal_analyzer: Optional[TemporalImageAnalyzer]
     prompts: dict  # プロンプト設定全体
     config: dict
     chat_max_tokens: int
-    context_history_size: (
-        int  # LLM に渡す前回判断の数（0=なし, 1=直近1フレーム, N=直近Nフレーム）
-    )
+    context_history_size: int  # LLM に渡す前回結果の数（0=なし, 1=前回のみ）
     expected_modalities: List[str]
     # run_mode: "until_provider_ends" | "stop_when_safe"
     run_mode: str
@@ -348,14 +359,6 @@ def ingest_observation(state: AgentState, runtime: Runtime[ContextSchema]) -> Co
     # enable_depth=true の場合のみ depth_node を追加
     if "depth" in runtime.context["expected_modalities"]:
         sends.append(Send("depth_node", {"observation": obs}))
-
-    # enable_infrared=true の場合のみ infrared_node を追加
-    if "infrared" in runtime.context["expected_modalities"]:
-        sends.append(Send("infrared_node", {"observation": obs}))
-
-    # enable_temporal=true の場合のみ temporal_node を追加
-    if "temporal" in runtime.context["expected_modalities"]:
-        sends.append(Send("temporal_node", {"observation": obs}))
 
     return Command(
         update={
@@ -519,6 +522,16 @@ def depth_node(state: AgentState, runtime: Runtime[ContextSchema]) -> Command:
                     # ステップ3: JSON を DepthAnalysisResult に型変換
                     try:
                         depth_analysis = DepthAnalysisResult.model_validate(raw_result)
+                        # フォールバック検出: scene_description が error message の場合
+                        if (
+                            depth_analysis.scene_description
+                            and "could not be parsed"
+                            in depth_analysis.scene_description
+                        ):
+                            logger.debug(
+                                "Depth analysis returned fallback response (VLM レスポンスが不正)"
+                            )
+                            # fallback response の場合もエラーを記録するが depth_analysis は保持
                     except Exception as e:
                         logger.warning(f"Failed to validate depth analysis result: {e}")
                         error = f"depth: validation error: {e}"
@@ -546,164 +559,6 @@ def depth_node(state: AgentState, runtime: Runtime[ContextSchema]) -> Command:
                 {
                     "role": "assistant",
                     "content": f"[depth] {'ok' if depth_analysis else 'none'}",
-                }
-            ],
-        },
-        goto="join_modalities",
-    )
-
-
-def infrared_node(state: AgentState, runtime: Runtime[ContextSchema]) -> Command:
-    """赤外線画像ノード：RGB と赤外線フレームを side-by-side 結合して VLM で分析。"""
-    obs = state.get("observation")
-    error = None
-    infrared_analysis = None
-
-    infrared_analyzer = runtime.context.get("infrared_analyzer")
-    vision_analyzer = runtime.context.get("vision_analyzer")
-    prompts = runtime.context.get("prompts", {})
-    config = runtime.context.get("config", {})
-
-    if (
-        infrared_analyzer
-        and vision_analyzer
-        and obs
-        and obs.image_path
-        and obs.infrared_image_path
-    ):
-        try:
-            side_by_side_bytes = infrared_analyzer.make_side_by_side_bytes(
-                obs.image_path, obs.infrared_image_path
-            )
-            if side_by_side_bytes is None:
-                error = "infrared: failed to create side-by-side image"
-            else:
-                infrared_prompt = prompts.get("infrared_analysis", {}).get(
-                    "system"
-                ) or (
-                    "左が可視光カメラ画像、右が赤外線画像です。"
-                    "異常箇所・高温箇所・火災リスクを JSON で出力してください。"
-                    '{"hot_spots": [{"region_id": "infrared_hotspot_0", "description": "...", "severity": "unknown"}], "overall_risk": "unknown", "confidence_score": 0.0}'
-                )
-                vision_max_tokens = config.get("tokens", {}).get(
-                    "vision_max_completion_tokens", 4096
-                )
-                raw_result = vision_analyzer.analyze_bytes_raw(
-                    side_by_side_bytes,
-                    media_type="image/png",
-                    prompt=infrared_prompt,
-                    max_tokens=vision_max_tokens,
-                )
-                if raw_result is None:
-                    error = "infrared: VLM analysis failed"
-                else:
-                    try:
-                        infrared_analysis = InfraredAnalysisResult.model_validate(
-                            raw_result
-                        )
-                    except Exception as e:
-                        error = f"infrared: validation error: {e}"
-        except Exception as e:
-            error = f"infrared: {e}"
-    elif not infrared_analyzer:
-        error = "infrared: analyzer not available"
-    elif not vision_analyzer:
-        error = "infrared: vision_analyzer not available"
-    elif not obs or not obs.image_path or not obs.infrared_image_path:
-        error = "infrared: RGB or infrared image path not available"
-
-    result = ModalityResult(
-        modality_name="infrared",
-        extra={"infrared_analysis": infrared_analysis} if infrared_analysis else {},
-        error=error,
-    )
-    return Command(
-        update={
-            "modality_results": {"infrared": result},
-            "received_modalities": ["infrared"],
-            "messages": [
-                {
-                    "role": "assistant",
-                    "content": f"[infrared] {'ok' if infrared_analysis else 'none'}",
-                }
-            ],
-        },
-        goto="join_modalities",
-    )
-
-
-def temporal_node(state: AgentState, runtime: Runtime[ContextSchema]) -> Command:
-    """時系列変化検出ノード：現フレームと前フレームを横並び結合して VLM で変化を分析。"""
-    obs = state.get("observation")
-    error = None
-    temporal_analysis = None
-
-    temporal_analyzer = runtime.context.get("temporal_analyzer")
-    vision_analyzer = runtime.context.get("vision_analyzer")
-    prompts = runtime.context.get("prompts", {})
-    config = runtime.context.get("config", {})
-
-    if (
-        temporal_analyzer
-        and vision_analyzer
-        and obs
-        and obs.image_path
-        and obs.prev_image_path
-    ):
-        try:
-            temporal_bytes = temporal_analyzer.make_temporal_bytes(
-                obs.image_path, obs.prev_image_path
-            )
-            if temporal_bytes is None:
-                error = "temporal: failed to create temporal image"
-            else:
-                temporal_prompt = prompts.get("temporal_analysis", {}).get(
-                    "system"
-                ) or (
-                    "左が前フレーム、右が現フレームです。"
-                    "2フレーム間の変化を分析し、JSON で出力してください。"
-                    '{"change_detected": false, "changes": [{"region_id": "temporal_change_0", "description": "...", "severity": "unknown"}], "overall_risk": "unknown", "confidence_score": 0.0}'
-                )
-                vision_max_tokens = config.get("tokens", {}).get(
-                    "vision_max_completion_tokens", 4096
-                )
-                raw_result = vision_analyzer.analyze_bytes_raw(
-                    temporal_bytes,
-                    media_type="image/png",
-                    prompt=temporal_prompt,
-                    max_tokens=vision_max_tokens,
-                )
-                if raw_result is None:
-                    error = "temporal: VLM analysis failed"
-                else:
-                    try:
-                        temporal_analysis = TemporalAnalysisResult.model_validate(
-                            raw_result
-                        )
-                    except Exception as e:
-                        error = f"temporal: validation error: {e}"
-        except Exception as e:
-            error = f"temporal: {e}"
-    elif not temporal_analyzer:
-        error = "temporal: analyzer not available"
-    elif not vision_analyzer:
-        error = "temporal: vision_analyzer not available"
-    elif not obs or not obs.image_path or not obs.prev_image_path:
-        error = "temporal: current or previous image path not available"
-
-    result = ModalityResult(
-        modality_name="temporal",
-        extra={"temporal_analysis": temporal_analysis} if temporal_analysis else {},
-        error=error,
-    )
-    return Command(
-        update={
-            "modality_results": {"temporal": result},
-            "received_modalities": ["temporal"],
-            "messages": [
-                {
-                    "role": "assistant",
-                    "content": f"[temporal] {'ok' if temporal_analysis else 'none'}",
                 }
             ],
         },
@@ -776,14 +631,10 @@ def fuse_modalities(
     vlm = results.get("vlm")
     audio = results.get("audio")
     depth = results.get("depth")
-    infrared = results.get("infrared")
-    temporal = results.get("temporal")
 
     audio_cues = audio.audio_cues if audio and audio.audio_cues else []
     vision_analysis = vlm.extra.get("vision_analysis") if vlm else None
     depth_analysis = depth.extra.get("depth_analysis") if depth else None
-    infrared_analysis = infrared.extra.get("infrared_analysis") if infrared else None
-    temporal_analysis = temporal.extra.get("temporal_analysis") if temporal else None
     modality_errors = [r.error for r in results.values() if r.error]
 
     # PerceptionIR を作成
@@ -793,8 +644,6 @@ def fuse_modalities(
         audio=audio_cues,
         vision_analysis=vision_analysis,
         depth_analysis=depth_analysis,
-        infrared_analysis=infrared_analysis,
-        temporal_analysis=temporal_analysis,
         modality_errors=modality_errors,
     )
 
@@ -809,125 +658,10 @@ def fuse_modalities(
     }
 
 
-def update_belief_state_llm(
-    state: AgentState, runtime: Runtime[ContextSchema]
-) -> Dict[str, Any]:
-    """信念状態更新ノード：全モダリティの知覚結果から危険状態を継続管理する。
-
-    危険のトラッキング：
-    - previous_belief_state: 前フレームの belief_state（フレーム間の継続性判断用）
-    - belief_state: 現フレームで更新した belief_state
-
-    返却時に belief_state キーに新しい値を入れる理由：
-    次フレームでこの値が previous_belief_state として参照されるため。
-    ingest_observation でリセットされないため、フレーム間で正しく引き継がれる。
-    """
-    ir = state.get("ir")
-    if ir is None:
-        # ir が未生成の場合、previous belief_state をそのまま維持
-        return {
-            "belief_state": state.get("belief_state"),
-            "errors": ["No IR in update_belief_state_llm"],
-            "messages": [
-                {
-                    "role": "assistant",
-                    "content": "[belief] no IR -> skip",
-                }
-            ],
-        }
-
-    llm = runtime.context.get("llm")
-    if llm is None:
-        # LLM が未設定の場合、previous belief_state をそのまま維持
-        return {
-            "belief_state": state.get("belief_state"),
-            "messages": [
-                {
-                    "role": "assistant",
-                    "content": "[belief] LLM not configured -> skip",
-                }
-            ],
-        }
-
-    # コンテキスト構築
-    previous_belief_state = state.get("belief_state")
-    context_data = {
-        "vision_analysis": (
-            ir.vision_analysis.model_dump(exclude_none=True, by_alias=True)
-            if ir.vision_analysis
-            else None
-        ),
-        "depth_analysis": (
-            ir.depth_analysis.model_dump(exclude_none=True)
-            if ir.depth_analysis
-            else None
-        ),
-        "infrared_analysis": (
-            ir.infrared_analysis.model_dump(exclude_none=True)
-            if ir.infrared_analysis
-            else None
-        ),
-        "temporal_analysis": (
-            ir.temporal_analysis.model_dump(exclude_none=True)
-            if ir.temporal_analysis
-            else None
-        ),
-        "audio_cues": [a.model_dump() for a in ir.audio],
-        "previous_belief_state": (
-            previous_belief_state.model_dump(exclude_none=True)
-            if previous_belief_state
-            else None
-        ),
-        "step": state["step"],
-    }
-
-    # prompt.yaml の belief_update セクションから取得
-    belief_cfg = runtime.context["prompts"].get("belief_update", {})
-    system = belief_cfg.get("system", "").strip()
-
-    try:
-        chat_max_tokens = runtime.context["chat_max_tokens"]
-        # chat_json() 経由で vLLM/OpenAI 両対応、retry ロジック搭載
-        raw = llm.chat_json(
-            system=system,
-            user=json.dumps(context_data, ensure_ascii=False),
-            max_tokens=chat_max_tokens,
-            schema_type="belief_state",
-        )
-        # BeliefState を直接検証
-        belief_state = BeliefState.model_validate(raw)
-        # 新しい belief_state を次フレームに引き継ぎ
-        return {
-            "belief_state": belief_state,
-            "messages": [
-                {
-                    "role": "assistant",
-                    "content": f"[belief] ok hazards={len(belief_state.hazard_tracks)} risk={belief_state.overall_risk}",
-                }
-            ],
-        }
-
-    except Exception as e:
-        logger.error(
-            "Belief state update failed, keeping previous belief_state", exc_info=True
-        )
-        error_summary = f"{type(e).__name__}: {str(e)[:150]}"
-        return {
-            "belief_state": previous_belief_state,
-            "errors": [f"Belief state update failed: {error_summary}"],
-            "messages": [
-                {
-                    "role": "assistant",
-                    "content": "[belief] failed -> keep previous",
-                }
-            ],
-        }
-
-
 def determine_next_action_llm(
     state: AgentState, runtime: Runtime[ContextSchema]
 ) -> Dict[str, Any]:
-    """VLM/音声から、次に起こすべき行動を LLM で決定。belief_state と前フレーム結果を参照。
+    """VLM/音声から、次に起こすべき行動を LLM で決定。前フレーム結果を参照。
 
     フレーム間の状態引き継ぎ：
     - last_assessment: 前フレームの判断（LLM 入力で参照用）
@@ -937,9 +671,6 @@ def determine_next_action_llm(
     次フレームでこの値が last_assessment（前フレーム判断）として参照されるため。
     ingest_observation でリセットされないため、フレーム間で正しく引き継がれる。
     """
-    # 履歴長の上限を事前取得（全 return 文で使用）
-    context_history_size = runtime.context.get("context_history_size", 0)
-
     ir = state.get("ir")
     if ir is None:
         logger.warning(
@@ -953,18 +684,11 @@ def determine_next_action_llm(
             reason="IR 未生成のため継続監視",
             priority=0.0,
             temporal_status="unknown",
-            confidence_score=0.0,
+            evidence=None,
         )
-        # 履歴を trim
-        history = list(state.get("assessment_history", []))
-        history.append(assessment)
-        if context_history_size > 0:
-            history = history[-context_history_size:]
-        else:
-            history = []
         return {
             "assessment": assessment,
-            "assessment_history": history,
+            "last_assessment": assessment,
             "errors": ["No IR, used default assessment"],
             "messages": [
                 {
@@ -985,18 +709,11 @@ def determine_next_action_llm(
             reason="LLM 未設定のため継続監視",
             priority=0.0,
             temporal_status="unknown",
-            confidence_score=0.0,
+            evidence=None,
         )
-        # 履歴を trim
-        history = list(state.get("assessment_history", []))
-        history.append(assessment)
-        if context_history_size > 0:
-            history = history[-context_history_size:]
-        else:
-            history = []
         return {
             "assessment": assessment,
-            "assessment_history": history,
+            "last_assessment": assessment,
             "messages": [
                 {
                     "role": "assistant",
@@ -1006,41 +723,22 @@ def determine_next_action_llm(
         }
 
     # コンテキスト構築
-    belief_state = state.get("belief_state")
-    assessment_history = state.get("assessment_history", [])
+    context_history_size = runtime.context.get("context_history_size", 1)
 
+    last_assessment = state.get("last_assessment")
     context_data = {
         "vision_analysis": (
             ir.vision_analysis.model_dump(exclude_none=True, by_alias=True)
             if ir.vision_analysis
             else None
         ),
-        "depth_analysis": (
-            ir.depth_analysis.model_dump(exclude_none=True)
-            if ir.depth_analysis
-            else None
-        ),
-        "infrared_analysis": (
-            ir.infrared_analysis.model_dump(exclude_none=True)
-            if ir.infrared_analysis
-            else None
-        ),
-        "temporal_analysis": (
-            ir.temporal_analysis.model_dump(exclude_none=True)
-            if ir.temporal_analysis
-            else None
-        ),
         "audio_cues": [a.model_dump() for a in ir.audio],
-        "belief_state": (
-            belief_state.model_dump(exclude_none=True) if belief_state else None
+        "previous_assessment": (
+            last_assessment.model_dump()
+            if context_history_size >= 1 and last_assessment
+            else None
         ),
     }
-
-    # context_history_size > 0 のときのみ previous_assessments を追加（キー自体を除外）
-    if context_history_size > 0 and assessment_history:
-        context_data["previous_assessments"] = [
-            a.model_dump() for a in assessment_history[-context_history_size:]
-        ]
 
     # prompt.yaml の safety_assessment セクションから取得
     next_action_cfg = runtime.context["prompts"].get("safety_assessment", {})
@@ -1052,21 +750,14 @@ def determine_next_action_llm(
             system=system,
             user=json.dumps(context_data, ensure_ascii=False),
             max_tokens=chat_max_tokens,
-            schema_type="safety_assessment",
         )
 
         # SafetyAssessment を直接取得
         assessment = SafetyAssessment.model_validate(raw)
-        # 履歴を trim
-        history = list(state.get("assessment_history", []))
-        history.append(assessment)
-        if context_history_size > 0:
-            history = history[-context_history_size:]
-        else:
-            history = []
+        # LLM で計算した judgment を次フレームの前判断として保存
         return {
             "assessment": assessment,
-            "assessment_history": history,
+            "last_assessment": assessment,
             "messages": [
                 {
                     "role": "assistant",
@@ -1087,20 +778,13 @@ def determine_next_action_llm(
             reason="LLM 失敗のため継続監視",
             priority=0.0,
             temporal_status="unknown",
-            confidence_score=0.0,
+            evidence=None,
         )
         # エラーメッセージを最初の 150 文字に制限（JSON パースエラー等が長いため）
         error_summary = f"{type(e).__name__}: {str(e)[:150]}"
-        # 履歴を trim
-        history = list(state.get("assessment_history", []))
-        history.append(assessment)
-        if context_history_size > 0:
-            history = history[-context_history_size:]
-        else:
-            history = []
         return {
             "assessment": assessment,
-            "assessment_history": history,
+            "last_assessment": assessment,
             "errors": [f"LLM assessment failed: {error_summary}"],
             "messages": [
                 {
@@ -1126,7 +810,6 @@ def emit_output(state: AgentState) -> Dict[str, Any]:
 
     errors = list(state.get("errors", [])) + modality_errors
 
-    belief_state = state.get("belief_state")
     output = {
         "frame_id": obs.obs_id if obs else None,
         "timestamp": None,  # save_analysis_results() で付与
@@ -1141,22 +824,8 @@ def emit_output(state: AgentState) -> Dict[str, Any]:
             if ir and ir.depth_analysis
             else None
         ),
-        "infrared_analysis": (
-            ir.infrared_analysis.model_dump(exclude_none=True)
-            if ir and ir.infrared_analysis
-            else None
-        ),
-        "temporal_analysis": (
-            ir.temporal_analysis.model_dump(exclude_none=True)
-            if ir and ir.temporal_analysis
-            else None
-        ),
         "audio": ir_dump.get("audio", []),
-        "belief_state": (
-            belief_state.model_dump(exclude_none=True) if belief_state else None
-        ),
-        # assessment は target_region を常に含めるため exclude_none=False
-        "assessment": assessment.model_dump() if assessment else None,
+        "assessment": assessment.model_dump(exclude_none=True) if assessment else None,
         "errors": errors,
     }
 
@@ -1205,11 +874,8 @@ def build_agent():
     builder.add_node("vlm_node", vlm_node)
     builder.add_node("audio_node", audio_node)
     builder.add_node("depth_node", depth_node)
-    builder.add_node("infrared_node", infrared_node)
-    builder.add_node("temporal_node", temporal_node)
     builder.add_node("join_modalities", join_modalities)  # ラッチ付き fan-in バリア
     builder.add_node("fuse_modalities", fuse_modalities)
-    builder.add_node("update_belief_state_llm", update_belief_state_llm)
     builder.add_node("determine_next_action_llm", determine_next_action_llm)
     builder.add_node("emit_output", emit_output)
     builder.add_node("bump_step", bump_step)
@@ -1217,10 +883,9 @@ def build_agent():
     # エッジ設定
     builder.add_edge(START, "ingest_observation")
     # fan-out: vlm/audio ノードは Command で goto="join_modalities" するため静的エッジは不要
-    builder.add_edge("fuse_modalities", "update_belief_state_llm")  # 信念状態更新
     builder.add_edge(
-        "update_belief_state_llm", "determine_next_action_llm"
-    )  # 信念状態 → 安全判断
+        "fuse_modalities", "determine_next_action_llm"
+    )  # PerceptionIR 生成 → 安全判断
     builder.add_edge("determine_next_action_llm", "emit_output")
     builder.add_edge("emit_output", "bump_step")
     builder.add_conditional_edges("bump_step", should_continue)

@@ -63,12 +63,12 @@ cat configs/default.yaml
 **重要:** 以下が確定していることを確認：
 ```yaml
 agent:
-  max_steps: -1
+  max_steps: 1
 
 llm:
   provider: "openai"
   openai:
-    model: "gpt-5-nano"
+    model: "gpt-5-nano-2025-08-07"  # ← 絶対に変更しない
 ```
 
 ## ステップ 5: テストで動作確認
@@ -86,8 +86,8 @@ pytest tests/ -v
 
 ### 静止画を使う場合：
 ```bash
-# data/frames/ フォルダに画像を配置
-cp /path/to/your/image.jpg data/frames/frame_0.0s.jpg
+# data/images/ フォルダに画像を配置
+cp /path/to/your/image.jpg data/images/
 ```
 
 ### 動画を使う場合（推奨）：
@@ -110,12 +110,11 @@ python src/run.py
 **注**: `.env` ファイルは自動的に読み込まれます（`python-dotenv` ライブラリにより）
 
 **実行後、以下のファイルが `data/` に生成されます：**
-- `perception_results.json` - 構造化データ（フレーム単位の分析結果、frames 配列形式）
-- `flow.md` - LangGraph 実行フロー図（Mermaid 形式）
+- `perception_results.json` - 構造化データ（Vision 分析結果 + video_timestamp 含む）
+- `agent_execution_summary.txt` - 人間向けレポート
+- `flow.md` - LangGraph 実行フロー図
 - `frames/` - 抽出されたフレーム画像
-- `audio/audio.wav` - 抽出された音声ファイル
-- `depth/` - 深度解析の可視化画像
-- `infrared_frames/` - 赤外線動画から展開したフレーム（inspesafe モード時）
+- `audio/audio.wav` - 抽出された音声
 
 ## 一般的な問題
 
@@ -170,7 +169,7 @@ uv sync --extra demo
 python src/apps/server.py
 # 出力例：
 # ws server: ws://localhost:8001
-# monitoring: /path/to/repo/data/perception_results.json
+# monitoring: /path/to/output/perception_results.json
 ```
 
 #### 3. React アプリをセットアップ・起動（ターミナル 2）
@@ -332,8 +331,3 @@ vLLM-Omni は以下の機能を提供します：
 
 - Issues: プロジェクトの GitHub Issues を確認
 - Team Lead: チームリーダーに連絡
-
----
-
-**最終更新:** 2026-03-19
-**対象バージョン:** Safety View Agent v1.0
