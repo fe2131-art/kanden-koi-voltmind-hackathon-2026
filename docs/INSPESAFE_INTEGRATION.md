@@ -119,8 +119,9 @@ DATA_PATH/
 ├── train/
 │   └── Other_modalities/
 │       ├── 58132919535743_20251118_session_1400_2#bowenguanshang-you/
-│       │   ├── *_visible_*.mp4      ← RGB 動画
-│       │   ├── *_audio_*.wav        ← 音声ファイル
+│       │   ├── *_visible_*.mp4      ← RGB 動画（フレーム展開）
+│       │   ├── *_infrared_*.mp4     ← 赤外線動画（フレーム展開・新規）
+│       │   ├── *_audio_*.wav        ← 音声ファイル（自動コピー）
 │       │   └── ...
 │       └── （その他のセッション）
 │
@@ -152,11 +153,17 @@ python src/run.py
 configs/default.yaml で data.mode: "inspesafe" を読み込み
     ↓
 prepare_observations_inspesafe() が自動実行
-    ├─ ../InspecSafe-V1/DATA_PATH/train/Other_modalities/{session}/
-    │   から *_visible_*.mp4 を検索 → data/frames/ に自動展開
+    ├─ 赤外線動画検出: *_infrared_*.mp4 を検索
+    │   ├─ _process_infrared_inspesafe() で フレーム抽出
+    │   └─ data/infrared_frames/ に自動展開（新規 Phase 12）
     │
-    └─ 同じディレクトリから *_audio_*.wav を検索
-        → data/audio/ に自動コピー
+    ├─ RGB 動画検出: *_visible_*.mp4 を検索
+    │   └─ data/frames/ に自動展開
+    │
+    └─ 音声ファイル検出: *_audio_*.wav を検索
+        └─ data/audio/ に自動コピー
+    ↓
+マルチモーダル統合（RGB + 赤外線 + 音声）
     ↓
 通常の Safety View Agent パイプライン実行
 ```
@@ -164,10 +171,29 @@ prepare_observations_inspesafe() が自動実行
 **実行ログの例:**
 
 ```
+[safety_view_agent] INFO: [inspesafe] 赤外線動画を検出（フレーム抽出開始）
+[safety_view_agent] INFO: Extracted 8 infrared frames to data/infrared_frames/
 [safety_view_agent] INFO: [inspesafe] 動画: ../InspecSafe-V1/DATA_PATH/train/Other_modalities/.../58132919535743_20251118_visible_1.mp4
 [safety_view_agent] INFO: [inspesafe] 音声コピー: ../InspecSafe-V1/DATA_PATH/train/Other_modalities/.../58132919535743_20251118_audio_1.wav → data/audio/audio.wav
 [safety_view_agent] INFO: [inspesafe] 30 フレーム展開完了
 [safety_view_agent] INFO: Processing 30 frame image(s)
+```
+
+**出力ディレクトリ構造:**
+
+```
+data/
+├── frames/                      # RGB フレーム（*_visible_*.mp4 から）
+│   ├── frame_0.000s.jpg
+│   ├── frame_1.005s.jpg
+│   └── ...
+├── infrared_frames/             # 赤外線フレーム（*_infrared_*.mp4 から・新規）
+│   ├── frame_0.000s.jpg
+│   ├── frame_1.000s.jpg
+│   └── ...
+├── audio/
+│   └── audio.wav                # 音声ファイル（*_audio_*.wav から）
+└── perception_results.json      # 分析結果（frames 配列）
 ```
 
 ---
@@ -191,6 +217,7 @@ Safety View Agent の inspesafe モードは以下のパターンで自動検索
 
 ```
 *_visible_*.mp4    → RGB 動画（フレーム展開対象）
+*_infrared_*.mp4   → 赤外線動画（フレーム展開対象・新規 Phase 12）
 *_audio_*.wav      → 音声ファイル（自動コピー対象）
 ```
 
@@ -198,6 +225,7 @@ Safety View Agent の inspesafe モードは以下のパターンで自動検索
 ```
 58132919535743_20251118_visible_1.mp4
 58132919535743_20251118_visible_2.mp4
+58132919535743_20251118_infrared_1.mp4     ← 新規対応
 58132919535743_20251118_audio_1.wav
 58132919535743_20251118_audio_2.wav
 ```
@@ -323,13 +351,13 @@ data:
 **結果の確認:**
 
 ```bash
-# 複数セッションの分析結果を確認
+# 複数セッションの分析結果を確認（frames 配列形式）
 python -c "
 import json
 with open('data/perception_results.json') as f:
     data = json.load(f)
-    print(f'Total frames analyzed: {len(data[\"perception_results\"])}')
-    print(f'Total agent executions: {len(data[\"agent_execution\"])}')
+    print(f'Total frames analyzed: {len(data.get(\"frames\", []))}')
+    print(f'Sample frame keys: {list(data[\"frames\"][0].keys()) if data[\"frames\"] else []}')
 "
 ```
 
@@ -346,10 +374,45 @@ video:
 
 ---
 
+## 赤外線フレーム処理の詳細（Phase 12）
+
+### 自動検出と処理フロー
+
+InspecSafe-V1 セッションに `*_infrared_*.mp4` ファイルが存在する場合、以下の処理が自動実行されます：
+
+1. **赤外線動画検出**: `prepare_observations_inspesafe()` が glob パターンで検索
+2. **フレーム抽出**: `_process_infrared_inspesafe()` でフレーム展開
+3. **タイムスタンプマップ生成**: RGB フレームと対応付け
+4. **Observation に統合**: `infrared_image_path` フィールドに赤外線フレームパスを格納
+
+### 出力形式
+
+```python
+# src/safety_agent/schema.py の Observation クラス
+class Observation:
+    obs_id: str                      # フレーム識別子
+    image_path: str                  # RGB フレームパス
+    infrared_image_path: Optional[str]  # 赤外線フレームパス（新規）
+    prev_image_path: Optional[str]   # 前フレーム（光学フロー用）
+    audio_path: Optional[str]        # 音声ファイルパス
+    video_timestamp: Optional[float] # ビデオ内タイムスタンプ
+```
+
+### 赤外線フレーム活用例
+
+```python
+# depth_node などで赤外線フレームを活用可能
+observation = agentState.observation  # Observation オブジェクト
+if observation.infrared_image_path:
+    # 赤外線フレーム分析
+    ir_analyzer = InfraredImageAnalyzer(...)
+    ir_result = ir_analyzer.analyze(observation.infrared_image_path)
+```
+
 ## 次のステップ
 
 - **設定チューニング**: `view_planning` パラメータを調整して視点選択の戦略を変更
-- **マルチモーダル拡張**: 赤外線動画や点群データの処理を追加
+- **赤外線分析統合**: `InfraredImageAnalyzer` を使用した温度異常検出
 - **バッチ処理**: 複数セッションの自動評価スクリプトを作成
 
 詳細は [CLAUDE.md](../CLAUDE.md) および [EXTENDING.md](EXTENDING.md) を参照してください。

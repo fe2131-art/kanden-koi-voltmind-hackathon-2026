@@ -159,19 +159,27 @@ python src/run.py
 
 ### 「Vision API error 400: Unsupported parameter」
 
-**原因:** モデルがパラメータをサポートしていない
+**原因:** モデルがパラメータをサポートしていない（Phase 10.6 で修正済み）
 
-**例:**
-- `max_tokens` が `gpt-5-nano` でサポートされていない → 修正済み
-- `temperature` が `gpt-5-nano` でサポートされていない → 修正済み
-
-**確認:**
+**解決策:**
 ```bash
 # 設定を確認
 cat configs/default.yaml | grep -A 5 "llm:"
 
-# agent.py で自動判別が機能しているか確認
-# _use_max_completion_tokens を確認
+# agent.py の vlm_node, depth_node で max_tokens が自動設定されているか確認
+# run.py で context["config"] が agent に渡されているか確認
+```
+
+**詳細:**
+- `max_tokens` は config から自動取得（`vision_max_completion_tokens`）
+- vlm_node, depth_node で Vision API 呼び出し時に指定
+- デフォルト値: 4096 トークン（2 枚画像処理に対応）
+
+**デバッグ方法:**
+```bash
+# VLM レスポンスの finish_reason を確認（ログに出力）
+# finish_reason が "stop" なら正常、"length" なら max_tokens 不足
+python src/run.py 2>&1 | grep -A 2 "finish_reason"
 ```
 
 ---
@@ -306,32 +314,51 @@ python src/run.py 2>&1 | tee debug.log
 
 ### LLM リクエスト/レスポンスをログに出力
 
-`agent.py` を修正：
+**方法 1: agent.py の determine_next_action_llm で確認**
 ```python
-def chat_json(self, system, user, max_tokens=800):
-    print(f"DEBUG: Sending request to {self.model}")
-    print(f"DEBUG: System prompt length: {len(system)}")
-    # ... rest of code
-    r = client.post(url, headers=headers, json=payload)
-    print(f"DEBUG: Response status: {r.status_code}")
-    if r.status_code < 400:
-        data = r.json()
-        content = data["choices"][0]["message"]["content"]
-        print(f"DEBUG: Response content: {content[:200]}...")  # 最初の200文字
-    return ...
+# agent.py の determine_next_action_llm() 関数内で以下を追加
+print(f"DEBUG: LLM request - system prompt length: {len(system_prompt)}")
+print(f"DEBUG: LLM request - max_tokens: {max_tokens}")
+
+# レスポンス取得後
+try:
+    response = llm.chat_json(...)
+    print(f"DEBUG: LLM response: {response}")
+except Exception as e:
+    print(f"DEBUG: LLM error: {e}")
+```
+
+**方法 2: ログレベルを上げる**
+```bash
+# PYTHONUNBUFFERED で標準出力を即座にフラッシュ
+PYTHONUNBUFFERED=1 python src/run.py 2>&1 | tee debug.log
+
+# ログを確認
+grep "DEBUG" debug.log
 ```
 
 ### Vision API レスポンスを確認
 
+**方法 1: modality_nodes.py の VisionAnalyzer で確認**
 ```python
-# perceiver.py で修正
-print(f"DEBUG: Image file size: {os.path.getsize(image_path)} bytes")
-print(f"DEBUG: Encoded base64 length: {len(image_data)}")
-# ...
-r = client.post(...)
-print(f"DEBUG: Vision API response: {r.status_code}")
+# modality_nodes.py の analyze() メソッド内で以下を追加
+print(f"DEBUG: Vision API request - image paths: {image_paths}")
+print(f"DEBUG: Vision API request - max_tokens: {max_tokens}")
+print(f"DEBUG: Vision API response status: {r.status_code}")
+
 if r.status_code >= 400:
-    print(f"DEBUG: Error response: {r.text[:500]}")
+    print(f"DEBUG: Vision API error: {r.text[:500]}")
+else:
+    data = r.json()
+    content = data["choices"][0]["message"]["content"]
+    print(f"DEBUG: Vision API response (first 300 chars): {content[:300]}")
+```
+
+**方法 2: JSON パースエラーをキャッチ**
+```bash
+# JSON パースエラーが発生した場合、modality_nodes.py でログを確認
+# 418行: logger.warning で最初の 300 文字を表示
+python src/run.py 2>&1 | grep -A 1 "Failed to parse JSON"
 ```
 
 ---

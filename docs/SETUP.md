@@ -110,11 +110,10 @@ python src/run.py
 **注**: `.env` ファイルは自動的に読み込まれます（`python-dotenv` ライブラリにより）
 
 **実行後、以下のファイルが `data/` に生成されます：**
-- `perception_results.json` - 構造化データ（Vision 分析結果 + video_timestamp 含む）
-- `agent_execution_summary.txt` - 人間向けレポート
-- `flow.md` - LangGraph 実行フロー図
+- `perception_results.json` - 構造化データ（フレーム単位の分析結果、frames 配列形式）
+- `flow.md` - LangGraph 実行フロー図（Mermaid 形式）
 - `frames/` - 抽出されたフレーム画像
-- `audio/audio.wav` - 抽出された音声
+- `audio/audio.wav` - 抽出された音声ファイル
 
 ## 一般的な問題
 
@@ -331,3 +330,8 @@ vLLM-Omni は以下の機能を提供します：
 
 - Issues: プロジェクトの GitHub Issues を確認
 - Team Lead: チームリーダーに連絡
+
+---
+
+**最終更新:** 2026-03-19
+**対象バージョン:** Safety View Agent v1.0

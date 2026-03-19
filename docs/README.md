@@ -169,6 +169,6 @@ ruff format src/
 
 ---
 
-**最終更新:** 2026-02-26
+**最終更新:** 2026-03-19
 **対象バージョン:** Safety View Agent v1.0
 **ドキュメントメンテナー:** Development Team
