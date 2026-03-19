@@ -37,7 +37,7 @@ vision_analysis:
   # - 位置を特定できる危険箇所の抽出
   # - 死角・見えにくい場所の抽出
   # - 全体リスクの要約
-  default_prompt: |
+  system: |
     あなたは可視光画像を安全性評価の観点から分析する AI です。
 
     優先順位:
@@ -198,7 +198,7 @@ audio_analysis:
   # 役割:
   # - 安全関連の異常音だけを抽出する
   # - visual context から推測しない
-  default_prompt: |
+  system: |
     Analyze the audio clip and return only safety-relevant abnormal events as JSON.
 
     Rules:
@@ -307,6 +307,8 @@ safety_assessment:
     - 現在の危険状態を最優先で簡潔に伝える
     - 必要なら継続・悪化・改善を短く含めてよい
     - 詳細根拠は reason に書き、safety_status には入れすぎない
+
+    JSON形式で出力してください。以下の構造で JSON を返してください:
 
     出力:
     {

@@ -7,7 +7,7 @@ agent:
   enable_depth: true
   enable_infrared: true            # 赤外線画像解析有効化（enable_infrared: true でアクティベート）
   enable_temporal: true            # 時系列変化検出有効化（前後フレーム比較、enable_temporal: true でアクティベート）
-  context_history_size: 1           # LLM に渡す前回結果の数（0=なし, 1=前回のみ）
+  context_history_size: 0           # LLM に渡す前回判断の数（0=なし, 1=直近1フレーム, N=直近Nフレーム）
 
 # LLM configuration
 llm:
@@ -82,8 +82,8 @@ audio:
 
 # LLM トークン設定
 tokens:
-  vision_max_completion_tokens: 8192  # Vision API: 推論 + 応答用（gpt-5-nano は推論に 4000+ 使用）
-  chat_max_tokens: 8192               # テキスト生成用（belief_update の複雑な構造化出力に対応）
+  vision_max_completion_tokens: 2048  # Vision API: 16k コンテキスト対応
+  chat_max_tokens: 4096               # テキスト生成用: 詳細な構造化出力対応
 
 # Thresholds
 thresholds:

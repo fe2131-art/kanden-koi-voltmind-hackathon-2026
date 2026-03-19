@@ -51,8 +51,8 @@ def test_e2e_agent_no_llm():
         "barrier_obs_id": None,  # ラッチ（同フレーム内で fuse は1回だけ）
         "latest_output": None,  # PR3: 統合出力
         "last_vision_summary": None,
-        "last_assessment": None,
         "assessment": None,
+        "assessment_history": [],
         "belief_state": None,
         "done": False,
         "errors": [],
@@ -80,7 +80,7 @@ def test_e2e_agent_no_llm():
         },
         "config": {"audio": {"window_seconds": 3.0}},
         "chat_max_tokens": 2000,
-        "context_history_size": 1,
+        "context_history_size": 0,
         "expected_modalities": [
             "vlm",
             "audio",
@@ -94,7 +94,6 @@ def test_e2e_agent_no_llm():
 
     # Verify basic output structure
     assert "assessment" in out
-    assert "last_assessment" in out
     assert "errors" in out
     assert "messages" in out
     assert "modality_results" in out
@@ -108,9 +107,6 @@ def test_e2e_agent_no_llm():
         "monitor",
     ]
     assert out["assessment"].risk_level in ["high", "medium", "low"]
-
-    # Verify last_assessment is carried over
-    assert out["last_assessment"] is not None
 
     # Verify modality_results is properly processed (fan-in) - now dict
     assert isinstance(out["modality_results"], dict)
@@ -205,8 +201,8 @@ def test_temporal_node_with_image_pair():
             "barrier_obs_id": None,
             "latest_output": None,
             "last_vision_summary": None,
-            "last_assessment": None,
             "assessment": None,
+            "assessment_history": [],
             "belief_state": None,
             "done": False,
             "errors": [],
@@ -233,7 +229,7 @@ def test_temporal_node_with_image_pair():
             },
             "config": {"audio": {"window_seconds": 3.0}},
             "chat_max_tokens": 2000,
-            "context_history_size": 1,
+            "context_history_size": 0,
             "expected_modalities": ["vlm", "audio", "temporal"],
             "run_mode": "until_provider_ends",
         }

@@ -142,10 +142,10 @@ def get_vlm(config: dict, prompts: dict) -> Optional[VisionAnalyzer]:
     provider = vlm_config.get("provider", "openai")
 
     # vision_analysis プロンプトを取得（必須）
-    vision_prompt = prompts.get("vision_analysis", {}).get("default_prompt")
+    vision_prompt = prompts.get("vision_analysis", {}).get("system")
     if vision_prompt is None:
         raise ValueError(
-            "プロンプト設定 vision_analysis.default_prompt が見つかりません。"
+            "プロンプト設定 vision_analysis.system が見つかりません。"
             "configs/prompt.yaml を確認してください。"
         )
 
@@ -259,10 +259,10 @@ def get_alm(config: dict, prompts: dict) -> Optional[AudioAnalyzer]:
     provider = alm_config.get("provider", "openai")
 
     # audio_analysis プロンプトを取得（必須）
-    audio_prompt = prompts.get("audio_analysis", {}).get("default_prompt")
+    audio_prompt = prompts.get("audio_analysis", {}).get("system")
     if audio_prompt is None:
         raise ValueError(
-            "プロンプト設定 audio_analysis.default_prompt が見つかりません。"
+            "プロンプト設定 audio_analysis.system が見つかりません。"
             "configs/prompt.yaml を確認してください。"
         )
 
@@ -1003,6 +1003,7 @@ def main():
             logger.warning(
                 f"Failed to initialize DepthEstimator: {e}, depth estimation will not be available"
             )
+            agent_cfg["enable_depth"] = False
 
     infrared_analyzer = None
     if agent_cfg.get("enable_infrared", False):
@@ -1012,6 +1013,7 @@ def main():
             logger.warning(
                 f"Failed to initialize InfraredImageAnalyzer: {e}, infrared analysis will not be available"
             )
+            agent_cfg["enable_infrared"] = False
 
     temporal_analyzer = None
     if agent_cfg.get("enable_temporal", False):
@@ -1021,6 +1023,7 @@ def main():
             logger.warning(
                 f"Failed to initialize TemporalImageAnalyzer: {e}, temporal analysis will not be available"
             )
+            agent_cfg["enable_temporal"] = False
 
     # Initial state (with modality_results for fan-in)
     initial_state: AgentState = {
@@ -1034,8 +1037,8 @@ def main():
         "barrier_obs_id": None,
         "latest_output": None,
         "last_vision_summary": None,
-        "last_assessment": None,
         "assessment": None,
+        "assessment_history": [],
         "belief_state": None,
         "done": False,
         "errors": [],
@@ -1064,7 +1067,7 @@ def main():
         "prompts": prompts,
         "config": config,  # depth_node で config.get("tokens", ...) 使用
         "chat_max_tokens": tokens_cfg.get("chat_max_tokens", 2000),
-        "context_history_size": agent_cfg.get("context_history_size", 1),
+        "context_history_size": agent_cfg.get("context_history_size", 0),  # 前回判断の数（0=なし）
         "expected_modalities": expected_modalities,
         "run_mode": "until_provider_ends",  # provider が None を返すまで継続
     }
