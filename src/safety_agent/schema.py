@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import List, Literal, Optional
+from typing import Any, Dict, List, Literal, Optional
 
 from pydantic import BaseModel, Field
 
@@ -109,6 +109,14 @@ class AudioCue(BaseModel):
     cue: str  # e.g. "vehicle_approaching"
     severity: Literal["low", "medium", "high", "critical", "unknown"]
     evidence: str  # 根拠説明
+
+
+class AudioAnalysisResult(BaseModel):
+    """音声解析ノードの出力スキーマ。prompt.yaml audio_analysis の出力形式に対応。"""
+
+    events: List[AudioCue] = Field(default_factory=list)
+    overall_risk: Literal["low", "medium", "high", "critical", "unknown"] = "unknown"
+    confidence_score: float = Field(default=0.0, ge=0.0, le=1.0)
 
 
 # ─── 深度解析結果 ──────────────────────────────────────────────────────────────
@@ -320,3 +328,53 @@ class ObservationProvider:
         o = self._obs[self._i]
         self._i += 1
         return o
+
+
+# =============================================================================
+# vLLM Structured Outputs 用 JSON スキーマ生成
+# =============================================================================
+
+
+# スキーママップ：型名 → Pydantic モデルクラス
+_SCHEMA_MAP: Dict[str, type] = {
+    "vision_analysis": VisionAnalysisResult,
+    "depth_analysis": DepthAnalysisResult,
+    "infrared_analysis": InfraredAnalysisResult,
+    "temporal_analysis": TemporalAnalysisResult,
+    "audio_analysis": AudioAnalysisResult,
+    "belief_state": BeliefState,
+    "safety_assessment": SafetyAssessment,
+}
+
+SchemaType = Literal[
+    "vision_analysis",
+    "depth_analysis",
+    "infrared_analysis",
+    "temporal_analysis",
+    "audio_analysis",
+    "belief_state",
+    "safety_assessment",
+]
+
+
+def get_json_schema(schema_type: SchemaType) -> Dict[str, Any]:
+    """指定されたスキーマ型の JSON Schema を返す。
+
+    Pydantic モデルの model_json_schema() で自動生成するため、
+    モデル定義の変更時に自動追従する。
+
+    Args:
+        schema_type: スキーマ型名
+
+    Returns:
+        vLLM Structured Outputs で使用可能な JSON Schema 辞書
+
+    Raises:
+        ValueError: unknown schema_type
+    """
+    if schema_type not in _SCHEMA_MAP:
+        raise ValueError(
+            f"Unknown schema_type: {schema_type}. "
+            f"Allowed values: {list(_SCHEMA_MAP.keys())}"
+        )
+    return _SCHEMA_MAP[schema_type].model_json_schema()

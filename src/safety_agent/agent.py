@@ -28,8 +28,8 @@ from .schema import (
     PerceptionIR,
     SafetyAssessment,
     TemporalAnalysisResult,
+    get_json_schema,
 )
-from .schema_vllm import get_json_schema
 
 logger = logging.getLogger(__name__)
 
