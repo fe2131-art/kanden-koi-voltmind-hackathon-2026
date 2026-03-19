@@ -63,15 +63,7 @@ def _get_json_schema_for_vllm() -> Dict[str, Any]:
                     "unknown",
                 ],
             },
-            "evidence": {
-                "type": ["object", "null"],  # Optional: null の場合あり
-                "properties": {
-                    "vision": {"type": "array", "items": {"type": "string"}},
-                    "audio": {"type": "array", "items": {"type": "string"}},
-                    "previous": {"type": "array", "items": {"type": "string"}},
-                },
-                "required": ["vision", "audio", "previous"],
-            },
+            "confidence_score": {"type": "number", "minimum": 0, "maximum": 1},
         },
         "required": [
             "risk_level",
@@ -81,6 +73,7 @@ def _get_json_schema_for_vllm() -> Dict[str, Any]:
             "reason",
             "priority",
             "temporal_status",
+            "confidence_score",
         ],
     }
 
@@ -540,16 +533,6 @@ def depth_node(state: AgentState, runtime: Runtime[ContextSchema]) -> Command:
                     # ステップ3: JSON を DepthAnalysisResult に型変換
                     try:
                         depth_analysis = DepthAnalysisResult.model_validate(raw_result)
-                        # フォールバック検出: scene_description が error message の場合
-                        if (
-                            depth_analysis.scene_description
-                            and "could not be parsed"
-                            in depth_analysis.scene_description
-                        ):
-                            logger.debug(
-                                "Depth analysis returned fallback response (VLM レスポンスが不正)"
-                            )
-                            # fallback response の場合もエラーを記録するが depth_analysis は保持
                     except Exception as e:
                         logger.warning(f"Failed to validate depth analysis result: {e}")
                         error = f"depth: validation error: {e}"
@@ -614,7 +597,7 @@ def infrared_node(state: AgentState, runtime: Runtime[ContextSchema]) -> Command
                 ) or (
                     "左が可視光カメラ画像、右が赤外線画像です。"
                     "異常箇所・高温箇所・火災リスクを JSON で出力してください。"
-                    '{"scene_description": "...", "hot_spots": ["..."]}'
+                    '{"hot_spots": [{"region_id": "infrared_hotspot_0", "description": "...", "severity": "unknown"}], "overall_risk": "unknown", "confidence_score": 0.0}'
                 )
                 vision_max_tokens = config.get("tokens", {}).get(
                     "vision_max_completion_tokens", 4096
@@ -693,7 +676,7 @@ def temporal_node(state: AgentState, runtime: Runtime[ContextSchema]) -> Command
                 ) or (
                     "左が前フレーム、右が現フレームです。"
                     "2フレーム間の変化を分析し、JSON で出力してください。"
-                    '{"scene_description": "...", "change_detected": true/false, "changes": ["..."]}'
+                    '{"change_detected": false, "changes": [{"region_id": "temporal_change_0", "description": "...", "severity": "unknown"}], "overall_risk": "unknown", "confidence_score": 0.0}'
                 )
                 vision_max_tokens = config.get("tokens", {}).get(
                     "vision_max_completion_tokens", 4096
@@ -980,7 +963,7 @@ def determine_next_action_llm(
             reason="IR 未生成のため継続監視",
             priority=0.0,
             temporal_status="unknown",
-            evidence=None,
+            confidence_score=0.0,
         )
         return {
             "assessment": assessment,
@@ -1005,7 +988,7 @@ def determine_next_action_llm(
             reason="LLM 未設定のため継続監視",
             priority=0.0,
             temporal_status="unknown",
-            evidence=None,
+            confidence_score=0.0,
         )
         return {
             "assessment": assessment,
@@ -1093,7 +1076,7 @@ def determine_next_action_llm(
             reason="LLM 失敗のため継続監視",
             priority=0.0,
             temporal_status="unknown",
-            evidence=None,
+            confidence_score=0.0,
         )
         # エラーメッセージを最初の 150 文字に制限（JSON パースエラー等が長いため）
         error_summary = f"{type(e).__name__}: {str(e)[:150]}"

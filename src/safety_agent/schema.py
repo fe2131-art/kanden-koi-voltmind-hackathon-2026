@@ -74,6 +74,7 @@ class NormalizedBBox(BaseModel):
 class CriticalPoint(BaseModel):
     """画像中の危険箇所。位置を特定できる重要な危険。"""
 
+    region_id: str
     description: str
     normalized_bbox: Optional[NormalizedBBox] = None
     severity: Literal["low", "medium", "high", "critical", "unknown"] = "unknown"
@@ -82,15 +83,10 @@ class CriticalPoint(BaseModel):
 class VisionBlindSpot(BaseModel):
     """画像中の死角・見えにくい場所。"""
 
+    region_id: str
     description: str
     position: str
-
-
-class VisionOverallAssessment(BaseModel):
-    """画像全体の安全レベル評価。"""
-
-    severity: Literal["low", "medium", "high", "critical", "unknown"]
-    reason: str
+    severity: Literal["low", "medium", "high", "critical", "unknown"] = "unknown"
 
 
 class VisionAnalysisResult(BaseModel):
@@ -99,7 +95,8 @@ class VisionAnalysisResult(BaseModel):
     scene_description: str
     critical_points: List[CriticalPoint] = Field(default_factory=list)
     blind_spots: List[VisionBlindSpot] = Field(default_factory=list)
-    overall_assessment: VisionOverallAssessment
+    overall_risk: Literal["low", "medium", "high", "critical", "unknown"] = "unknown"
+    confidence_score: float = Field(default=0.0, ge=0.0, le=1.0)
 
 
 # ─── 音声キュー ───────────────────────────────────────────────────────────────
@@ -129,28 +126,45 @@ class DepthZoneDescription(BaseModel):
 class DepthAnalysisResult(BaseModel):
     """Depth Anything 3 による深度解析結果。PerceptionIR.depth_analysis に格納。"""
 
-    scene_description: str
     depth_layers: List[DepthZoneDescription] = Field(default_factory=list)
+    overall_risk: Literal["low", "medium", "high", "critical", "unknown"] = "unknown"
+    confidence_score: float = Field(default=0.0, ge=0.0, le=1.0)
+
+
+class InfraredHotSpot(BaseModel):
+    """赤外線画像中の高温箇所。"""
+
+    region_id: str
+    description: str
+    severity: Literal["low", "medium", "high", "critical", "unknown"] = "unknown"
 
 
 class InfraredAnalysisResult(BaseModel):
     """赤外線画像解析結果。PerceptionIR.infrared_analysis に格納。"""
 
-    scene_description: str
-    hot_spots: List[str] = Field(default_factory=list)  # 異常高温領域の説明リスト
+    hot_spots: List[InfraredHotSpot] = Field(default_factory=list)
+    overall_risk: Literal["low", "medium", "high", "critical", "unknown"] = "unknown"
+    confidence_score: float = Field(default=0.0, ge=0.0, le=1.0)
+
+
+class TemporalChange(BaseModel):
+    """時系列で検出された変化。"""
+
+    region_id: str
+    description: str
+    severity: Literal["low", "medium", "high", "critical", "unknown"] = "unknown"
 
 
 class TemporalAnalysisResult(BaseModel):
     """時系列（前後フレーム比較）変化検出結果。PerceptionIR.temporal_analysis に格納。"""
 
-    scene_description: str = Field(
-        description="前後フレームの比較サマリ。変化があれば説明、変化がなければ 'no change' または 'no apparent changes' と記述"
-    )
     change_detected: bool  # 明らかな変化があったか（VLM が true/false を返す）
-    changes: List[str] = Field(
+    changes: List[TemporalChange] = Field(
         default_factory=list,
         description="実際に確認できた変化の具体的説明リスト。変化がなければ空配列 []",
     )
+    overall_risk: Literal["low", "medium", "high", "critical", "unknown"] = "unknown"
+    confidence_score: float = Field(default=0.0, ge=0.0, le=1.0)
 
 
 # ─── カメラ姿勢 ───────────────────────────────────────────────────────────────
@@ -202,12 +216,12 @@ class HazardTrack(BaseModel):
         "equipment_anomaly",
         "unknown",
     ]
-    region: Optional[str] = None
+    region_id: Optional[str] = None
     status: Literal[
         "new", "persistent", "worsening", "improving", "resolved", "unknown"
     ]
     severity: Literal["low", "medium", "high", "critical", "unknown"]
-    confidence: float = Field(ge=0.0, le=1.0)
+    confidence_score: float = Field(ge=0.0, le=1.0)
     supporting_modalities: List[
         Literal["vision", "audio", "depth", "infrared", "temporal"]
     ] = Field(default_factory=list)
@@ -220,26 +234,16 @@ class BeliefState(BaseModel):
     hazard_tracks: 継続中の危険状態のリスト（フレームをまたいで更新される）
     overall_risk:  全体リスクレベル（hazard_tracks から総合判断）
     recommended_focus_regions: 次フレームで注視すべき領域
-    summary:       現在の継続危険状態の要約
     """
 
     hazard_tracks: List[HazardTrack] = Field(default_factory=list)
     overall_risk: Literal["low", "medium", "high", "critical", "unknown"] = "unknown"
     recommended_focus_regions: List[str] = Field(default_factory=list)
-    summary: str = ""
 
 
 # ─── 安全判断 ─────────────────────────────────────────────────────────────────
 # determine_next_action_llm() が生成し、
 # AgentState.assessment と WorldModel.last_assessment に格納される。
-
-
-class AssessmentEvidence(BaseModel):
-    """SafetyAssessment の判断根拠（モダリティ別）。SafetyAssessment.evidence に格納。"""
-
-    vision: List[str] = Field(default_factory=list)  # VLM 分析から使った根拠
-    audio: List[str] = Field(default_factory=list)  # 音声キューから使った根拠
-    previous: List[str] = Field(default_factory=list)  # 前回判断から参照した根拠
 
 
 class SafetyAssessment(BaseModel):
@@ -271,11 +275,11 @@ class SafetyAssessment(BaseModel):
     reason: str
     priority: float = Field(ge=0, le=1)
 
-    # 時系列・根拠
+    # 時系列・信頼度
     temporal_status: Literal[
         "new", "persistent", "worsening", "improving", "resolved", "unknown"
     ] = "unknown"
-    evidence: Optional[AssessmentEvidence] = None
+    confidence_score: float = Field(default=0.0, ge=0.0, le=1.0)
 
 
 # =============================================================================

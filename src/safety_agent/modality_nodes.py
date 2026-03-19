@@ -29,7 +29,6 @@ from PIL import Image
 from .schema import (
     AudioCue,
     VisionAnalysisResult,
-    VisionOverallAssessment,
 )
 
 logger = logging.getLogger(__name__)
@@ -219,9 +218,8 @@ class VisionAnalyzer:
                 # フォールバック: scene_description のみで VisionAnalysisResult を構築
                 return VisionAnalysisResult(
                     scene_description=raw[:500] if raw else "No response",
-                    overall_assessment=VisionOverallAssessment(
-                        severity="unknown", reason="JSON parse failed"
-                    ),
+                    overall_risk="unknown",
+                    confidence_score=0.0,
                 )
 
             return VisionAnalysisResult.model_validate(parsed)
@@ -301,6 +299,8 @@ class VisionAnalyzer:
                     if raw
                     else "VLM response could not be parsed",
                     "depth_layers": [],
+                    "overall_risk": "unknown",
+                    "confidence_score": 0.0,
                 }
 
             return parsed
