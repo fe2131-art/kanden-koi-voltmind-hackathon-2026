@@ -181,7 +181,7 @@ Input: Observation (image_path + prev_image_path + audio_path + infrared_image_p
 ```
 LLM = get_llm(config)
   ├─ OPENAI_API_KEY + "openai" → OpenAI API（json_object フォーマット）
-  ├─ LLM_BASE_URL + "vllm" → ローカルサーバー（Structured Outputs で JSON スキーマ指定）
+  ├─ config の llm.vllm.base_url + "vllm" → ローカルサーバー（Structured Outputs で JSON スキーマ指定）
   └─ なし → None
 ```
 
@@ -229,20 +229,22 @@ LLM 未設定時のフォールバック：
 
 ```yaml
 agent:
-  max_steps: 1                    # フレーム処理数（-1: 全フレーム）
+  max_steps: -1                   # フレーム処理数（-1: 全フレーム）
   enable_audio: true              # 音声解析の有効/無効
   enable_depth: true              # 深度推定の有効/無効
-  context_history_size: 1         # LLM に渡す前回判断の数（0=なし, 1=前回のみ）
+  enable_infrared: true           # 赤外線解析の有効/無効
+  enable_temporal: true           # 時系列解析の有効/無効
+  context_history_size: 0         # LLM に渡す前回判断の数（0=なし）
 
 llm:
-  provider: "openai"              # "openai" or "vllm"
+  provider: "vllm"                # "openai" or "vllm"
 
 vlm:
-  provider: "openai"              # VLM プロバイダー
+  provider: "vllm"                # VLM プロバイダー
 
 tokens:
-  vision_max_completion_tokens: 5000   # VLM の最大トークン
-  chat_max_tokens: 2000                # テキスト LLM の最大トークン
+  vision_max_completion_tokens: 8192   # VLM の最大トークン
+  chat_max_tokens: 8192                # テキスト LLM の最大トークン
 ```
 
 ### `configs/prompt.yaml` (外部化)
@@ -261,9 +263,9 @@ safety_assessment:
 ### エラーハンドリング
 
 - **ファイル未検出**: 設定ファイル/プロンプトファイル欠落 → `FileNotFoundError` を raise
-- **フレーム未検出**: manual モード + data/frames 空 → `FileNotFoundError` を raise（ダミーデータフォールバック廃止）
-- **LLM 未設定**: `llm=None` → `_heuristic_assessment()` で自動フォールバック
-- **LLM 実行エラー**: JSON パース失敗など → ヒューリスティック判断に降格
+- **フレーム未検出**: manual モードで `data/videos/` に動画も `data/frames/` に画像もない → `FileNotFoundError` を raise
+- **LLM 未設定**: `llm=None` → 固定値の `SafetyAssessment` / 既存 `BeliefState` でフォールバック
+- **LLM 実行エラー**: JSON パース失敗など → 固定値の `SafetyAssessment` にフォールバック
 
 ## 並列化の仕組み
 
@@ -386,7 +388,6 @@ python src/run.py
 src/safety_agent/
 ├── agent.py          # LangGraph グラフビルダー
 ├── modality_nodes.py # VisionAnalyzer, AudioAnalyzer, DepthEstimator, InfraredImageAnalyzer, TemporalImageAnalyzer
-├── perceiver.py      # ハザード推定エンジン
 └── schema.py         # Pydantic スキーマ
 ```
 

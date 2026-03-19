@@ -11,7 +11,7 @@
 ### 前提条件
 - **実行環境**: `uv` で仮想環境が有効 (`uv sync` 実行後)
 - **実行コマンド**: すべて `python src/run.py` で統一
-- **モデル**: `gpt-5-nano-2025-08-07` 固定（変更禁止）
+- **モデル**: `configs/default.yaml` で切り替え（既定は `gpt-5-nano` / `Qwen/Qwen3.5-9B`）
 
 ## ディレクトリ構造
 
@@ -23,7 +23,6 @@ kanden-koi-voltmind-hackathon-2026/
 │   │   ├── __init__.py
 │   │   ├── schema.py          # Pydantic モデル定義
 │   │   ├── modality_nodes.py  # モダリティ処理クラス（VisionAnalyzer, AudioAnalyzer）
-│   │   ├── perceiver.py       # Perceiver クラス（ハザード推定）
 │   │   └── agent.py           # LLM・グラフノード・ビルダー（fan-out/fan-in 実装）
 │   └── apps/                  # React + Vite デモアプリ
 │       ├── server.py             # WebSocket サーバー
@@ -40,9 +39,7 @@ kanden-koi-voltmind-hackathon-2026/
 │   ├── videos/                # 入力動画
 │   ├── frames/                # 抽出フレーム
 │   ├── audio/                 # 抽出音声
-│   ├── images/                # 静止画入力
 │   ├── perception_results.json # 分析結果（追記式）
-│   ├── agent_execution_summary.txt
 │   └── flow.md                # グラフ図
 │
 ├── finetuning/
@@ -172,7 +169,7 @@ python finetuning/train_dummy.py --epochs 3
   - `depth_node`: 深度推定・分析（並列実行）
   - `join_modalities`: fan-in バリア（ラッチ機構）
   - `fuse_modalities`: モダリティ結果の統合
-  - `update_world_model`: 世界モデル更新
+  - `update_belief_state_llm`: BeliefState 更新
   - `determine_next_action_llm`: 知覚推論 + 総合安全判断を統合実行（**LLM がない場合は固定値 SafetyAssessment を返す**）
     * ステップ1: VLM/音声からハザード推定 → ir に格納
     * ステップ2: 推定ハザード + 世界モデル + 前回判断から SafetyAssessment 生成
@@ -181,10 +178,6 @@ python finetuning/train_dummy.py --epochs 3
   - `bump_step`: ステップカウント
 - **`build_agent()`**: LangGraph グラフ構築（fan-out/fan-in 実装、状態拡張）
 
-### 知覚処理（`src/safety_agent/perceiver.py`）
-- **`Perceiver.estimate()`**: オブジェクト・音声キューからハザード推定 + 未確認領域推定
-- **`Perceiver.run()`**: 後方互換ラッパー（テスト用）
-
 ## LLM フォールバック設計
 
 ### 動作フロー
@@ -192,7 +185,7 @@ python finetuning/train_dummy.py --epochs 3
 ```
 1. run.py#get_llm(): YAML + 環境変数から LLM を初期化
    - provider = "openai": OPENAI_API_KEY が必須
-   - provider = "vllm": LLM_BASE_URL が必須
+   - provider = "vllm": `configs/default.yaml` の `llm.vllm.base_url` が必須
    - どちらも設定なし → llm = None
 
 2. agent.py#determine_next_action_llm():
@@ -255,17 +248,15 @@ python finetuning/train_dummy.py --epochs 3
 - `depth_analysis`: 深度推定結果（scene_description, depth_layers）
 - `errors`: モダリティ処理エラー
 
-## input / output フォルダ用途
+## `data/` フォルダ用途
 
-### `input/`
-- 観測画像 (`.jpg`, `.png`)
-- 音声ファイル (`.wav`, `.mp4`) の入力先
-- .gitkeep により git 管理（ファイルは .gitignore）
-
-### `output/`
-- エージェント実行結果 (JSON, CSV)
-- グラフ図（`flow.md` の Mermaid テキスト）
-- エージェント実行ログ
+- `data/videos/`: 入力動画
+- `data/frames/`: 抽出フレーム、または手動配置した静止画フレーム
+- `data/audio/`: 抽出・コピーした音声
+- `data/depth/`: 深度可視化画像
+- `data/infrared_frames/`: 赤外線フレーム
+- `data/perception_results.json`: エージェント実行結果
+- `data/flow.md`: グラフ図（`Mermaid`）
 
 ## コーディング規約
 
@@ -294,8 +285,6 @@ run.py
          ↓
 src/safety_agent/agent.py
          ↓
-src/safety_agent/perceiver.py
-         ↓
 src/safety_agent/schema.py
 ```
 
@@ -322,9 +311,6 @@ curl https://api.openai.com/v1/models \
 
 ### vLLM 接続エラー
 ```bash
-# LLM_BASE_URL を確認
-echo $LLM_BASE_URL
-
 # ローカルサーバーが起動しているか確認
 curl http://localhost:8000/v1/models
 

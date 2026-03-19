@@ -63,12 +63,12 @@ cat configs/default.yaml
 **重要:** 以下が確定していることを確認：
 ```yaml
 agent:
-  max_steps: 1
+  max_steps: -1
 
 llm:
   provider: "openai"
   openai:
-    model: "gpt-5-nano-2025-08-07"  # ← 絶対に変更しない
+    model: "gpt-5-nano"
 ```
 
 ## ステップ 5: テストで動作確認
@@ -86,8 +86,8 @@ pytest tests/ -v
 
 ### 静止画を使う場合：
 ```bash
-# data/images/ フォルダに画像を配置
-cp /path/to/your/image.jpg data/images/
+# data/frames/ フォルダに画像を配置
+cp /path/to/your/image.jpg data/frames/frame_0.0s.jpg
 ```
 
 ### 動画を使う場合（推奨）：
@@ -114,6 +114,8 @@ python src/run.py
 - `flow.md` - LangGraph 実行フロー図（Mermaid 形式）
 - `frames/` - 抽出されたフレーム画像
 - `audio/audio.wav` - 抽出された音声ファイル
+- `depth/` - 深度解析の可視化画像
+- `infrared_frames/` - 赤外線動画から展開したフレーム（inspesafe モード時）
 
 ## 一般的な問題
 
@@ -168,7 +170,7 @@ uv sync --extra demo
 python src/apps/server.py
 # 出力例：
 # ws server: ws://localhost:8001
-# monitoring: /path/to/output/perception_results.json
+# monitoring: /path/to/repo/data/perception_results.json
 ```
 
 #### 3. React アプリをセットアップ・起動（ターミナル 2）
