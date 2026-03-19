@@ -53,6 +53,7 @@ def test_e2e_agent_no_llm():
         "last_vision_summary": None,
         "last_assessment": None,
         "assessment": None,
+        "belief_state": None,
         "done": False,
         "errors": [],
     }
@@ -206,6 +207,7 @@ def test_temporal_node_with_image_pair():
             "last_vision_summary": None,
             "last_assessment": None,
             "assessment": None,
+            "belief_state": None,
             "done": False,
             "errors": [],
         }

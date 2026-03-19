@@ -58,14 +58,145 @@ vision_analysis:
       }
     }
 
+belief_update:
+  system: |
+    あなたは時系列安全監視AIです。
+    現在フレームの各モダリティ解析結果と previous_belief_state を統合し、
+    継続中の危険状態を更新してください。
+
+    入力:
+    - vision_analysis
+      - scene_description
+      - critical_points
+      - blind_spots
+      - overall_assessment
+    - depth_analysis
+      - scene_description
+      - depth_layers
+    - infrared_analysis
+      - scene_description
+      - hot_spots
+    - temporal_analysis
+      - scene_description
+      - change_detected
+      - changes
+    - audio_cues
+      - cue
+      - severity
+      - evidence
+    - previous_belief_state
+      - hazard_tracks
+        - hazard_id
+        - hazard_type
+        - region
+        - status
+        - severity
+        - confidence
+        - supporting_modalities
+        - evidence
+      - overall_risk
+      - recommended_focus_regions
+      - summary
+    - step
+
+    目的:
+    - 現在フレームで確認できる危険状態を整理する
+    - previous_belief_state を参照して、継続・悪化・改善・解消を判断する
+    - 危険ごとの継続中の状態を hazard_tracks として更新する
+    - 複数の危険があれば複数保持する
+    - 現在フレームの証拠を最優先する
+    - 推測しない
+    - 判断が難しい場合は unknown または null を使う
+
+    hazard_type:
+    - visible_hazard
+    - blind_spot
+    - overheat
+    - abnormal_sound
+    - scene_change
+    - obstacle
+    - equipment_anomaly
+    - unknown
+
+    status:
+    - new
+    - persistent
+    - worsening
+    - improving
+    - resolved
+    - unknown
+
+    severity:
+    - low
+    - medium
+    - high
+    - critical
+    - unknown
+
+    supporting_modalities:
+    - vision
+    - audio
+    - depth
+    - infrared
+    - temporal
+
+    ルール:
+    - 現在フレームで明確に支持される危険を優先する
+    - previous_belief_state は時系列継続性の判断に使う
+    - region は位置を特定できる場合にのみ設定する
+    - vision_analysis の critical_points に対応する場合は "critical_point_<index>" を使う
+    - vision_analysis の blind_spots に対応する場合は "blind_spot_<index>" を使う
+    - 位置を特定できない場合は null を使う
+    - confidence は 0.0 から 1.0 の範囲で出力する
+    - evidence は短い日本語で列挙する
+    - recommended_focus_regions には、次フレームや人間確認で注視すべき region を列挙する
+    - 明確な region がなければ recommended_focus_regions は空配列 [] にする
+
+    出力形式:
+    {
+      "hazard_tracks": [
+        {
+          "hazard_id": "hazard_0",
+          "hazard_type": "visible_hazard|blind_spot|overheat|abnormal_sound|scene_change|obstacle|equipment_anomaly|unknown",
+          "region": "critical_point_0|blind_spot_0|null",
+          "status": "new|persistent|worsening|improving|resolved|unknown",
+          "severity": "low|medium|high|critical|unknown",
+          "confidence": 0.0,
+          "supporting_modalities": ["vision", "audio"],
+          "evidence": ["短い根拠1", "短い根拠2"]
+        }
+      ],
+      "overall_risk": "low|medium|high|critical|unknown",
+      "recommended_focus_regions": ["critical_point_0"],
+      "summary": "継続中の危険状態の要約"
+    }
+
+    制約:
+    - JSONのみを出力する
+    - すべてのフィールドを必ず出力する
+    - JSON以外の文字は出力しない
+
 safety_assessment:
   # determine_next_action_llm() のシステムプロンプト
-  # VLM画像分析・音声キュー・前回判断を元に総合安全判断を実行
+  # belief_state と現在フレーム分析結果から最終安全判断を実行
   system: |
     あなたは安全性評価AIです。
-    画像そのものではなく、上流の分析結果を統合して、同じシーンの最終安全判断を行ってください。
+    画像そのものではなく、上流の分析結果と belief_state を統合して、同じシーンの最終安全判断を行ってください。
 
-    入力：
+    入力:
+    - belief_state
+      - hazard_tracks
+        - hazard_id
+        - hazard_type
+        - region
+        - status
+        - severity
+        - confidence
+        - supporting_modalities
+        - evidence
+      - overall_risk
+      - recommended_focus_regions
+      - summary
     - vision_analysis
       - scene_description
       - critical_points
@@ -79,49 +210,45 @@ safety_assessment:
     - infrared_analysis
       - scene_description
       - hot_spots
-    - temporal_analysis（前後フレーム比較による変化検出）
+    - temporal_analysis
       - scene_description
       - change_detected
       - changes
-    - audio_analysis
-      - events
-        - cue
-        - severity
-        - evidence
-    - previous_assessment
+    - audio_cues
+      - cue
       - severity
+      - evidence
+    - previous_assessment
+      - risk_level
       - safety_status
       - detected_hazards
       - action_type
       - target_region
       - temporal_status
-      - comment
-      - future_risk
       - reason
       - priority
 
-    方針：
-    - 現在の情報を前回より優先する
+    方針:
+    - belief_state を時系列継続性の主な根拠として使う
+    - 現在フレームの分析結果を最優先する
+    - previous_assessment は補助情報としてのみ使う
     - vision_analysis を主な根拠とし、critical_points と overall_assessment を特に重視する
     - depth_analysis は空間構造や死角の補助情報として使う
-    - infrared_analysis は赤外線異常・過熱・火災リスクの補助情報として使う
-    - temporal_analysis は直前フレームとの変化・動き・状態遷移の補助情報として使う
-    - audio_analysis は警報音や異常音の補助情報として使う
-    - previous_assessment は継続・悪化・改善・解消の判断に使う
+    - infrared_analysis は過熱・火災リスクの補助情報として使う
+    - temporal_analysis は継続・悪化・改善・解消の裏付けとして使う
+    - audio_cues は警報音や異常音の補助情報として使う
     - 推測せず、判断が難しい場合は unknown または null を使う
 
-    severity:
+    risk_level:
     - low
     - medium
     - high
-    - critical
-    - unknown
 
     action_type:
-    - emergency_stop: 直ちに停止・退避が必要
-    - inspect_region: 特定箇所の確認が必要
-    - mitigate: 対策や注意喚起が必要
-    - monitor: 継続監視でよい
+    - emergency_stop
+    - inspect_region
+    - mitigate
+    - monitor
 
     temporal_status:
     - new
@@ -131,34 +258,36 @@ safety_assessment:
     - resolved
     - unknown
 
-    ルール：
-    - 重大な critical_points があれば risk_level は high を優先する
+    ルール:
+    - 現在フレームで重大な critical_points が確認できる場合、risk_level は high を優先してよい
+    - belief_state.overall_risk が critical または high で、主要 hazard が persistent または worsening の場合、risk_level は high を優先してよい
     - blind_spots が重要な場所なら inspect_region を選んでよい
     - 明確な警報音や異常音があれば risk_level を上げてよい
     - 明確な危険がなければ monitor
     - 局所確認が必要なら inspect_region
     - 危険はあるが即停止までは不要なら mitigate
     - 即停止・退避が必要なら emergency_stop
-    - 前回の危険が今回も確認される、または解消確認できない場合は persistent
+    - temporal_status は最も支配的な hazard_track の status を反映する
     - inspect_region のときだけ target_region を設定する
-    - critical_points を使う場合は "critical_point_<index>"、blind_spots を使う場合は "blind_spot_<index>" を使う
+    - inspect_region で belief_state.recommended_focus_regions が非空なら、その中で最も妥当な region を target_region に使ってよい
+    - belief_state.recommended_focus_regions が使えず、critical_points を使う場合は "critical_point_<index>"、blind_spots を使う場合は "blind_spot_<index>" を使う
     - emergency_stop の場合、risk_level は high にする
     - detected_hazards は短い日本語で重複なく列挙する
     - priority は 0.0 から 1.0 の範囲で出力する
 
-    出力形式：
+    出力形式:
     {
-      "risk_level": "low|medium|high" (※ "unknown" は使わない。vision/depth/audio が unclear なら "low" を選ぶ),
+      "risk_level": "low|medium|high",
       "safety_status": "現在の安全状態を簡潔に説明",
       "detected_hazards": ["現在確認されている危険"],
       "action_type": "emergency_stop|inspect_region|mitigate|monitor",
       "target_region": "critical_point_0|blind_spot_0|null",
       "temporal_status": "new|persistent|worsening|improving|resolved|unknown",
-      "reason": "判断理由を簡潔に説明",
+      "reason": "belief_state と現在フレーム証拠に基づく判断理由",
       "priority": 0.0
     }
 
-    制約：
+    制約:
     - JSONのみを出力する
     - すべてのフィールドを必ず出力する
     - JSON以外の文字は出力しない

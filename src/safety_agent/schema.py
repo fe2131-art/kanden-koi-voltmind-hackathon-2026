@@ -183,6 +183,52 @@ class PerceptionIR(BaseModel):
     modality_errors: List[str] = Field(default_factory=list)  # 各モダリティのエラー
 
 
+# ─── 信念状態（Belief State） ─────────────────────────────────────────────────
+# update_belief_state_llm() が生成し、AgentState.belief_state に格納される。
+# フレーム間の危険状態の継続・悪化・改善・解消を LLM が管理する。
+
+
+class HazardTrack(BaseModel):
+    """継続中の個別危険状態。BeliefState.hazard_tracks の要素。"""
+
+    hazard_id: str
+    hazard_type: Literal[
+        "visible_hazard",
+        "blind_spot",
+        "overheat",
+        "abnormal_sound",
+        "scene_change",
+        "obstacle",
+        "equipment_anomaly",
+        "unknown",
+    ]
+    region: Optional[str] = None
+    status: Literal[
+        "new", "persistent", "worsening", "improving", "resolved", "unknown"
+    ]
+    severity: Literal["low", "medium", "high", "critical", "unknown"]
+    confidence: float = Field(ge=0.0, le=1.0)
+    supporting_modalities: List[
+        Literal["vision", "audio", "depth", "infrared", "temporal"]
+    ] = Field(default_factory=list)
+    evidence: List[str] = Field(default_factory=list)
+
+
+class BeliefState(BaseModel):
+    """LLM が管理する時系列危険状態の内部表現。AgentState.belief_state に格納。
+
+    hazard_tracks: 継続中の危険状態のリスト（フレームをまたいで更新される）
+    overall_risk:  全体リスクレベル（hazard_tracks から総合判断）
+    recommended_focus_regions: 次フレームで注視すべき領域
+    summary:       現在の継続危険状態の要約
+    """
+
+    hazard_tracks: List[HazardTrack] = Field(default_factory=list)
+    overall_risk: Literal["low", "medium", "high", "critical", "unknown"] = "unknown"
+    recommended_focus_regions: List[str] = Field(default_factory=list)
+    summary: str = ""
+
+
 # ─── 安全判断 ─────────────────────────────────────────────────────────────────
 # determine_next_action_llm() が生成し、
 # AgentState.assessment と WorldModel.last_assessment に格納される。

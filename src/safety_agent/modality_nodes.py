@@ -543,12 +543,8 @@ class DepthEstimator:
         self._lock = threading.Lock()
 
         self._device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        resolved_model_id = self._resolve_model_id(
-            model_family, model_size, model_id
-        )
-        self._model = DepthAnything3.from_pretrained(resolved_model_id).to(
-            self._device
-        )
+        resolved_model_id = self._resolve_model_id(model_family, model_size, model_id)
+        self._model = DepthAnything3.from_pretrained(resolved_model_id).to(self._device)
         logger.info(
             f"DepthEstimator initialized: {resolved_model_id} on {self._device}"
         )

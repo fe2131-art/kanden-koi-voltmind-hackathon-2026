@@ -1036,6 +1036,7 @@ def main():
         "last_vision_summary": None,
         "last_assessment": None,
         "assessment": None,
+        "belief_state": None,
         "done": False,
         "errors": [],
     }

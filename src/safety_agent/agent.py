@@ -20,6 +20,7 @@ from .modality_nodes import (
     VisionAnalyzer,
 )
 from .schema import (
+    BeliefState,
     DepthAnalysisResult,
     InfraredAnalysisResult,
     Observation,
@@ -309,6 +310,9 @@ class AgentState(TypedDict):
     # 前フレーム、現フレームの安全判断
     last_assessment: Optional[SafetyAssessment]  # フレーム間の引き継ぎ
     assessment: Optional[SafetyAssessment]  # 現フレームの判断
+
+    # 信念状態：危険のトラッキング（フレーム間の引き継ぎ）
+    belief_state: Optional[BeliefState]
 
     done: bool
     errors: Annotated[List[str], _sliding_window_errors]
@@ -836,10 +840,124 @@ def fuse_modalities(
     }
 
 
+def update_belief_state_llm(
+    state: AgentState, runtime: Runtime[ContextSchema]
+) -> Dict[str, Any]:
+    """信念状態更新ノード：全モダリティの知覚結果から危険状態を継続管理する。
+
+    危険のトラッキング：
+    - previous_belief_state: 前フレームの belief_state（フレーム間の継続性判断用）
+    - belief_state: 現フレームで更新した belief_state
+
+    返却時に belief_state キーに新しい値を入れる理由：
+    次フレームでこの値が previous_belief_state として参照されるため。
+    ingest_observation でリセットされないため、フレーム間で正しく引き継がれる。
+    """
+    ir = state.get("ir")
+    if ir is None:
+        # ir が未生成の場合、previous belief_state をそのまま維持
+        return {
+            "belief_state": state.get("belief_state"),
+            "errors": ["No IR in update_belief_state_llm"],
+            "messages": [
+                {
+                    "role": "assistant",
+                    "content": "[belief] no IR -> skip",
+                }
+            ],
+        }
+
+    llm = runtime.context.get("llm")
+    if llm is None:
+        # LLM が未設定の場合、previous belief_state をそのまま維持
+        return {
+            "belief_state": state.get("belief_state"),
+            "messages": [
+                {
+                    "role": "assistant",
+                    "content": "[belief] LLM not configured -> skip",
+                }
+            ],
+        }
+
+    # コンテキスト構築
+    previous_belief_state = state.get("belief_state")
+    context_data = {
+        "vision_analysis": (
+            ir.vision_analysis.model_dump(exclude_none=True, by_alias=True)
+            if ir.vision_analysis
+            else None
+        ),
+        "depth_analysis": (
+            ir.depth_analysis.model_dump(exclude_none=True)
+            if ir.depth_analysis
+            else None
+        ),
+        "infrared_analysis": (
+            ir.infrared_analysis.model_dump(exclude_none=True)
+            if ir.infrared_analysis
+            else None
+        ),
+        "temporal_analysis": (
+            ir.temporal_analysis.model_dump(exclude_none=True)
+            if ir.temporal_analysis
+            else None
+        ),
+        "audio_cues": [a.model_dump() for a in ir.audio],
+        "previous_belief_state": (
+            previous_belief_state.model_dump(exclude_none=True)
+            if previous_belief_state
+            else None
+        ),
+        "step": state["step"],
+    }
+
+    # prompt.yaml の belief_update セクションから取得
+    belief_cfg = runtime.context["prompts"].get("belief_update", {})
+    system = belief_cfg.get("system", "").strip()
+
+    try:
+        chat_max_tokens = runtime.context["chat_max_tokens"]
+        raw = llm.chat_json(
+            system=system,
+            user=json.dumps(context_data, ensure_ascii=False),
+            max_tokens=chat_max_tokens,
+        )
+
+        # BeliefState を直接検証
+        belief_state = BeliefState.model_validate(raw)
+        # 新しい belief_state を次フレームに引き継ぎ
+        return {
+            "belief_state": belief_state,
+            "messages": [
+                {
+                    "role": "assistant",
+                    "content": f"[belief] ok hazards={len(belief_state.hazard_tracks)} risk={belief_state.overall_risk}",
+                }
+            ],
+        }
+
+    except Exception as e:
+        logger.error(
+            "Belief state update failed, keeping previous belief_state", exc_info=True
+        )
+        error_summary = f"{type(e).__name__}: {str(e)[:150]}"
+        return {
+            "belief_state": previous_belief_state,
+            "errors": [f"Belief state update failed: {error_summary}"],
+            "messages": [
+                {
+                    "role": "assistant",
+                    "content": "[belief] failed -> keep previous",
+                }
+            ],
+        }
+
+
 def determine_next_action_llm(
     state: AgentState, runtime: Runtime[ContextSchema]
 ) -> Dict[str, Any]:
-    """VLM/音声から、次に起こすべき行動を LLM で決定。前フレーム結果を参照。
+    """VLM/音声から、次に起こすべき行動を LLM で決定。belief_state と前フレーム結果を参照。
 
     フレーム間の状態引き継ぎ：
     - last_assessment: 前フレームの判断（LLM 入力で参照用）
@@ -904,6 +1022,7 @@ def determine_next_action_llm(
     context_history_size = runtime.context.get("context_history_size", 1)
 
     last_assessment = state.get("last_assessment")
+    belief_state = state.get("belief_state")
     context_data = {
         "vision_analysis": (
             ir.vision_analysis.model_dump(exclude_none=True, by_alias=True)
@@ -926,6 +1045,9 @@ def determine_next_action_llm(
             else None
         ),
         "audio_cues": [a.model_dump() for a in ir.audio],
+        "belief_state": (
+            belief_state.model_dump(exclude_none=True) if belief_state else None
+        ),
         "previous_assessment": (
             last_assessment.model_dump()
             if context_history_size >= 1 and last_assessment
@@ -1003,6 +1125,7 @@ def emit_output(state: AgentState) -> Dict[str, Any]:
 
     errors = list(state.get("errors", [])) + modality_errors
 
+    belief_state = state.get("belief_state")
     output = {
         "frame_id": obs.obs_id if obs else None,
         "timestamp": None,  # save_analysis_results() で付与
@@ -1028,6 +1151,9 @@ def emit_output(state: AgentState) -> Dict[str, Any]:
             else None
         ),
         "audio": ir_dump.get("audio", []),
+        "belief_state": (
+            belief_state.model_dump(exclude_none=True) if belief_state else None
+        ),
         "assessment": assessment.model_dump(exclude_none=True) if assessment else None,
         "errors": errors,
     }
@@ -1081,6 +1207,7 @@ def build_agent():
     builder.add_node("temporal_node", temporal_node)
     builder.add_node("join_modalities", join_modalities)  # ラッチ付き fan-in バリア
     builder.add_node("fuse_modalities", fuse_modalities)
+    builder.add_node("update_belief_state_llm", update_belief_state_llm)
     builder.add_node("determine_next_action_llm", determine_next_action_llm)
     builder.add_node("emit_output", emit_output)
     builder.add_node("bump_step", bump_step)
@@ -1088,9 +1215,10 @@ def build_agent():
     # エッジ設定
     builder.add_edge(START, "ingest_observation")
     # fan-out: vlm/audio ノードは Command で goto="join_modalities" するため静的エッジは不要
+    builder.add_edge("fuse_modalities", "update_belief_state_llm")  # 信念状態更新
     builder.add_edge(
-        "fuse_modalities", "determine_next_action_llm"
-    )  # PerceptionIR 生成 → 安全判断
+        "update_belief_state_llm", "determine_next_action_llm"
+    )  # 信念状態 → 安全判断
     builder.add_edge("determine_next_action_llm", "emit_output")
     builder.add_edge("emit_output", "bump_step")
     builder.add_conditional_edges("bump_step", should_continue)
