@@ -63,8 +63,12 @@ uv run vllm serve "$MODEL" \
   --host 0.0.0.0 \
   --port "$PORT" \
   --tensor-parallel-size 1 \
-  --max-model-len 8192 \
-  --gpu-memory-utilization 0.90 \
+  --max-model-len 16384 \
+  --max-num-seqs 8 \
+  --gpu-memory-utilization 0.70 \
+  --reasoning-parser qwen3 \
+  --trust-remote-code \
+  --skip-mm-profiling \
   --enable-prefix-caching \
   > "vllm_${SLURM_JOB_ID}.log" 2>&1 &
 # --reasoning-parser qwen3 は Qwen3 thinking モデル用。必要なら上記に追加。

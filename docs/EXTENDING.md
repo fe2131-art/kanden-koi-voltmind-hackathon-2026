@@ -26,7 +26,7 @@ class LidarAnalyzer:
             point_cloud = read_pcd(lidar_data_path)
             detections = self.model.predict(point_cloud)
 
-            # audio_cues に検出結果をテキスト化して格納
+            # description に検出結果をテキスト化
             description = f"LiDAR detections: {len(detections)} objects"
 
             return ModalityResult(
@@ -37,6 +37,8 @@ class LidarAnalyzer:
                 error=None,
             )
 ```
+
+**注**: `ModalityResult` はフラット構造で返却（vision_analysis/depth_analysis 等の個別フィールドではなく）。PerceptionIR への統合は fuse_modalities で行われます。
 
 #### Step 2: LangGraph ノードを追加
 
@@ -74,27 +76,27 @@ def lidar_node(state: AgentState, runtime: RunnableConfig) -> Dict:
 
 #### Step 3: グラフに統合
 
-`src/safety_agent/agent.py` の `build_agent()` で：
+`src/safety_agent/agent.py` の `ingest_observation()` で Send() を追加、`build_agent()` でノードを追加：
 
 ```python
-def build_agent() -> CompiledStateGraph:
-    """Build Safety View Agent graph"""
-    graph = StateGraph(AgentState)
-    
-    # ノード追加（fan-out/fan-in パイプラインに新規モダリティを追加）
-    # 注: 既存のノード（yolo_node, vlm_node, audio_node）は ingest_observation から fan-out で並列送信される
-    # 新規 lidar_node も同様に join_modalities へ参加
+# ingest_observation() 内
+sends = [
+    Send("vlm_node", {"observation": obs}),
+    Send("audio_node", {"observation": obs}),
+    Send("depth_node", {"observation": obs}),
+    Send("lidar_node", {"observation": obs}),  # 新規追加
+]
 
-    graph.add_node("lidar_node", lidar_node)  # 新規
-
-    # fan-in: join_modalities への参加（他の modality_node と同様に）
-    # ingest_observation から fan-out で lidar_node へも Send() で送信するよう修正が必要
-    # その後、lidar_node の出力は join_modalities へ到達
+# build_agent() 内
+graph.add_node("lidar_node", lidar_node)  # 新規ノード追加
+# 自動的に join_modalities へ結果を送信（expected_modalities で制御）
 ```
 
-#### Step 4: Context に analyzer を追加
+**重要**: join_modalities は expected_modalities に基づいて動的に待機するモダリティを判定します。新しいモダリティは自動的に統合されます。
 
-`src/run.py` で：
+#### Step 4: Context に analyzer を追加、expected_modalities に追加
+
+`src/run.py` の `main()` で：
 
 ```python
 def main():
@@ -105,112 +107,160 @@ def main():
             lidar_analyzer = LidarAnalyzer("models/lidar_model.pth")
         except Exception as e:
             logger.warning(f"Failed to initialize LiDAR: {e}")
-    
+
+    # expected_modalities に追加
+    expected_modalities = ["vlm"]
+    if agent_cfg.get("enable_audio", False):
+        expected_modalities.append("audio")
+    if agent_cfg.get("enable_depth", False):
+        expected_modalities.append("depth")
+    if agent_cfg.get("enable_lidar", False):
+        expected_modalities.append("lidar")  # 新規追加
+
     # context に追加
     context = {
         "lidar_analyzer": lidar_analyzer,
+        "expected_modalities": expected_modalities,
         # ... 既存の analyzers ...
     }
 ```
 
-### 2. ビュー選択ロジックのカスタマイズ
+**重要**: expected_modalities は join_modalities で全モダリティの完了を待つ条件として使用されます。
 
-次ビュー提案のロジックを変更します。
+### 2. 信念状態・安全判断ロジックのカスタマイズ
 
-#### カスタムスコアリング関数
+BeliefState + SafetyAssessment 生成ロジックを変更します。
+
+#### カスタム BeliefState 生成
 
 ```python
-def custom_view_planning(state, runtime) -> Dict:
-    """カスタムビュー提案ロジック"""
-    ir = state["ir"]  # 現在の PerceptionIR
-    assessment = state["assessment"]  # 現在の安全判断
+def custom_update_belief_state_llm(state: AgentState, runtime: RunnableConfig) -> Dict:
+    """カスタム信念状態更新ロジック"""
+    ir = state.get("ir")  # 現在の PerceptionIR
+    prev_belief = state.get("belief_state")  # 前フレーム BeliefState
 
-    def score_candidate(candidate: ViewCandidate) -> float:
-        # detected_hazards から危険箇所を抽出
-        hazards = assessment.detected_hazards if assessment else []
+    if not ir:
+        return {"belief_state": BeliefState()}
 
-        # 検出されたオブジェクト・視覚分析を参照
-        vision = ir.vision_analysis if ir else None
+    # カスタムロジック: vision_analysis から hazard_tracks を生成
+    hazard_tracks = []
+    if ir.vision_analysis and ir.vision_analysis.critical_points:
+        for point in ir.vision_analysis.critical_points:
+            track = HazardTrack(
+                hazard_id=point.region_id,
+                hazard_type="visible_hazard",
+                region_id=point.region_id,
+                status="new" if not prev_belief else "persistent",
+                severity=point.severity,
+                confidence_score=0.8,
+                supporting_modalities=["vision"],
+                evidence=[point.description],
+            )
+            hazard_tracks.append(track)
 
-        # 脅威スコア計算
-        threat_score = len(hazards) * 0.8
+    belief_state = BeliefState(
+        hazard_tracks=hazard_tracks,
+        overall_risk="high" if hazard_tracks else "low",
+        recommended_focus_regions=[t.region_id for t in hazard_tracks],
+    )
 
-        # リスク優先度スコア
-        priority_score = assessment.priority if assessment else 0.0
-
-        # スコア計算（高いほど優先観測対象）
-        score = threat_score + priority_score * 0.2
-        return score
-
-    candidates = generate_view_candidates()  # 汎用候補生成
-    scored = [(c, score_candidate(c)) for c in candidates]
-    sorted_candidates = sorted(scored, key=lambda x: x[1], reverse=True)
-    
-    return {"plan": [c for c, _ in sorted_candidates[:6]]}
+    return {"belief_state": belief_state}
 ```
 
 `agent.py` で置き換え：
 
 ```python
-graph.add_node("propose_next_view_llm", custom_view_planning)
+graph.add_node("update_belief_state_llm", custom_update_belief_state_llm)
 ```
 
-### 3. ハザード推定ロジックの拡張
-
-機械学習ベースの分類器を追加：
+#### カスタム SafetyAssessment 生成
 
 ```python
-# src/safety_agent/hazard_classifier.py（新規）
+def custom_determine_next_action_llm(state: AgentState, runtime: RunnableConfig) -> Dict:
+    """カスタム安全判断ロジック"""
+    belief = state.get("belief_state")
+    ir = state.get("ir")
 
-class HazardClassifier:
-    """学習済みモデルでハザード分類"""
-    
-    def __init__(self, model_path: str):
-        self.model = joblib.load(model_path)
-    
-    def classify(self, features: dict) -> tuple[str, float]:
-        """ハザード分類"""
-        feature_vector = [
-            features.get("object_count", 0),
-            features.get("avg_distance", 100),
-            features.get("motion_magnitude", 0),
-        ]
-        
-        prediction = self.model.predict([feature_vector])[0]
-        confidence = self.model.predict_proba([feature_vector])[0].max()
-        
-        return prediction, confidence
+    # belief_state.hazard_tracks から直接判断を生成
+    if not belief or not belief.hazard_tracks:
+        return {
+            "assessment": SafetyAssessment(
+                risk_level="low",
+                safety_status="安全",
+                action_type="monitor",
+                reason="危険検出なし",
+                priority=0.0,
+            )
+        }
+
+    # hazard_tracks がある場合
+    max_severity = max(
+        track.severity for track in belief.hazard_tracks
+    ) if belief.hazard_tracks else "low"
+
+    risk_map = {
+        "critical": "high",
+        "high": "high",
+        "medium": "medium",
+        "low": "low",
+    }
+    risk_level = risk_map.get(max_severity, "low")
+
+    assessment = SafetyAssessment(
+        risk_level=risk_level,
+        safety_status=f"検出された危険: {len(belief.hazard_tracks)}",
+        detected_hazards=[t.hazard_type for t in belief.hazard_tracks],
+        action_type="inspect_region" if belief.recommended_focus_regions else "monitor",
+        target_region=belief.recommended_focus_regions[0] if belief.recommended_focus_regions else None,
+        reason=f"BeliefState から {len(belief.hazard_tracks)} 件の危険トラックを検出",
+        priority=min(1.0, len(belief.hazard_tracks) * 0.3),
+    )
+
+    return {"assessment": assessment}
 ```
 
-`perceiver.py` で使用：
+`agent.py` で置き換え：
 
 ```python
-class Perceiver:
-    def __init__(self, hazard_classifier_path: str = None):
-        self.classifier = None
-        if hazard_classifier_path:
-            self.classifier = HazardClassifier(hazard_classifier_path)
-    
-    def _infer_hazards(self, objects, audio_cues) -> list[Hazard]:
-        """ハザード推定"""
-        hazards = []
-        
-        for obj in objects:
-            if obj.class_name in ["vehicle", "person"]:
-                if self.classifier:
-                    features = {
-                        "object_count": len(objects),
-                        "avg_distance": np.mean([o.distance for o in objects]),
-                    }
-                    hazard_type, conf = self.classifier.classify(features)
-                    if conf > 0.7:
-                        hazards.append(Hazard(
-                            class_name=hazard_type,
-                            confidence=conf,
-                            bbox=obj.bbox
-                        ))
-        
-        return hazards
+graph.add_node("determine_next_action_llm", custom_determine_next_action_llm)
+```
+
+### 3. モダリティ結果の詳細化
+
+各モダリティの出力スキーマをカスタマイズ（新しいフィールドを追加）：
+
+```python
+# src/safety_agent/schema.py のスキーマを拡張
+
+from pydantic import BaseModel, Field
+from typing import List, Optional, Literal
+
+class CustomVisionAnalysisResult(BaseModel):
+    """拡張された VisionAnalysisResult"""
+    scene_description: str
+    critical_points: List[CriticalPoint] = Field(default_factory=list)
+    blind_spots: List[VisionBlindSpot] = Field(default_factory=list)
+    overall_risk: Literal["low", "medium", "high", "critical", "unknown"] = "unknown"
+    confidence_score: float = Field(default=0.0, ge=0.0, le=1.0)
+
+    # カスタムフィールド
+    object_density: Optional[float] = None  # 画像中のオブジェクト密度（0.0-1.0）
+    motion_detected: bool = False  # 動きが検出されたか
+    lighting_condition: Optional[str] = None  # 照明条件（bright/normal/dark）
+```
+
+`modality_nodes.py` の VisionAnalyzer.analyze() で拡張スキーマを返却：
+
+```python
+def analyze(self, image_path: str, max_tokens: int = 4096) -> CustomVisionAnalysisResult:
+    # 既存ロジック + 新フィールドの計算
+    result = VisionAnalysisResult(...)
+
+    # 拡張フィールド
+    result.object_density = len(result.critical_points) / 10.0  # 正規化
+    result.motion_detected = "moving" in result.scene_description.lower()
+
+    return result
 ```
 
 ### 4. 設定値の追加
@@ -299,9 +349,25 @@ print(agent.get_graph().draw_mermaid())
 "
 ```
 
-### ノードがスキップされる
+### 新しいモダリティが反応しない
 
-`add_node()` と `add_edge()` の呼び出し順序を確認してください。
+**チェックリスト**:
+1. `ingest_observation()` で `Send("lidar_node", {"observation": obs})` を追加したか
+2. `build_agent()` で `graph.add_node("lidar_node", lidar_node)` を追加したか
+3. `run.py` の `expected_modalities` に "lidar" を追加したか（config に応じて）
+4. `fuse_modalities()` で `modality_results["lidar"]` を PerceptionIR に統合したか
+
+### join_modalities で永遠に待機
+
+expected_modalities と received_modalities のミスマッチが原因。デバッグ:
+
+```python
+def join_modalities(state, runtime):
+    expected = set(runtime.context["expected_modalities"])
+    received = set(state["received_modalities"])
+    logger.info(f"Expected: {expected}, Received: {received}")  # デバッグログ
+    # ... 残り
+```
 
 ### メモリリーク
 

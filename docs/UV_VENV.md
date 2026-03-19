@@ -111,3 +111,8 @@ uv sync --extra dev
 | `source .venv/bin/activate` | ⭐⭐ | 手動 | 開発時 |
 
 **結論:** 日常的には `uv run python ...` を使い、長時間開発する場合は仮想環境に入るのが効率的です。
+
+---
+
+**最終更新:** 2026-03-19
+**対象バージョン:** Safety View Agent v1.0

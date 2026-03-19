@@ -68,7 +68,7 @@ def test_alm_initialization_openai_missing_key():
             "window_seconds": 3.0,
         },
     }
-    prompts = {"audio_analysis": {"default_prompt": "test"}}
+    prompts = {"audio_analysis": {"system": "test"}}
 
     os.environ.pop("OPENAI_API_KEY", None)
 
