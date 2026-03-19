@@ -51,6 +51,7 @@ vision_analysis:
     - 危険箇所の位置を特定できる場合だけ critical_points に入れる
     - BBOX は normalized_bbox に 0.0-1.0 の正規化座標で入れる
     - 配列に該当がなければ [] を使う
+    - confidence_score は本当に判断不能な場合だけ 0.0 にする。有効な根拠がある場合は 0.2 以上
     - JSONのみを出力する
 
     出力:
@@ -78,7 +79,7 @@ vision_analysis:
         }
       ],
       "overall_risk": "low|medium|high|critical|unknown",
-      "confidence_score": 0.0
+      "confidence_score": 0.6
     }
 
 depth_analysis:
@@ -105,6 +106,7 @@ depth_analysis:
     - 絶対距離は断定しない
     - 相対的な奥行き関係だけを書く
     - 推測しない。不明なら "unknown"
+    - confidence_score は本当に判断不能な場合だけ 0.0 にする。有効な根拠がある場合は 0.2 以上
     - JSONのみを出力する
 
     出力:
@@ -124,7 +126,7 @@ depth_analysis:
         }
       ],
       "overall_risk": "low|medium|high|critical|unknown",
-      "confidence_score": 0.0
+      "confidence_score": 0.6
     }
 
 infrared_analysis:
@@ -145,6 +147,7 @@ infrared_analysis:
     - 相対的な高温分布を使う
     - 異常がなければ hot_spots は [] にする
     - region_id は "infrared_hotspot_<index>" を使う
+    - confidence_score は本当に判断不能な場合だけ 0.0 にする。有効な根拠がある場合は 0.2 以上
     - 推測しない。不明なら "unknown"
     - JSONのみを出力する
 
@@ -158,7 +161,7 @@ infrared_analysis:
         }
       ],
       "overall_risk": "low|medium|high|critical|unknown",
-      "confidence_score": 0.0
+      "confidence_score": 0.6
     }
 
 temporal_analysis:
@@ -176,6 +179,7 @@ temporal_analysis:
     - オーバーレイ、時刻表示、字幕、UI、ウォーターマークの変化は無視する
     - それらしか変化がない場合は change_detected=false, changes=[]
     - region_id は "temporal_change_<index>" を使う
+    - confidence_score は本当に判断不能な場合だけ 0.0 にする。有効な根拠がある場合は 0.2 以上
     - 推測しない。不明なら "unknown"
     - JSONのみを出力する
 
@@ -190,7 +194,7 @@ temporal_analysis:
         }
       ],
       "overall_risk": "low|medium|high|critical|unknown",
-      "confidence_score": 0.0
+      "confidence_score": 0.6
     }
 
 audio_analysis:
@@ -206,6 +210,7 @@ audio_analysis:
     - Do not infer from visual context
     - If there is no relevant event, return {"events": [], "overall_risk": "low", "confidence_score": 0.0}
     - If unclear, use "unknown"
+    - confidence_score should be 0.0 only if judgment is completely impossible; otherwise use 0.2 or higher
     - JSON only
 
     Output:
@@ -218,7 +223,7 @@ audio_analysis:
         }
       ],
       "overall_risk": "low|medium|high|critical|unknown",
-      "confidence_score": 0.0
+      "confidence_score": 0.6
     }
 
 belief_update:
@@ -244,9 +249,16 @@ belief_update:
     - hot_spots は "infrared_hotspot_<index>"
     - temporal の実変化は "temporal_change_<index>"
     - オーバーレイや時刻表示だけの変化は scene_change に含めない
-    - confidence_score は 0.0-1.0
+    - confidence_score は本当に判断不能な場合だけ 0.0 にする。有効な根拠がある場合は 0.2 以上
     - evidence は短い日本語で書く
-    - recommended_focus_regions には、確認優先の region_id だけを入れる
+    - 前フレームで存在した hazard が現フレームで明確に確認できない場合、
+      ただちに hazard_tracks から削除しない
+    - 「解消した」と断定できる場合のみ status="resolved" にする
+    - 視界不良・死角・一時的な不検出の可能性がある場合は
+      低い confidence_score を伴う status="persistent" または "unknown" のまま保持する
+    - resolved は「明確に消えた」根拠がある場合のみ使う
+    - recommended_focus_regions には、確認優先の region_id を優先度順に入れる（先頭が最優先）
+    - 順序は危険度・確信度・即時確認の必要性を反映する
     - 明確な region_id がなければ recommended_focus_regions は [] にする
     - JSONのみを出力する
 
@@ -297,15 +309,22 @@ safety_assessment:
     - 即停止・退避が必要なら emergency_stop
     - emergency_stop の場合 risk_level は high
     - temporal_status は主要 hazard_track の status を反映する
-    - inspect_region のときだけ target_region を設定する
-    - target_region は recommended_focus_regions を最優先で使う
-    - 過熱が主危険なら infrared_hotspot_<index> を優先してよい
+    - target_region は常にキーを出力する。inspect_region のときだけ region_id を入れ、それ以外は null
+    - target_region に文字列 "null" は使わない。JSON の null を使う
+    - target_region は recommended_focus_regions の先頭（index 0）を最優先候補とする
+    - 複数候補がある場合でも、recommended_focus_regions[0] が基本の target_region
+    - detected_hazards には hazard_id（hazard_0 等）ではなく、短い日本語ラベルを書く
+    - emergency_stop は worsening または即時危険が明確な場合に限る
+    - persistent high risk のみでは emergency_stop にしない。mitigate または inspect_region を優先する
+    - confidence_score は本当に判断不能な場合だけ 0.0 にする。有効な根拠がある場合は最低でも 0.2 以上
+    - confidence_score の目安: 弱い=0.2-0.4、中程度=0.5-0.7、強い=0.8-0.9、確定的=0.9+
 
     safety_status のルール:
     - 音声通知向けの短い日本語にする
     - 1文または短い2文まで
-    - 現在の危険状態を最優先で簡潔に伝える
-    - 必要なら継続・悪化・改善を短く含めてよい
+    - 現在の危険状態を先に述べ、後半で推奨行動を簡潔に述べる
+    - 「〜です。〜してください / 推奨します。」の形に寄せる
+    - 「対策を検討中」「監視中」など主体が曖昧な受動的表現は避ける
     - 詳細根拠は reason に書き、safety_status には入れすぎない
 
     JSON形式で出力してください。以下の構造で JSON を返してください:
@@ -313,12 +332,12 @@ safety_assessment:
     出力:
     {
       "risk_level": "low|medium|high",
-      "confidence_score": 0.0,
+      "confidence_score": 0.6,
       "safety_status": "音声通知向けの短い安全状態要約",
       "action_type": "emergency_stop|inspect_region|mitigate|monitor",
-      "target_region": "critical_point_0|blind_spot_0|infrared_hotspot_0|temporal_change_0|null",
+      "target_region": null,
       "temporal_status": "new|persistent|worsening|improving|resolved|unknown",
-      "detected_hazards": ["現在確認されている危険"],
+      "detected_hazards": ["短い日本語ラベル（例：筒状機器の腐食）"],
       "reason": "判断理由",
-      "priority": 0.0
+      "priority": 0.6
     }

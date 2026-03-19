@@ -1155,7 +1155,8 @@ def emit_output(state: AgentState) -> Dict[str, Any]:
         "belief_state": (
             belief_state.model_dump(exclude_none=True) if belief_state else None
         ),
-        "assessment": assessment.model_dump(exclude_none=True) if assessment else None,
+        # assessment は target_region を常に含めるため exclude_none=False
+        "assessment": assessment.model_dump() if assessment else None,
         "errors": errors,
     }
 

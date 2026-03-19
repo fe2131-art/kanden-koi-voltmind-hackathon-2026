@@ -279,7 +279,9 @@ class SafetyAssessment(BaseModel):
 
     # 行動指示
     action_type: Literal["emergency_stop", "inspect_region", "mitigate", "monitor"]
-    target_region: Optional[str] = None  # inspect_region 時のみ設定
+    target_region: Optional[str] = (
+        None  # 常にキー出力。inspect_region 時のみ region_id、それ以外は null
+    )
     reason: str
     priority: float = Field(ge=0, le=1)
 
@@ -377,4 +379,12 @@ def get_json_schema(schema_type: SchemaType) -> Dict[str, Any]:
             f"Unknown schema_type: {schema_type}. "
             f"Allowed values: {list(_SCHEMA_MAP.keys())}"
         )
-    return _SCHEMA_MAP[schema_type].model_json_schema()
+    schema = _SCHEMA_MAP[schema_type].model_json_schema()
+
+    # safety_assessment の target_region を required に強制追加
+    # vLLM の guided decoding で target_region キーが必ず出力されるようにする
+    if schema_type == "safety_assessment":
+        if "required" in schema and "target_region" not in schema["required"]:
+            schema["required"].append("target_region")
+
+    return schema
