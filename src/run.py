@@ -1067,7 +1067,9 @@ def main():
         "prompts": prompts,
         "config": config,  # depth_node で config.get("tokens", ...) 使用
         "chat_max_tokens": tokens_cfg.get("chat_max_tokens", 2000),
-        "context_history_size": agent_cfg.get("context_history_size", 0),  # 前回判断の数（0=なし）
+        "context_history_size": agent_cfg.get(
+            "context_history_size", 0
+        ),  # 前回判断の数（0=なし）
         "expected_modalities": expected_modalities,
         "run_mode": "until_provider_ends",  # provider が None を返すまで継続
     }

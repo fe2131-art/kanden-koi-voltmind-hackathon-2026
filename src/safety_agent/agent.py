@@ -226,12 +226,13 @@ def _unique_append_with_reset(left: List[str], right: List[str]) -> List[str]:
 
 def _first_write_wins(left: Optional[str], right: Optional[str]) -> Optional[str]:
     """一度セットされた obs_id は上書きしない（ラッチ）。
-    left が None のときのみ right を採用する。
-    None リセット（ingest_observation が barrier_obs_id=None を送信）も正常に機能する:
-      left=None, right=None → None を返す
+    right=None はリセット信号として優先され、常に None を返す。
+    left が None のときのみ right の値を採用する（最初の書き込みがラッチ）。
     """
+    if right is None:
+        return None  # リセット信号が最優先
     if left is not None:
-        return left
+        return left  # ラッチ: 非 None の最初の書き込みを保持
     return right
 
 
@@ -256,13 +257,6 @@ def _sliding_window_errors(left: List[str], right: List[str]) -> List[str]:
     if len(combined) > _MAX_ERRORS:
         return combined[-_MAX_ERRORS:]
     return combined
-
-
-def _append_assessment(
-    left: List["SafetyAssessment"], right: List["SafetyAssessment"]
-) -> List["SafetyAssessment"]:
-    """assessment を末尾に追記する reducer。"""
-    return (left or []) + (right or [])
 
 
 class AgentState(TypedDict):
@@ -290,7 +284,9 @@ class AgentState(TypedDict):
 
     # 現フレームの安全判断
     assessment: Optional[SafetyAssessment]  # 現フレームの判断
-    assessment_history: Annotated[List[SafetyAssessment], _append_assessment]  # 判断履歴
+    assessment_history: List[
+        SafetyAssessment
+    ]  # 判断履歴（determine_next_action_llm で trim）
 
     # 信念状態：危険のトラッキング（フレーム間の引き継ぎ）
     belief_state: Optional[BeliefState]
@@ -310,7 +306,9 @@ class ContextSchema(TypedDict):
     prompts: dict  # プロンプト設定全体
     config: dict
     chat_max_tokens: int
-    context_history_size: int  # LLM に渡す前回判断の数（0=なし, 1=直近1フレーム, N=直近Nフレーム）
+    context_history_size: (
+        int  # LLM に渡す前回判断の数（0=なし, 1=直近1フレーム, N=直近Nフレーム）
+    )
     expected_modalities: List[str]
     # run_mode: "until_provider_ends" | "stop_when_safe"
     run_mode: str
@@ -939,6 +937,9 @@ def determine_next_action_llm(
     次フレームでこの値が last_assessment（前フレーム判断）として参照されるため。
     ingest_observation でリセットされないため、フレーム間で正しく引き継がれる。
     """
+    # 履歴長の上限を事前取得（全 return 文で使用）
+    context_history_size = runtime.context.get("context_history_size", 0)
+
     ir = state.get("ir")
     if ir is None:
         logger.warning(
@@ -954,9 +955,16 @@ def determine_next_action_llm(
             temporal_status="unknown",
             confidence_score=0.0,
         )
+        # 履歴を trim
+        history = list(state.get("assessment_history", []))
+        history.append(assessment)
+        if context_history_size > 0:
+            history = history[-context_history_size:]
+        else:
+            history = []
         return {
             "assessment": assessment,
-            "assessment_history": [assessment],
+            "assessment_history": history,
             "errors": ["No IR, used default assessment"],
             "messages": [
                 {
@@ -979,9 +987,16 @@ def determine_next_action_llm(
             temporal_status="unknown",
             confidence_score=0.0,
         )
+        # 履歴を trim
+        history = list(state.get("assessment_history", []))
+        history.append(assessment)
+        if context_history_size > 0:
+            history = history[-context_history_size:]
+        else:
+            history = []
         return {
             "assessment": assessment,
-            "assessment_history": [assessment],
+            "assessment_history": history,
             "messages": [
                 {
                     "role": "assistant",
@@ -992,8 +1007,6 @@ def determine_next_action_llm(
 
     # コンテキスト構築
     belief_state = state.get("belief_state")
-    # context_history_size に基づき前回判断をスライシング
-    context_history_size = runtime.context.get("context_history_size", 0)
     assessment_history = state.get("assessment_history", [])
 
     context_data = {
@@ -1044,9 +1057,16 @@ def determine_next_action_llm(
 
         # SafetyAssessment を直接取得
         assessment = SafetyAssessment.model_validate(raw)
+        # 履歴を trim
+        history = list(state.get("assessment_history", []))
+        history.append(assessment)
+        if context_history_size > 0:
+            history = history[-context_history_size:]
+        else:
+            history = []
         return {
             "assessment": assessment,
-            "assessment_history": [assessment],
+            "assessment_history": history,
             "messages": [
                 {
                     "role": "assistant",
@@ -1071,9 +1091,16 @@ def determine_next_action_llm(
         )
         # エラーメッセージを最初の 150 文字に制限（JSON パースエラー等が長いため）
         error_summary = f"{type(e).__name__}: {str(e)[:150]}"
+        # 履歴を trim
+        history = list(state.get("assessment_history", []))
+        history.append(assessment)
+        if context_history_size > 0:
+            history = history[-context_history_size:]
+        else:
+            history = []
         return {
             "assessment": assessment,
-            "assessment_history": [assessment],
+            "assessment_history": history,
             "errors": [f"LLM assessment failed: {error_summary}"],
             "messages": [
                 {
