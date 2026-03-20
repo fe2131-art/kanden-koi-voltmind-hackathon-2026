@@ -391,7 +391,6 @@ def vlm_node(state: AgentState, runtime: Runtime[ContextSchema]) -> Command:
 
             vision_analysis = analyzer.analyze(
                 image_path=obs.image_path,
-                prev_image_path=obs.prev_image_path,
                 max_tokens=vision_max_tokens,
             )
         except Exception as e:

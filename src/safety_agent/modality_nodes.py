@@ -151,13 +151,12 @@ class VisionAnalyzer:
     def analyze(
         self,
         image_path: str,
-        prev_image_path: Optional[str] = None,
         prompt: Optional[str] = None,
         max_tokens: Optional[int] = None,
     ) -> Optional[VisionAnalysisResult]:
-        """2枚の画像（現フレーム + 前フレーム）を VLM で分析し構造化結果を返す。
+        """現フレーム画像を VLM で分析し構造化結果を返す。
 
-        prev_image_path が None の場合は同じ画像を2枚送る（最初のフレーム対応）。
+        時系列比較が必要な場合は temporal_node（side-by-side 結合画像）を使用する。
         """
         if not Path(image_path).exists():
             logger.warning(f"Image not found: {image_path}")
@@ -172,24 +171,15 @@ class VisionAnalyzer:
         # 現フレームをエンコード
         current_url, _ = self._encode_image(image_path)
 
-        # 前フレーム（なければ同じ画像をフォールバック）
-        if prev_image_path and Path(prev_image_path).exists():
-            prev_url, _ = self._encode_image(prev_image_path)
-        else:
-            prev_url = current_url
-
-        # コンテンツブロック: テキスト + 1枚目（先の時刻）+ 2枚目（現在）
-        # TODO: vLLM が複数画像をサポートするまでは、2枚目のみ送る形で運用することも検討
+        # コンテンツブロック: テキスト + 1枚の画像
         if self.provider == "vllm":
             content = [
                 {"type": "text", "text": prompt},
-                # {"type": "image_url", "image_url": {"url": prev_url}},
                 {"type": "image_url", "image_url": {"url": current_url}},
             ]
         else:
             content = [
                 {"type": "text", "text": prompt},
-                {"type": "image_url", "image_url": {"url": prev_url, "detail": "high"}},
                 {
                     "type": "image_url",
                     "image_url": {"url": current_url, "detail": "high"},
