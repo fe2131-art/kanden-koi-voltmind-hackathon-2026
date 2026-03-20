@@ -16,6 +16,8 @@ agent:
   infrared_every_n_frames: 2
   temporal_every_n_frames: 1
   belief_every_n_frames: 2   # update_belief_state_llm の実行間隔
+  enable_sam3: true
+  sam3_every_n_frames: 1
 
 # LLM configuration
 llm:
@@ -100,6 +102,23 @@ thresholds:
 
 # TTS ナレーション設定（Kokoro TTS）
 # assessment.safety_status の内容をフレームごとに音声ファイルへ変換する
+sam3:
+  enabled: true
+  mode: image
+  checkpoint: "facebook/sam3-hiera-large"
+  prompts:
+    - person
+    - worker
+    - tool
+    - cable on floor
+    - ladder
+    - wet floor
+    - electrical equipment
+  score_threshold: 0.35
+  max_regions_per_prompt: 3
+  save_masks: true
+  output_dir: data/sam3_masks
+
 tts:
   enabled: true
   # 日本語女性ナレーターボイス

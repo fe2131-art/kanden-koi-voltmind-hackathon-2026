@@ -36,6 +36,9 @@ except AttributeError:
 
 from .schema import (
     AudioCue,
+    NormalizedBBox,
+    Sam3AnalysisResult,
+    Sam3Region,
     VisionAnalysisResult,
 )
 
@@ -962,3 +965,163 @@ class TemporalImageAnalyzer:
         buf = BytesIO()
         Image.fromarray(merged).save(buf, format="PNG")
         return buf.getvalue()
+
+
+# ─── SAM3 セグメンテーション ────────────────────────────────────────────────────
+
+
+class Sam3Analyzer:
+    """SAM3 image mode によるテキストプロンプトベースセグメンテーション。
+
+    SAM3 のインポートまたはモデルロードに失敗した場合は available=False で動作継続（fail-open）。
+    GPU メモリ競合を防ぐため threading.Lock() を保持する。
+    """
+
+    def __init__(self, model_cfg: dict, device: Optional[str] = None) -> None:
+        self.available = False
+        self._model = None
+        self._processor = None
+        self._lock = threading.Lock()
+        self._device = device or ("cuda" if torch.cuda.is_available() else "cpu")
+
+        try:
+            from sam3 import Sam3Processor, build_sam3_image_model  # noqa: PLC0415
+
+            checkpoint = model_cfg.get("checkpoint", "facebook/sam3-hiera-large")
+            self._model = build_sam3_image_model(checkpoint).to(self._device).eval()
+            self._processor = Sam3Processor.from_pretrained(checkpoint)
+            self.available = True
+            logger.info(f"Sam3Analyzer initialized on {self._device} ({checkpoint})")
+        except Exception as e:
+            logger.warning(f"Sam3Analyzer: model load failed, SAM3 disabled: {e}")
+
+    def analyze(
+        self,
+        image_path: str,
+        frame_id: str,
+        prompts: list[str],
+        score_threshold: float = 0.35,
+        max_regions_per_prompt: int = 3,
+        save_masks: bool = True,
+        output_dir: str = "data/sam3_masks",
+    ) -> Sam3AnalysisResult:
+        """テキストプロンプトごとにセグメンテーションを実行し Sam3AnalysisResult を返す。
+
+        Args:
+            image_path: 入力画像のパス
+            frame_id: フレーム識別子（region_id と mask ファイル名に使用）
+            prompts: テキストプロンプトリスト（例: ["person", "cable on floor"]）
+            score_threshold: スコアフィルタ閾値
+            max_regions_per_prompt: prompt ごとの最大 region 数
+            save_masks: True の場合 mask PNG を output_dir に保存
+            output_dir: mask 保存先ディレクトリ
+
+        Returns:
+            Sam3AnalysisResult（失敗時は空の結果）
+        """
+        if not self.available or not self._model or not self._processor:
+            return Sam3AnalysisResult()
+
+        regions: list[Sam3Region] = []
+        global_idx = 0
+
+        try:
+            image = Image.open(image_path).convert("RGB")
+            width, height = image.size
+            output_path = Path(output_dir)
+
+            with self._lock:
+                for prompt in prompts:
+                    try:
+                        state = self._processor.init_state(image=image)
+                        output = self._processor.set_text_prompt(
+                            state=state, prompt=prompt
+                        )
+                        masks = output["masks"]  # [N, H, W]
+                        boxes = output["boxes"]  # [N, 4] xyxy 絶対座標
+                        scores = output["scores"]  # [N]
+                    except Exception as e:
+                        logger.warning(f"Sam3Analyzer: prompt '{prompt}' failed: {e}")
+                        continue
+
+                    # Tensor → numpy に変換
+                    if hasattr(scores, "cpu"):
+                        scores_np = scores.cpu().numpy()
+                    else:
+                        scores_np = np.array(scores)
+                    if hasattr(boxes, "cpu"):
+                        boxes_np = boxes.cpu().numpy()
+                    else:
+                        boxes_np = np.array(boxes)
+                    if hasattr(masks, "cpu"):
+                        masks_np = masks.cpu().numpy()
+                    else:
+                        masks_np = np.array(masks)
+
+                    # スコアフィルタ → 降順ソート → 上位 N 件に絞る
+                    valid_indices = np.where(scores_np >= score_threshold)[0]
+                    if len(valid_indices) == 0:
+                        continue
+                    sorted_indices = valid_indices[
+                        np.argsort(scores_np[valid_indices])[::-1]
+                    ][:max_regions_per_prompt]
+
+                    # prompt 文字列を安全なファイル名形式に変換
+                    prompt_safe = re.sub(r"[^a-zA-Z0-9_-]", "_", prompt)
+
+                    for idx in sorted_indices:
+                        region_id = f"sam3_{frame_id}_{global_idx:03d}"
+                        score = float(scores_np[idx])
+
+                        # bbox 正規化 (xyxy → 0-1)
+                        bbox: Optional[NormalizedBBox] = None
+                        if len(boxes_np) > idx:
+                            box = boxes_np[idx]
+                            if len(box) >= 4:
+                                bbox = NormalizedBBox(
+                                    x_min=max(0.0, min(1.0, float(box[0]) / width)),
+                                    y_min=max(0.0, min(1.0, float(box[1]) / height)),
+                                    x_max=max(0.0, min(1.0, float(box[2]) / width)),
+                                    y_max=max(0.0, min(1.0, float(box[3]) / height)),
+                                )
+
+                        # mask PNG 保存
+                        mask_path: Optional[str] = None
+                        if save_masks and len(masks_np) > idx:
+                            try:
+                                mask_filename = (
+                                    f"{frame_id}_region_{global_idx:03d}.png"
+                                )
+                                mask_file = output_path / mask_filename
+                                mask_arr = masks_np[idx]
+                                # bool/float → uint8
+                                if mask_arr.dtype != np.uint8:
+                                    mask_arr = (mask_arr > 0.5).astype(np.uint8) * 255
+                                Image.fromarray(mask_arr).save(str(mask_file))
+                                mask_path = str(mask_file)
+                            except Exception as e:
+                                logger.warning(
+                                    f"Sam3Analyzer: mask save failed for "
+                                    f"{frame_id}/{prompt_safe}/{idx}: {e}"
+                                )
+
+                        regions.append(
+                            Sam3Region(
+                                region_id=region_id,
+                                prompt=prompt,
+                                label=prompt,
+                                score=score,
+                                normalized_bbox=bbox,
+                                mask_path=mask_path,
+                            )
+                        )
+                        global_idx += 1
+
+        except Exception as e:
+            logger.warning(f"Sam3Analyzer.analyze() failed for {frame_id}: {e}")
+            return Sam3AnalysisResult()
+
+        confidence_score = (
+            float(np.mean([r.score for r in regions])) if regions else 0.0
+        )
+        return Sam3AnalysisResult(regions=regions, confidence_score=confidence_score)

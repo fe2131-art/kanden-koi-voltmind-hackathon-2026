@@ -72,12 +72,17 @@ class NormalizedBBox(BaseModel):
 
 
 class CriticalPoint(BaseModel):
-    """画像中の危険箇所。位置を特定できる重要な危険。"""
+    """画像中の危険箇所。位置を特定できる重要な危険。
+
+    Phase 1 以降: normalized_bbox は後方互換のため残すが主経路では使わない。
+    label_hint は SAM3 プロンプト候補に近い短い英語語句（例: "person", "cable on floor"）。
+    """
 
     region_id: str
     description: str
     normalized_bbox: Optional[NormalizedBBox] = None
     severity: Literal["low", "medium", "high", "critical", "unknown"] = "unknown"
+    label_hint: Optional[str] = None
 
 
 class VisionBlindSpot(BaseModel):
@@ -163,6 +168,50 @@ class TemporalChange(BaseModel):
     severity: Literal["low", "medium", "high", "critical", "unknown"] = "unknown"
 
 
+# ─── SAM3 セグメンテーション結果 ───────────────────────────────────────────────
+# Sam3Analyzer.analyze() の出力。PerceptionIR.sam3_analysis に格納。
+
+
+class Sam3Region(BaseModel):
+    """SAM3 image mode が検出した 1 つのセグメント領域。
+
+    label は SAM3 生出力の labels フィールドに依存しない。
+    投げた prompt 文字列をそのまま label として使用する。
+    """
+
+    region_id: str  # 例: "sam3_t0_000"（frame 内で一意）
+    prompt: str  # 検出に使ったプロンプト文字列
+    label: str  # label = prompt
+    score: float = Field(ge=0.0, le=1.0)
+    normalized_bbox: Optional[NormalizedBBox] = None
+    mask_path: Optional[str] = None
+
+
+class Sam3AnalysisResult(BaseModel):
+    """SAM3 セグメンテーション結果。PerceptionIR.sam3_analysis に格納。"""
+
+    regions: List[Sam3Region] = Field(default_factory=list)
+    confidence_score: float = Field(default=0.0, ge=0.0, le=1.0)
+
+
+# ─── SAM3 grounded 危険点（LLM 最終判断出力） ────────────────────────────────
+# determine_next_action_llm() が SAM3 region_id を参照して生成する最終的な危険点。
+# AgentState.grounded_critical_points に格納される。
+
+
+class GroundedCriticalPoint(BaseModel):
+    """SAM3 region を参照した最終 region-grounded 危険点。
+
+    region_id は Sam3Region.region_id を参照する。
+    SAM3 無効時は "unknown_0" 等の仮 ID を使う。
+    """
+
+    region_id: str
+    description: str
+    severity: Literal["low", "medium", "high", "critical", "unknown"] = "unknown"
+    label_hint: Optional[str] = None
+
+
 class TemporalAnalysisResult(BaseModel):
     """時系列（前後フレーム比較）変化検出結果。PerceptionIR.temporal_analysis に格納。"""
 
@@ -193,7 +242,7 @@ class CameraPose(BaseModel):
 
 
 class PerceptionIR(BaseModel):
-    """1フレーム分の知覚統合結果（VLM + 音声 + 深度 + 赤外線 + 時系列変化）。AgentState.ir に格納。"""
+    """1フレーム分の知覚統合結果（VLM + 音声 + 深度 + 赤外線 + 時系列変化 + SAM3）。AgentState.ir に格納。"""
 
     obs_id: str
     camera_pose: Optional[CameraPose] = None
@@ -202,6 +251,10 @@ class PerceptionIR(BaseModel):
     depth_analysis: Optional[DepthAnalysisResult] = None  # 深度解析出力
     infrared_analysis: Optional[InfraredAnalysisResult] = None  # 赤外線画像解析出力
     temporal_analysis: Optional[TemporalAnalysisResult] = None  # 時系列変化検出出力
+    sam3_analysis: Optional[Sam3AnalysisResult] = None  # SAM3 セグメンテーション出力
+    provisional_points: List[CriticalPoint] = Field(
+        default_factory=list
+    )  # VLM の provisional 危険ヒント（fuse で vision_analysis.critical_points からコピー）
     modality_errors: List[str] = Field(default_factory=list)  # 各モダリティのエラー
 
 
@@ -231,7 +284,7 @@ class HazardTrack(BaseModel):
     severity: Literal["low", "medium", "high", "critical", "unknown"]
     confidence_score: float = Field(ge=0.0, le=1.0)
     supporting_modalities: List[
-        Literal["vision", "audio", "depth", "infrared", "temporal"]
+        Literal["vision", "audio", "depth", "infrared", "temporal", "sam3"]
     ] = Field(default_factory=list)
     evidence: List[str] = Field(default_factory=list)
 
@@ -292,6 +345,17 @@ class SafetyAssessment(BaseModel):
     confidence_score: float = Field(default=0.0, ge=0.0, le=1.0)
 
 
+class ActionWithGrounding(BaseModel):
+    """determine_next_action_llm() の structured output スキーマ。
+
+    SafetyAssessment と grounded_critical_points を1回の LLM 呼び出しで同時生成する。
+    SAM3 無効時は grounded_critical_points が空配列になり、従来の assessment のみを使う。
+    """
+
+    assessment: SafetyAssessment
+    grounded_critical_points: List[GroundedCriticalPoint] = Field(default_factory=list)
+
+
 # =============================================================================
 # 観測入力
 # run.py の prepare_observations() でリスト生成 → ObservationProvider に渡される。
@@ -311,7 +375,9 @@ class Observation:
     infrared_image_path: Optional[str] = None  # 赤外線フレームパス
     camera_pose: Optional[CameraPose] = None
     video_timestamp: Optional[float] = None  # 動画内の秒数
-    image_bytes: Optional[bytes] = None  # ingest_observation で1回だけ読み込みキャッシュ（改善B）
+    image_bytes: Optional[bytes] = (
+        None  # ingest_observation で1回だけ読み込みキャッシュ（改善B）
+    )
 
 
 class ObservationProvider:
@@ -367,6 +433,7 @@ _SCHEMA_MAP: Dict[str, type] = {
     "audio_analysis": AudioAnalysisResult,
     "belief_state": BeliefState,
     "safety_assessment": SafetyAssessment,
+    "action_with_grounding": ActionWithGrounding,
 }
 
 SchemaType = Literal[
@@ -377,6 +444,7 @@ SchemaType = Literal[
     "audio_analysis",
     "belief_state",
     "safety_assessment",
+    "action_with_grounding",
 ]
 
 # _SCHEMA_MAP と SchemaType の Literal 値が一致しているかをモジュール読み込み時に検証。
