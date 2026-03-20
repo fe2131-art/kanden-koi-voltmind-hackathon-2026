@@ -26,6 +26,12 @@ from depth_anything_3.api import DepthAnything3
 from openai import OpenAI
 from PIL import Image
 
+# PIL 9.1.0 未満では Image.Resampling が存在しないため互換エイリアスを定義
+try:
+    _LANCZOS = Image.Resampling.LANCZOS
+except AttributeError:
+    _LANCZOS = Image.LANCZOS  # type: ignore[attr-defined]
+
 from .schema import (
     AudioCue,
     VisionAnalysisResult,
@@ -134,17 +140,27 @@ class VisionAnalyzer:
             except Exception:
                 pass
 
-        # 5) 複数の { ... } ブロック抽出（最後のものを採用）
-        # 説明文が前後にある場合、最後の JSON ブロックを採用
-        matches = list(re.finditer(r"\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}", text))
-        if matches:
-            # 最後のマッチをパース試行
-            for match in reversed(matches):
-                try:
-                    candidate = match.group(0)
-                    return json.loads(candidate)
-                except Exception:
-                    continue
+        # 5) テキスト内の { ... } ブロックを全て抽出（任意ネスト深度対応）
+        # 説明文が前後にある場合でも深くネストされた JSON を正しく抽出できる。
+        # 正規表現は任意深さのネストを表現できないため、括弧カウントスキャンで代替。
+        candidates: list[str] = []
+        _depth = 0
+        _start = -1
+        for _i, _ch in enumerate(text):
+            if _ch == "{":
+                if _depth == 0:
+                    _start = _i
+                _depth += 1
+            elif _ch == "}":
+                _depth -= 1
+                if _depth == 0 and _start != -1:
+                    candidates.append(text[_start : _i + 1])
+                    _start = -1
+        for candidate in reversed(candidates):
+            try:
+                return json.loads(candidate)
+            except Exception:
+                continue
 
         return None
 
@@ -176,6 +192,8 @@ class VisionAnalyzer:
         # 現フレームをエンコード（bytes 優先、なければファイル読み込み）
         if image_bytes is not None:
             current_url = self._encode_image_bytes(image_bytes, media_type)
+            if current_url is None:
+                return None
         else:
             current_url, _ = self._encode_image(image_path)  # type: ignore[arg-type]
 
@@ -228,8 +246,10 @@ class VisionAnalyzer:
             return None
 
     @staticmethod
-    def _encode_image_bytes(image_bytes: bytes, media_type: str) -> str:
-        """画像バイト列を Base64 エンコードし、data URL を返す。"""
+    def _encode_image_bytes(image_bytes: Optional[bytes], media_type: str) -> Optional[str]:
+        """画像バイト列を Base64 エンコードし、data URL を返す。None の場合は None を返す。"""
+        if image_bytes is None:
+            return None
         image_data = base64.b64encode(image_bytes).decode("utf-8")
         return f"data:{media_type};base64,{image_data}"
 
@@ -253,6 +273,9 @@ class VisionAnalyzer:
             max_tokens = self.max_tokens or 2048
 
         image_url = self._encode_image_bytes(image_bytes, media_type)
+        if image_url is None:
+            logger.warning("analyze_bytes_raw: image_bytes is None, skipping")
+            return None
 
         content: list[dict[str, Any]]
         if self.provider == "vllm":
@@ -743,7 +766,7 @@ class InfraredImageAnalyzer:
         # サイズを RGB に合わせてリサイズ
         if rgb.shape[:2] != infrared.shape[:2]:
             inf_img = Image.fromarray(infrared).resize(
-                (rgb.shape[1], rgb.shape[0]), Image.Resampling.LANCZOS
+                (rgb.shape[1], rgb.shape[0]), _LANCZOS
             )
             infrared = np.array(inf_img)
 
@@ -802,7 +825,7 @@ class TemporalImageAnalyzer:
         # サイズを current に合わせてリサイズ
         if current.shape[:2] != prev.shape[:2]:
             prev_img = Image.fromarray(prev).resize(
-                (current.shape[1], current.shape[0]), Image.Resampling.LANCZOS
+                (current.shape[1], current.shape[0]), _LANCZOS
             )
             prev = np.array(prev_img)
 

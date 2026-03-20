@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Dict, Iterator, List, Literal, Optional
+from typing import Any, Dict, Iterator, List, Literal, Optional, get_args
 
 from pydantic import BaseModel, Field
 
@@ -378,6 +378,15 @@ SchemaType = Literal[
     "belief_state",
     "safety_assessment",
 ]
+
+# _SCHEMA_MAP と SchemaType の Literal 値が一致しているかをモジュール読み込み時に検証。
+# 新しいスキーマ型を追加した際に片方だけ更新するミスを即時検出する。
+_schema_type_keys = set(get_args(SchemaType))
+assert _schema_type_keys == set(_SCHEMA_MAP.keys()), (
+    f"SchemaType と _SCHEMA_MAP のキーが不一致: "
+    f"Literal のみ={_schema_type_keys - set(_SCHEMA_MAP.keys())}, "
+    f"MAP のみ={set(_SCHEMA_MAP.keys()) - _schema_type_keys}"
+)
 
 
 def get_json_schema(schema_type: SchemaType) -> Dict[str, Any]:

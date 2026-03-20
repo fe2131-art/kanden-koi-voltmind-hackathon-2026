@@ -985,11 +985,11 @@ def prepare_observations(
         return obs_list, video_timestamps_map
     else:
         raise FileNotFoundError(
-            "フレームが見つかりません: data/frames/\n"
+            f"フレームが見つかりません: data/frames/ (mode={data_mode})\n"
             "以下のいずれかを実施してください：\n"
             "1. data/videos/ にビデオファイルを配置し、split_video_to_frames() を実行\n"
             "2. data/frames/ に画像ファイルを直接配置\n"
-            "3. configs/default.yaml で data.mode = 'inspesafe' に設定"
+            "3. configs/default.yaml で data.mode = 'inspesafe' に設定して InspecSafe セッションを指定"
         )
 
 

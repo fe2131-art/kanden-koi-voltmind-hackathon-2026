@@ -98,7 +98,7 @@ def test_e2e_agent_no_llm():
     assert "messages" in out
     assert "modality_results" in out
 
-    # Verify assessment is not None
+    # Verify assessment is not None and has valid enum values
     assert out["assessment"] is not None
     assert out["assessment"].action_type in [
         "emergency_stop",
@@ -107,6 +107,14 @@ def test_e2e_agent_no_llm():
         "monitor",
     ]
     assert out["assessment"].risk_level in ["high", "medium", "low"]
+
+    # LLM なし（llm=None）時はフォールバック固定値を返すことを確認
+    assert out["assessment"].risk_level == "low", (
+        f"LLM-free run should return fallback risk_level='low', got '{out['assessment'].risk_level}'"
+    )
+    assert out["assessment"].action_type == "monitor", (
+        f"LLM-free run should return fallback action_type='monitor', got '{out['assessment'].action_type}'"
+    )
 
     # Verify modality_results is properly processed (fan-in) - now dict
     assert isinstance(out["modality_results"], dict)
@@ -117,6 +125,15 @@ def test_e2e_agent_no_llm():
     # Verify perception IR contains audio cues from audio_node
     assert out["ir"] is not None
     assert isinstance(out["ir"].audio, list)
+
+    # 音声テキストを渡した obs_id="t0" の AudioCue が抽出されているか確認
+    # (AudioAnalyzer は LLM なしでもキーワードマッチングで動作)
+    # assessment_history が max_steps(3) 未満の実行フレーム数（2）分だけ蓄積されているか
+    assert "assessment_history" in out
+    assert isinstance(out["assessment_history"], list)
+    assert len(out["assessment_history"]) >= 1, (
+        f"assessment_history should accumulate at least 1 entry, got {len(out['assessment_history'])}"
+    )
 
     # Verify no unexpected errors
     assert isinstance(out["errors"], list)
@@ -129,6 +146,10 @@ def test_e2e_agent_no_llm():
     assert "latest_output" in out
     assert out["latest_output"] is not None
     assert out["latest_output"]["frame_id"] is not None
+    # frame_id は obs_id と一致するはず（"t0" または "t1"）
+    assert out["latest_output"]["frame_id"] in ("t0", "t1"), (
+        f"frame_id should be one of obs_ids, got '{out['latest_output']['frame_id']}'"
+    )
     assert out["latest_output"]["assessment"] is not None
     assert "audio" in out["latest_output"]
     # vision_analysis は LLM なしでは None（VisionAnalyzer なし）

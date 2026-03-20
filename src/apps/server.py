@@ -52,7 +52,7 @@ async def monitor_and_stream(websocket):
                     except (json.JSONDecodeError, IOError) as e:
                         if attempt < 2:
                             await asyncio.sleep(0.05)
-                        elif attempt == 2:
+                        else:
                             logger.error(
                                 f"Error reading manifest (3 attempts): {e}"
                             )
@@ -82,9 +82,7 @@ async def monitor_and_stream(websocket):
                                     if attempt < 2:
                                         await asyncio.sleep(0.05)
                                     else:
-                                        logger.error(
-                                            f"Error reading {frame_file.name} (3 attempts): {e}"
-                                        )
+                                        logger.error(f"Error reading {frame_file.name} (3 attempts): {e}")
 
                             if result is None:
                                 continue
