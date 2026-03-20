@@ -69,6 +69,7 @@ uv run vllm serve "$MODEL" \
   --speculative-config '{"method":"mtp","num_speculative_tokens":2}' \
   --default-chat-template-kwargs '{"enable_thinking": false}' \
   --enable-prefix-caching \
+  --allowed-local-media-path /home/team-005 \
   > "vllm_${SLURM_JOB_ID}.log" 2>&1 &
 # --reasoning-parser qwen3 は Qwen3 thinking モデル用。必要なら上記に追加。
 
