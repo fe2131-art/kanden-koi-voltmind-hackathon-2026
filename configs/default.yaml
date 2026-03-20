@@ -17,7 +17,7 @@ llm:
   # vLLM settings (local server)
   vllm:
     base_url: "http://localhost:8000/v1"
-    model: "Qwen/Qwen3.5-4B"
+    model: "QuantTrio/Qwen3.5-4B-AWQ"
     api_key: "EMPTY"
     timeout_s: 60.0
 
@@ -38,7 +38,7 @@ vlm:
     timeout_s: 60.0
   vllm:
     base_url: "http://localhost:8000/v1"
-    model: "Qwen/Qwen3.5-4B"
+    model: "QuantTrio/Qwen3.5-4B-AWQ"
     timeout_s: 60.0
 
 # ALM (Audio-Language Model) 設定
