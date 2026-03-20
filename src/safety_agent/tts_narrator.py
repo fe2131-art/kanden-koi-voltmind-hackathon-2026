@@ -46,7 +46,12 @@ class TTSNarrator:
         try:
             from kokoro import KPipeline  # type: ignore[import-untyped]
 
-            self._pipeline = KPipeline(lang_code=self.lang_code, device=self.device)
+            # repo_id を明示して不要な print() ノイズを抑制
+            self._pipeline = KPipeline(
+                lang_code=self.lang_code,
+                repo_id="hexgrad/Kokoro-82M",
+                device=self.device,
+            )
             logger.info(
                 f"TTSNarrator: KPipeline 初期化完了"
                 f" (lang={self.lang_code}, voice={self.voice}, speed={self.speed},"
@@ -74,7 +79,13 @@ class TTSNarrator:
             )
             return None
 
-        self._ensure_pipeline()
+        try:
+            self._ensure_pipeline()
+        except Exception as e:
+            # 初期化失敗時は TTS を無効化してエージェントを継続させる
+            logger.error(f"TTSNarrator: 初期化失敗のため TTS を無効化: {e}")
+            self.enabled = False
+            return None
         assert self._pipeline is not None  # _ensure_pipeline() で必ず設定される
         self.output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -96,7 +107,8 @@ class TTSNarrator:
 
         audio = np.concatenate(audio_chunks)
         out_path = self.output_dir / f"{frame_id}.wav"
-        sf.write(str(out_path), audio, self.SAMPLE_RATE)
+        # PCM_16 を明示して互換性の高い 16-bit PCM WAV を出力（32-bit float WAV は非対応デバイスあり）
+        sf.write(out_path, audio, self.SAMPLE_RATE, subtype="PCM_16")
         duration = len(audio) / self.SAMPLE_RATE
         logger.info(f"TTSNarrator: 保存 → {out_path} ({duration:.1f}秒)")
         return out_path

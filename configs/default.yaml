@@ -115,4 +115,5 @@ tts:
   # 出力先ディレクトリ（フレームIDをベース名にした WAV を保存）
   output_dir: "data/voice"
   # 推論デバイス（null=自動判定/CUDA優先, "cuda", "cpu"）
-  device: "cuda"
+  # "cuda" 固定は CUDA 非搭載環境でクラッシュするため null 推奨
+  device: null

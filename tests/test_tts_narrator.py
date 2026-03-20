@@ -219,14 +219,19 @@ def test_generate_pipeline_exception_returns_none(tmp_path: Path):
     assert result is None
 
 
-def test_generate_init_failure_raises(tmp_path: Path):
-    """KPipeline 初期化失敗は例外を再 raise する。"""
+def test_generate_init_failure_disables_tts_and_returns_none(tmp_path: Path):
+    """KPipeline 初期化失敗時は enabled=False にフォールバックして None を返す（エージェント継続）。"""
     config = _make_config(output_dir=str(tmp_path))
     narrator = TTSNarrator(config)
+    assert narrator.enabled is True
 
-    with patch("builtins.__import__", side_effect=ImportError("kokoro not found")):
-        with pytest.raises(Exception):
-            narrator._ensure_pipeline()
+    with patch.object(
+        narrator, "_ensure_pipeline", side_effect=RuntimeError("CUDA not available")
+    ):
+        result = narrator.generate("frame_init_err", "テスト")
+
+    assert result is None
+    assert narrator.enabled is False  # 以降のフレームも TTS スキップ
 
 
 # ---------------------------------------------------------------------------
