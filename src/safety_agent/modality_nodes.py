@@ -44,23 +44,37 @@ logger = logging.getLogger(__name__)
 
 # ─── vLLM file:// transport ────────────────────────────────────
 
+# vLLM の --allowed-local-media-path に収まるデフォルト temp ディレクトリ
+# （プロジェクトルート直下の tmp/）
+_VLLM_TMP_DIR: Path = (Path(__file__).parents[2] / "tmp").resolve()
+
 
 @contextlib.contextmanager
 def _vllm_image_file(
     image_path: Optional[str] = None,
     image_bytes: Optional[bytes] = None,
     suffix: str = ".jpg",
+    tmp_dir: Optional[Path] = None,
 ) -> Iterator[str]:
     """vLLM 向けに file:// URI を yield するコンテキストマネージャー。
 
     image_path 指定時: 絶対パス解決のみ行い temp file を作らず yield。
     image_bytes 指定時: NamedTemporaryFile に書き出し、finally で削除。
+
+    Args:
+        tmp_dir: temp file の書き出し先ディレクトリ。None の場合は _VLLM_TMP_DIR
+                 （プロジェクトルート直下の tmp/）を使用。
+                 vLLM サーバーの --allowed-local-media-path に合わせて設定すること。
     """
     if image_path is not None:
         yield f"file://{Path(image_path).resolve()}"
     elif image_bytes is not None:
         # with ブロックで close → write 失敗時もハンドルリークなし
-        with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
+        resolved_dir = tmp_dir or _VLLM_TMP_DIR
+        resolved_dir.mkdir(parents=True, exist_ok=True)
+        with tempfile.NamedTemporaryFile(
+            suffix=suffix, delete=False, dir=resolved_dir
+        ) as tmp:
             tmp.write(image_bytes)
             tmp_path = tmp.name
         try:
@@ -100,11 +114,15 @@ class VisionAnalyzer:
         default_prompt: Optional[str] = None,
         max_tokens: Optional[int] = None,
         provider: str = "openai",
+        vllm_tmp_dir: Optional[Path] = None,
     ):
         self.model = model
         self.provider = provider
         self.default_prompt = default_prompt
         self.max_tokens = max_tokens
+        # vLLM の --allowed-local-media-path に合わせた temp file 書き出し先
+        # None の場合は _vllm_image_file 内で Path.home() にフォールバック
+        self.vllm_tmp_dir = vllm_tmp_dir
 
         # vLLM 用に base_url を正規化
         if provider == "vllm":
@@ -232,6 +250,7 @@ class VisionAnalyzer:
                 image_path=_path,
                 image_bytes=image_bytes if _path is None else None,
                 suffix=suffix or ".jpg",
+                tmp_dir=self.vllm_tmp_dir,
             ) as current_url:
                 content = [
                     {"type": "text", "text": prompt},
@@ -301,12 +320,17 @@ class VisionAnalyzer:
         media_type: str = "image/png",
         prompt: Optional[str] = None,
         max_tokens: Optional[int] = None,
+        image_path: Optional[str] = None,
     ) -> Optional[dict]:
         """画像バイト列をVLMで分析し、生JSON辞書を返す（型変換なし）。
 
         深度解析結果画像（side-by-side PNG）の分析用。
         VisionAnalysisResult ではなく dict を返すのは、DepthAnalysisResult への変換を
         ノードレベルで行うため。
+
+        Args:
+            image_path: vLLM 向けに既存ファイルパスが分かる場合に指定。
+                        指定時は temp file を作らず file:// で直接参照する。
         """
         if prompt is None:
             prompt = self.default_prompt or "この画像を詳しく説明してください。"
@@ -314,13 +338,19 @@ class VisionAnalyzer:
         if max_tokens is None:
             max_tokens = self.max_tokens or 2048
 
-        # vLLM: file:// URI（bytes → temp file）
+        # vLLM: image_path があれば既存ファイルを直接参照、なければ bytes → temp file
         # OpenAI: base64 data URI（現状維持）
         suffix = ".png" if "png" in media_type else ".jpg"
         content: list[dict[str, Any]]
 
         if self.provider == "vllm":
-            with _vllm_image_file(image_bytes=image_bytes, suffix=suffix) as image_url:
+            _path = image_path if (image_path and Path(image_path).exists()) else None
+            with _vllm_image_file(
+                image_path=_path,
+                image_bytes=image_bytes if _path is None else None,
+                suffix=suffix,
+                tmp_dir=self.vllm_tmp_dir,
+            ) as image_url:
                 content = [
                     {"type": "text", "text": prompt},
                     {"type": "image_url", "image_url": {"url": image_url}},
@@ -397,6 +427,7 @@ class AudioAnalyzer:
         default_prompt: Optional[str] = None,
         max_tokens: Optional[int] = None,
         provider: str = "vllm",
+        vllm_tmp_dir: Optional[Path] = None,
     ):
         self.model = model
         self.sample_rate = sample_rate
@@ -404,6 +435,7 @@ class AudioAnalyzer:
         self.default_prompt = default_prompt
         self.max_tokens = max_tokens
         self.provider = provider
+        self.vllm_tmp_dir = vllm_tmp_dir
         self.client: Optional[OpenAI] = None
 
         if self.model:
@@ -515,7 +547,11 @@ class AudioAnalyzer:
             yield ""
             return
         # with ブロックで即 close → sf.write 失敗時もハンドルリークなし
-        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
+        resolved_dir = self.vllm_tmp_dir or _VLLM_TMP_DIR
+        resolved_dir.mkdir(parents=True, exist_ok=True)
+        with tempfile.NamedTemporaryFile(
+            suffix=".wav", delete=False, dir=resolved_dir
+        ) as tmp:
             tmp_path = tmp.name
         try:
             sf.write(tmp_path, trimmed, sr, format="WAV")

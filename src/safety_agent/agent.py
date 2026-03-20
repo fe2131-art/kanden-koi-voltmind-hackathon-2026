@@ -529,39 +529,7 @@ def depth_node(state: AgentState, runtime: Runtime[ContextSchema]) -> Command:
             if side_by_side_bytes is None:
                 error = "depth: depth_estimator returned None"
             else:
-                # ステップ2: VLM で深度画像を分析（ファイル保存前にバイト列を直接渡す）
-                depth_prompt = prompts.get("depth_analysis", {}).get("system")
-                if not depth_prompt:
-                    logger.debug(
-                        "depth_analysis.system プロンプトが見つかりません。デフォルトプロンプトを使用します。"
-                    )
-                    depth_prompt = (
-                        "この深度推定画像を分析して、空間的な危険性を評価してください。"
-                    )
-
-                # Vision API のトークン上限を設定から取得
-                vision_max_tokens = config.get("tokens", {}).get(
-                    "vision_max_completion_tokens", 4096
-                )
-
-                raw_result = vision_analyzer.analyze_bytes_raw(
-                    side_by_side_bytes,
-                    media_type="image/png",
-                    prompt=depth_prompt,
-                    max_tokens=vision_max_tokens,
-                )
-
-                if raw_result is None:
-                    error = "depth: VLM analysis failed"
-                else:
-                    # ステップ3: JSON を DepthAnalysisResult に型変換
-                    try:
-                        depth_analysis = DepthAnalysisResult.model_validate(raw_result)
-                    except Exception as e:
-                        logger.warning(f"Failed to validate depth analysis result: {e}")
-                        error = f"depth: validation error: {e}"
-
-                # ステップ4: 可視化用にファイル保存（VLM 分析のクリティカルパス外）
+                # ステップ2: ファイル保存（VLM は保存済みパスを直接参照する）
                 try:
                     depth_output_dir = Path("data/depth")
                     depth_output_dir.mkdir(parents=True, exist_ok=True)
@@ -573,6 +541,38 @@ def depth_node(state: AgentState, runtime: Runtime[ContextSchema]) -> Command:
                 except Exception as e:
                     logger.warning(f"Failed to save depth image: {e}")
                     depth_image_path = None
+
+                # ステップ3: VLM で深度画像を分析（保存済みパスを渡して file:// 直接参照）
+                depth_prompt = prompts.get("depth_analysis", {}).get("system")
+                if not depth_prompt:
+                    logger.debug(
+                        "depth_analysis.system プロンプトが見つかりません。デフォルトプロンプトを使用します。"
+                    )
+                    depth_prompt = (
+                        "この深度推定画像を分析して、空間的な危険性を評価してください。"
+                    )
+
+                vision_max_tokens = config.get("tokens", {}).get(
+                    "vision_max_completion_tokens", 4096
+                )
+
+                raw_result = vision_analyzer.analyze_bytes_raw(
+                    side_by_side_bytes,
+                    media_type="image/png",
+                    prompt=depth_prompt,
+                    max_tokens=vision_max_tokens,
+                    image_path=depth_image_path,
+                )
+
+                if raw_result is None:
+                    error = "depth: VLM analysis failed"
+                else:
+                    # ステップ4: JSON を DepthAnalysisResult に型変換
+                    try:
+                        depth_analysis = DepthAnalysisResult.model_validate(raw_result)
+                    except Exception as e:
+                        logger.warning(f"Failed to validate depth analysis result: {e}")
+                        error = f"depth: validation error: {e}"
         except Exception as e:
             logger.error(f"Depth node error: {e}")
             error = f"depth: {e}"
@@ -629,6 +629,19 @@ def infrared_node(state: AgentState, runtime: Runtime[ContextSchema]) -> Command
             if side_by_side_bytes is None:
                 error = "infrared: failed to create side-by-side image"
             else:
+                # ファイル保存（VLM は保存済みパスを直接参照する）
+                infrared_sbs_path: Optional[str] = None
+                try:
+                    infrared_output_dir = Path("data/infrared")
+                    infrared_output_dir.mkdir(parents=True, exist_ok=True)
+                    frame_filename = Path(obs.image_path).name
+                    infrared_sbs_path = str(infrared_output_dir / frame_filename)
+                    with open(infrared_sbs_path, "wb") as f:
+                        f.write(side_by_side_bytes)
+                except Exception as e:
+                    logger.warning(f"Failed to save infrared side-by-side image: {e}")
+                    infrared_sbs_path = None
+
                 infrared_prompt = prompts.get("infrared_analysis", {}).get(
                     "system"
                 ) or (
@@ -644,6 +657,7 @@ def infrared_node(state: AgentState, runtime: Runtime[ContextSchema]) -> Command
                     media_type="image/png",
                     prompt=infrared_prompt,
                     max_tokens=vision_max_tokens,
+                    image_path=infrared_sbs_path,
                 )
                 if raw_result is None:
                     error = "infrared: VLM analysis failed"
@@ -708,6 +722,19 @@ def temporal_node(state: AgentState, runtime: Runtime[ContextSchema]) -> Command
             if temporal_bytes is None:
                 error = "temporal: failed to create temporal image"
             else:
+                # ファイル保存（VLM は保存済みパスを直接参照する）
+                temporal_sbs_path: Optional[str] = None
+                try:
+                    temporal_output_dir = Path("data/temporal")
+                    temporal_output_dir.mkdir(parents=True, exist_ok=True)
+                    frame_filename = Path(obs.image_path).name
+                    temporal_sbs_path = str(temporal_output_dir / frame_filename)
+                    with open(temporal_sbs_path, "wb") as f:
+                        f.write(temporal_bytes)
+                except Exception as e:
+                    logger.warning(f"Failed to save temporal image: {e}")
+                    temporal_sbs_path = None
+
                 temporal_prompt = prompts.get("temporal_analysis", {}).get(
                     "system"
                 ) or (
@@ -723,6 +750,7 @@ def temporal_node(state: AgentState, runtime: Runtime[ContextSchema]) -> Command
                     media_type="image/png",
                     prompt=temporal_prompt,
                     max_tokens=vision_max_tokens,
+                    image_path=temporal_sbs_path,
                 )
                 if raw_result is None:
                     error = "temporal: VLM analysis failed"
