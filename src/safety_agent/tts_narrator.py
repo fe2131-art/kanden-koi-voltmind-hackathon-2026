@@ -59,9 +59,10 @@ class TTSNarrator:
                 try:
                     import unidic_lite  # type: ignore[import-untyped]
 
-                    os.environ["MECABRC"] = unidic_lite.MECABRC
+                    mecabrc = os.path.join(unidic_lite.DICDIR, "mecabrc")
+                    os.environ["MECABRC"] = mecabrc
                     logger.info(
-                        f"TTSNarrator: MECABRC を unidic-lite に設定 ({unidic_lite.MECABRC})"
+                        f"TTSNarrator: MECABRC を unidic-lite に設定 ({mecabrc})"
                     )
                 except ImportError:
                     logger.warning(
