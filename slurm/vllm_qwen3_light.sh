@@ -54,7 +54,7 @@ mkdir -p "$UV_CACHE_DIR" "$HF_HOME"
 # 依存を揃える
 uv sync --frozen || uv sync
 
-MODEL="Qwen/Qwen3.5-9B"
+MODEL="Qwen/Qwen3.5-4B"
 PORT=8000
 
 echo
@@ -63,12 +63,8 @@ uv run vllm serve "$MODEL" \
   --host 0.0.0.0 \
   --port "$PORT" \
   --tensor-parallel-size 1 \
-  --max-model-len 16384 \
-  --max-num-seqs 4 \
-  --gpu-memory-utilization 0.90 \
-  --reasoning-parser qwen3 \
-  --trust-remote-code \
-  --skip-mm-profiling \
+  --max-model-len 8192 \
+  --gpu-memory-utilization 0.85 \
   --enable-prefix-caching \
   > "vllm_${SLURM_JOB_ID}.log" 2>&1 &
 # --reasoning-parser qwen3 は Qwen3 thinking モデル用。必要なら上記に追加。

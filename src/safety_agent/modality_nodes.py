@@ -179,10 +179,11 @@ class VisionAnalyzer:
             prev_url = current_url
 
         # コンテンツブロック: テキスト + 1枚目（先の時刻）+ 2枚目（現在）
+        # TODO: vLLM が複数画像をサポートするまでは、2枚目のみ送る形で運用することも検討
         if self.provider == "vllm":
             content = [
                 {"type": "text", "text": prompt},
-                {"type": "image_url", "image_url": {"url": prev_url}},
+                # {"type": "image_url", "image_url": {"url": prev_url}},
                 {"type": "image_url", "image_url": {"url": current_url}},
             ]
         else:
