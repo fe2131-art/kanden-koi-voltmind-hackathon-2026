@@ -65,7 +65,7 @@ uv run vllm serve "$MODEL" \
   --port "$PORT" \
   --tensor-parallel-size 1 \
   --max-model-len 4096 \
-  --gpu-memory-utilization 0.4 \
+  --gpu-memory-utilization 0.35 \
   --enable-prefix-caching \
   --allowed-local-media-path /home/team-005 \
   --gdn-prefill-backend triton \

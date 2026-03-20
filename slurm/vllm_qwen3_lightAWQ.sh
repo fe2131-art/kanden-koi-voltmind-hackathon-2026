@@ -55,7 +55,7 @@ mkdir -p "$UV_CACHE_DIR" "$HF_HOME"
 uv sync --frozen || uv sync
 
 MODEL="QuantTrio/Qwen3.5-4B-AWQ" # QuantTrio/Qwen3.5-4B-AWQ QuantTrio/Qwen3.5-27B-AWQ 16384
-PORT=8002
+PORT=8000
 
 echo
 echo "---- Starting vLLM server ----"
@@ -66,7 +66,7 @@ uv run vllm serve "$MODEL" \
   --tensor-parallel-size 1 \
   --max-model-len 16384 \
   --quantization awq \
-  --gpu-memory-utilization 0.5 \
+  --gpu-memory-utilization 0.4 \
   --speculative-config '{"method":"mtp","num_speculative_tokens":2}' \
   --default-chat-template-kwargs '{"enable_thinking": false}' \
   --enable-prefix-caching \
