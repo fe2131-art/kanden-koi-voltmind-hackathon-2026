@@ -15,9 +15,9 @@ def test_audio_json_parse_success():
     assert cues[0].evidence == "警報音が鳴っている"
 
 
-def test_audio_json_parse_failure_returns_empty():
+def test_audio_json_parse_failure_returns_none():
     analyzer = AudioAnalyzer()
 
     events = analyzer._parse_audio_json("not json")
 
-    assert events == []
+    assert events is None

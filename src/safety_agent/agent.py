@@ -136,50 +136,50 @@ class OpenAICompatLLM:
             raise
 
 
+def _strip_trailing_commas(text: str) -> str:
+    """JSON の trailing comma（`,[whitespace]}` や `,[whitespace]]`）を除去する。"""
+    return re.sub(r",\s*([}\]])", r"\1", text)
+
+
+def _try_loads(text: str) -> Optional[Dict[str, Any]]:
+    """text をそのまま、次に trailing comma 除去してパースを試みる。失敗時は None。"""
+    for candidate in (text, _strip_trailing_commas(text)):
+        try:
+            return json.loads(candidate)
+        except Exception:
+            pass
+    return None
+
+
 def _robust_json_loads(text: str) -> Dict[str, Any]:
     """LLM 出力から JSON を抽出・パース。複数の形式に対応。"""
-    # 1) 直接パース
-    try:
-        return json.loads(text)
-    except Exception:
-        pass
+    # 1) 直接パース（+ trailing comma 除去）
+    if (result := _try_loads(text)) is not None:
+        return result
 
     # 2) markdown コードブロック（```json ... ```）を抽出
     m = re.search(r"```(?:json)?\s*\n(.*?)\n```", text, flags=re.DOTALL)
-    if m:
-        try:
-            return json.loads(m.group(1))
-        except Exception:
-            pass
+    if m and (result := _try_loads(m.group(1))) is not None:
+        return result
 
     # 3) ネストを考慮した JSON 抽出（最初の { から最後の } まで）
-    text = text.strip()
-    if text.startswith("{"):
-        # 最初の開き括弧から始まる
+    stripped = text.strip()
+    if stripped.startswith("{"):
         depth = 0
-        end_idx = -1
-        for i, ch in enumerate(text):
+        for i, ch in enumerate(stripped):
             if ch == "{":
                 depth += 1
             elif ch == "}":
                 depth -= 1
                 if depth == 0:
-                    end_idx = i + 1
+                    if (result := _try_loads(stripped[: i + 1])) is not None:
+                        return result
                     break
-
-        if end_idx > 0:
-            try:
-                return json.loads(text[:end_idx])
-            except Exception:
-                pass
 
     # 4) 簡易的な正規表現で { から } を抽出（最後の手段）
     m = re.search(r"\{.*\}", text, flags=re.DOTALL)
-    if m:
-        try:
-            return json.loads(m.group(0))
-        except Exception:
-            pass
+    if m and (result := _try_loads(m.group(0))) is not None:
+        return result
 
     raise ValueError(f"LLM出力からJSONを解析できませんでした: {text[:500]}...")
 
@@ -398,9 +398,7 @@ def ingest_observation(state: AgentState, runtime: Runtime[ContextSchema]) -> Co
             skipped_names.append(modality)  # スキップ対象
 
     # スキップ対象の空 ModalityResult を事前投入
-    skip_results = {
-        name: ModalityResult(modality_name=name) for name in skipped_names
-    }
+    skip_results = {name: ModalityResult(modality_name=name) for name in skipped_names}
 
     # ログ出力: 実行中のモダリティとスキップ対象を表示
     logger.info(
@@ -413,8 +411,14 @@ def ingest_observation(state: AgentState, runtime: Runtime[ContextSchema]) -> Co
         update={
             "observation": obs,
             "done": False,  # 毎フレーム開始時にクリア
-            "modality_results": {"__reset__": True, **skip_results},  # リセット + 事前投入
-            "received_modalities": [_RESET_SENTINEL, *skipped_names],  # バリア用: スキップ済みを事前登録
+            "modality_results": {
+                "__reset__": True,
+                **skip_results,
+            },  # リセット + 事前投入
+            "received_modalities": [
+                _RESET_SENTINEL,
+                *skipped_names,
+            ],  # バリア用: スキップ済みを事前登録
             "barrier_obs_id": None,  # ラッチをリセット
             # 注: assessment と belief_state はリセットしない
             # 前フレーム結果を determine_next_action_llm で参照するため
@@ -529,39 +533,7 @@ def depth_node(state: AgentState, runtime: Runtime[ContextSchema]) -> Command:
             if side_by_side_bytes is None:
                 error = "depth: depth_estimator returned None"
             else:
-                # ステップ2: VLM で深度画像を分析（ファイル保存前にバイト列を直接渡す）
-                depth_prompt = prompts.get("depth_analysis", {}).get("system")
-                if not depth_prompt:
-                    logger.debug(
-                        "depth_analysis.system プロンプトが見つかりません。デフォルトプロンプトを使用します。"
-                    )
-                    depth_prompt = (
-                        "この深度推定画像を分析して、空間的な危険性を評価してください。"
-                    )
-
-                # Vision API のトークン上限を設定から取得
-                vision_max_tokens = config.get("tokens", {}).get(
-                    "vision_max_completion_tokens", 4096
-                )
-
-                raw_result = vision_analyzer.analyze_bytes_raw(
-                    side_by_side_bytes,
-                    media_type="image/png",
-                    prompt=depth_prompt,
-                    max_tokens=vision_max_tokens,
-                )
-
-                if raw_result is None:
-                    error = "depth: VLM analysis failed"
-                else:
-                    # ステップ3: JSON を DepthAnalysisResult に型変換
-                    try:
-                        depth_analysis = DepthAnalysisResult.model_validate(raw_result)
-                    except Exception as e:
-                        logger.warning(f"Failed to validate depth analysis result: {e}")
-                        error = f"depth: validation error: {e}"
-
-                # ステップ4: 可視化用にファイル保存（VLM 分析のクリティカルパス外）
+                # ステップ2: ファイル保存（VLM は保存済みパスを直接参照する）
                 try:
                     depth_output_dir = Path("data/depth")
                     depth_output_dir.mkdir(parents=True, exist_ok=True)
@@ -573,6 +545,38 @@ def depth_node(state: AgentState, runtime: Runtime[ContextSchema]) -> Command:
                 except Exception as e:
                     logger.warning(f"Failed to save depth image: {e}")
                     depth_image_path = None
+
+                # ステップ3: VLM で深度画像を分析（保存済みパスを渡して file:// 直接参照）
+                depth_prompt = prompts.get("depth_analysis", {}).get("system")
+                if not depth_prompt:
+                    logger.debug(
+                        "depth_analysis.system プロンプトが見つかりません。デフォルトプロンプトを使用します。"
+                    )
+                    depth_prompt = (
+                        "この深度推定画像を分析して、空間的な危険性を評価してください。"
+                    )
+
+                vision_max_tokens = config.get("tokens", {}).get(
+                    "vision_max_completion_tokens", 4096
+                )
+
+                raw_result = vision_analyzer.analyze_bytes_raw(
+                    side_by_side_bytes,
+                    media_type="image/png",
+                    prompt=depth_prompt,
+                    max_tokens=vision_max_tokens,
+                    image_path=depth_image_path,
+                )
+
+                if raw_result is None:
+                    error = "depth: VLM analysis failed"
+                else:
+                    # ステップ4: JSON を DepthAnalysisResult に型変換
+                    try:
+                        depth_analysis = DepthAnalysisResult.model_validate(raw_result)
+                    except Exception as e:
+                        logger.warning(f"Failed to validate depth analysis result: {e}")
+                        error = f"depth: validation error: {e}"
         except Exception as e:
             logger.error(f"Depth node error: {e}")
             error = f"depth: {e}"
@@ -629,6 +633,19 @@ def infrared_node(state: AgentState, runtime: Runtime[ContextSchema]) -> Command
             if side_by_side_bytes is None:
                 error = "infrared: failed to create side-by-side image"
             else:
+                # ファイル保存（VLM は保存済みパスを直接参照する）
+                infrared_sbs_path: Optional[str] = None
+                try:
+                    infrared_output_dir = Path("data/infrared")
+                    infrared_output_dir.mkdir(parents=True, exist_ok=True)
+                    frame_filename = Path(obs.image_path).name
+                    infrared_sbs_path = str(infrared_output_dir / frame_filename)
+                    with open(infrared_sbs_path, "wb") as f:
+                        f.write(side_by_side_bytes)
+                except Exception as e:
+                    logger.warning(f"Failed to save infrared side-by-side image: {e}")
+                    infrared_sbs_path = None
+
                 infrared_prompt = prompts.get("infrared_analysis", {}).get(
                     "system"
                 ) or (
@@ -644,6 +661,7 @@ def infrared_node(state: AgentState, runtime: Runtime[ContextSchema]) -> Command
                     media_type="image/png",
                     prompt=infrared_prompt,
                     max_tokens=vision_max_tokens,
+                    image_path=infrared_sbs_path,
                 )
                 if raw_result is None:
                     error = "infrared: VLM analysis failed"
@@ -708,6 +726,19 @@ def temporal_node(state: AgentState, runtime: Runtime[ContextSchema]) -> Command
             if temporal_bytes is None:
                 error = "temporal: failed to create temporal image"
             else:
+                # ファイル保存（VLM は保存済みパスを直接参照する）
+                temporal_sbs_path: Optional[str] = None
+                try:
+                    temporal_output_dir = Path("data/temporal")
+                    temporal_output_dir.mkdir(parents=True, exist_ok=True)
+                    frame_filename = Path(obs.image_path).name
+                    temporal_sbs_path = str(temporal_output_dir / frame_filename)
+                    with open(temporal_sbs_path, "wb") as f:
+                        f.write(temporal_bytes)
+                except Exception as e:
+                    logger.warning(f"Failed to save temporal image: {e}")
+                    temporal_sbs_path = None
+
                 temporal_prompt = prompts.get("temporal_analysis", {}).get(
                     "system"
                 ) or (
@@ -723,6 +754,7 @@ def temporal_node(state: AgentState, runtime: Runtime[ContextSchema]) -> Command
                     media_type="image/png",
                     prompt=temporal_prompt,
                     max_tokens=vision_max_tokens,
+                    image_path=temporal_sbs_path,
                 )
                 if raw_result is None:
                     error = "temporal: VLM analysis failed"
