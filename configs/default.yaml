@@ -57,7 +57,7 @@ alm:
     model: "gpt-5-nano"
     timeout_s: 60.0
   vllm:
-    base_url: "http://localhost:8001/v1"
+    base_url: "http://localhost:8002/v1"
     model: "Qwen/Qwen2.5-Omni-3B"
     timeout_s: 60.0
 
@@ -69,7 +69,7 @@ data:
 
   # inspesafe モード: InspecSafe-V1 のセッションを指定
   inspesafe:
-    dataset_path: "/home/team-005/data/hf_cache/hub/datasets--Tetrabot2026--InspecSafe-V1/snapshots/6d58d012079ba6441c474be54d7a93dd9d70c01c"
+    dataset_path: "/home/team-005/data/InspecSafe-V1"
     session: "train/Other_modalities/58132919535743_20251118_session_1400_2#bowenguanshang-you"
 
 # Video and Audio processing

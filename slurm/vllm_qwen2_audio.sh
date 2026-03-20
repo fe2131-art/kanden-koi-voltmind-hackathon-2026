@@ -55,20 +55,23 @@ mkdir -p "$UV_CACHE_DIR" "$HF_HOME"
 uv sync --frozen || uv sync
 
 MODEL="Qwen/Qwen2.5-Omni-3B" #"Qwen/Qwen2.5-Omni-7B"
-PORT=8001
+PORT=8002
 
 echo
 echo "---- Starting vLLM server ----"
+CUDA_VISIBLE_DEVICES=0 \
 uv run vllm serve "$MODEL" \
   --host 0.0.0.0 \
   --port "$PORT" \
   --tensor-parallel-size 1 \
   --max-model-len 4096 \
-  --gpu-memory-utilization 0.65 \
+  --gpu-memory-utilization 0.4 \
   --enable-prefix-caching \
   --allowed-local-media-path /home/team-005 \
+  --gdn-prefill-backend triton \
   > "vllm_${SLURM_JOB_ID}.log" 2>&1 &
 # --reasoning-parser qwen3 は Qwen3 thinking モデル用。必要なら上記に追加。
+# --gdn-prefill-backend triton CUDA_VISIBLE_DEVICES=0 H100のみ
 
 VLLM_PID=$!
 echo "vLLM PID=$VLLM_PID"

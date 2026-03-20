@@ -55,23 +55,26 @@ mkdir -p "$UV_CACHE_DIR" "$HF_HOME"
 uv sync --frozen || uv sync
 
 MODEL="QuantTrio/Qwen3.5-4B-AWQ" # QuantTrio/Qwen3.5-4B-AWQ QuantTrio/Qwen3.5-27B-AWQ 16384
-PORT=8000
+PORT=8002
 
 echo
 echo "---- Starting vLLM server ----"
+CUDA_VISIBLE_DEVICES=0 \
 uv run vllm serve "$MODEL" \
   --host 0.0.0.0 \
   --port "$PORT" \
   --tensor-parallel-size 1 \
   --max-model-len 16384 \
   --quantization awq \
-  --gpu-memory-utilization 0.9 \
+  --gpu-memory-utilization 0.5 \
   --speculative-config '{"method":"mtp","num_speculative_tokens":2}' \
   --default-chat-template-kwargs '{"enable_thinking": false}' \
   --enable-prefix-caching \
   --allowed-local-media-path /home/team-005 \
+  --gdn-prefill-backend triton \
   > "vllm_${SLURM_JOB_ID}.log" 2>&1 &
 # --reasoning-parser qwen3 は Qwen3 thinking モデル用。必要なら上記に追加。
+# --gdn-prefill-backend triton CUDA_VISIBLE_DEVICES=0 H100のみ
 
 VLLM_PID=$!
 echo "vLLM PID=$VLLM_PID"
