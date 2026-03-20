@@ -136,6 +136,11 @@ class OpenAICompatLLM:
             raise
 
 
+def _strip_trailing_commas(text: str) -> str:
+    """JSON の trailing comma（`,[whitespace]}` や `,[whitespace]]`）を除去する。"""
+    return re.sub(r",\s*([}\]])", r"\1", text)
+
+
 def _robust_json_loads(text: str) -> Dict[str, Any]:
     """LLM 出力から JSON を抽出・パース。複数の形式に対応。"""
     # 1) 直接パース
@@ -144,15 +149,28 @@ def _robust_json_loads(text: str) -> Dict[str, Any]:
     except Exception:
         pass
 
-    # 2) markdown コードブロック（```json ... ```）を抽出
-    m = re.search(r"```(?:json)?\s*\n(.*?)\n```", text, flags=re.DOTALL)
-    if m:
+    # 2) trailing comma を除去して再試行
+    cleaned = _strip_trailing_commas(text)
+    if cleaned != text:
         try:
-            return json.loads(m.group(1))
+            return json.loads(cleaned)
         except Exception:
             pass
 
-    # 3) ネストを考慮した JSON 抽出（最初の { から最後の } まで）
+    # 3) markdown コードブロック（```json ... ```）を抽出
+    m = re.search(r"```(?:json)?\s*\n(.*?)\n```", text, flags=re.DOTALL)
+    if m:
+        candidate = m.group(1)
+        try:
+            return json.loads(candidate)
+        except Exception:
+            pass
+        try:
+            return json.loads(_strip_trailing_commas(candidate))
+        except Exception:
+            pass
+
+    # 4) ネストを考慮した JSON 抽出（最初の { から最後の } まで）
     text = text.strip()
     if text.startswith("{"):
         # 最初の開き括弧から始まる
@@ -168,16 +186,26 @@ def _robust_json_loads(text: str) -> Dict[str, Any]:
                     break
 
         if end_idx > 0:
+            candidate = text[:end_idx]
             try:
-                return json.loads(text[:end_idx])
+                return json.loads(candidate)
+            except Exception:
+                pass
+            try:
+                return json.loads(_strip_trailing_commas(candidate))
             except Exception:
                 pass
 
-    # 4) 簡易的な正規表現で { から } を抽出（最後の手段）
+    # 5) 簡易的な正規表現で { から } を抽出（最後の手段）
     m = re.search(r"\{.*\}", text, flags=re.DOTALL)
     if m:
+        candidate = m.group(0)
         try:
-            return json.loads(m.group(0))
+            return json.loads(candidate)
+        except Exception:
+            pass
+        try:
+            return json.loads(_strip_trailing_commas(candidate))
         except Exception:
             pass
 
@@ -398,9 +426,7 @@ def ingest_observation(state: AgentState, runtime: Runtime[ContextSchema]) -> Co
             skipped_names.append(modality)  # スキップ対象
 
     # スキップ対象の空 ModalityResult を事前投入
-    skip_results = {
-        name: ModalityResult(modality_name=name) for name in skipped_names
-    }
+    skip_results = {name: ModalityResult(modality_name=name) for name in skipped_names}
 
     # ログ出力: 実行中のモダリティとスキップ対象を表示
     logger.info(
@@ -413,8 +439,14 @@ def ingest_observation(state: AgentState, runtime: Runtime[ContextSchema]) -> Co
         update={
             "observation": obs,
             "done": False,  # 毎フレーム開始時にクリア
-            "modality_results": {"__reset__": True, **skip_results},  # リセット + 事前投入
-            "received_modalities": [_RESET_SENTINEL, *skipped_names],  # バリア用: スキップ済みを事前登録
+            "modality_results": {
+                "__reset__": True,
+                **skip_results,
+            },  # リセット + 事前投入
+            "received_modalities": [
+                _RESET_SENTINEL,
+                *skipped_names,
+            ],  # バリア用: スキップ済みを事前登録
             "barrier_obs_id": None,  # ラッチをリセット
             # 注: assessment と belief_state はリセットしない
             # 前フレーム結果を determine_next_action_llm で参照するため

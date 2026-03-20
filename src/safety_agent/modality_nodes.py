@@ -307,7 +307,9 @@ class VisionAnalyzer:
         return VisionAnalysisResult.model_validate(parsed)
 
     @staticmethod
-    def _encode_image_bytes(image_bytes: Optional[bytes], media_type: str) -> Optional[str]:
+    def _encode_image_bytes(
+        image_bytes: Optional[bytes], media_type: str
+    ) -> Optional[str]:
         """画像バイト列を Base64 エンコードし、data URL を返す。None の場合は None を返す。"""
         if image_bytes is None:
             return None
@@ -386,9 +388,7 @@ class VisionAnalyzer:
                     max_completion_tokens=max_tokens,
                 )
             except Exception as e:
-                logger.error(
-                    f"Vision API error (depth analysis): {e}", exc_info=True
-                )
+                logger.error(f"Vision API error (depth analysis): {e}", exc_info=True)
                 return None
 
         # 共通パース処理（vLLM / OpenAI 共通）
@@ -651,8 +651,8 @@ class AudioAnalyzer:
                     content = [
                         {"type": "text", "text": prompt},
                         {
-                            "type": "input_audio",
-                            "input_audio": {"data": audio_uri, "format": "wav"},
+                            "type": "audio_url",
+                            "audio_url": {"url": audio_uri},
                         },
                     ]
                     response = self.client.chat.completions.create(
@@ -722,7 +722,9 @@ class DepthEstimator:
 
         try:
             self._device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-            resolved_model_id = self._resolve_model_id(model_family, model_size, model_id)
+            resolved_model_id = self._resolve_model_id(
+                model_family, model_size, model_id
+            )
             self._model = DepthAnything3.from_pretrained(resolved_model_id).to(
                 self._device
             )
