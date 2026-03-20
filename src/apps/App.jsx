@@ -242,18 +242,14 @@ function App() {
 
       ctx.font = '12px system-ui, -apple-system, Segoe UI, sans-serif'
 
-      const targetIdx = (() => {
-        if (!targetRegion) return -1
-        const m = targetRegion.match(/^critical_point_(\d+)$/)
-        return m ? parseInt(m[1]) : -1
-      })()
-
       for (let i = 0; i < criticalPoints.length; i++) {
         const cp = criticalPoints[i]
         if (!cp?.bbox || cp.bbox.length !== 4) continue
         const [bx1, by1, bx2, by2] = cp.bbox
         const px1 = bx1*w, py1 = by1*h, px2 = bx2*w, py2 = by2*h
-        const isTarget = (i === targetIdx)
+        // region_id で突き合わせ（配列インデックスは filter で変わるため不使用）
+        const isTarget = !!targetRegion && !!cp.region_id && cp.region_id === targetRegion
+        const cpLabel = cp.region_id || `CP${i}`
 
         if (isTarget) {
           // target_region: 白色・5px・点線 + 白背景ラベル
@@ -262,7 +258,7 @@ function App() {
           ctx.setLineDash([8, 4])
           ctx.strokeRect(px1-2, py1-2, px2-px1+4, py2-py1+4)
           ctx.setLineDash([])
-          const label = `→ TARGET CP${i} ${cp.severity ?? ''}`
+          const label = `→ TARGET ${cpLabel} ${cp.severity ?? ''}`
           const tw = ctx.measureText(label).width
           ctx.fillStyle = 'rgba(255,255,255,0.85)'
           ctx.fillRect(px1, Math.max(0, py1-18), tw+8, 18)
@@ -276,7 +272,7 @@ function App() {
           ctx.strokeStyle = color
           ctx.lineWidth = 3
           ctx.strokeRect(px1, py1, px2-px1, py2-py1)
-          const label = `CP${i} ${cp.severity ?? ''}`
+          const label = `${cpLabel} ${cp.severity ?? ''}`
           const tw = ctx.measureText(label).width
           ctx.fillStyle = 'rgba(0,0,0,0.7)'
           ctx.fillRect(px1, Math.max(0, py1-16), tw+8, 16)

@@ -76,13 +76,12 @@ python src/run.py
 
 **出力例**:
 ```
-2026-03-04 22:30:45 - safety_view_agent - INFO - Found 30 frame(s)
-2026-03-04 22:30:45 - safety_view_agent - INFO - Running Safety View Agent
-2026-03-04 22:30:45 - safety_view_agent - INFO - Selected view: view_blind_left (pan=-30.0°)
-2026-03-04 22:30:45 - safety_view_agent - INFO - Results appended to data/perception_results.json
+2026-03-20 10:00:00 safety_agent INFO step=0 frame=img_0 video_ts=0.0
+2026-03-20 10:00:01 safety_agent INFO [emit] frame_id=img_0 risk=high action=inspect_region
+2026-03-20 10:00:01 safety_agent INFO append_frame_result: 000000_img_0.json (frame_count=1)
 ```
 
-✅ **完了！** `data/perception_results.json` に結果が保存されました。
+✅ **完了！** `data/perception_results/frames/` に結果が保存されました。
 
 ### オプション B: OpenAI API で実行
 
@@ -143,6 +142,23 @@ agent:
   context_history_size: 0   # 前回判断の参照数（0=なし）
 ```
 
+### フレームスキップ設定
+
+重いモダリティ（depth / infrared / temporal / belief）を N フレームごとに間引くことで処理を高速化できます：
+
+```yaml
+agent:
+  depth_every_n_frames: 2      # 2フレームに1回だけ depth を実行
+  infrared_every_n_frames: 2   # 2フレームに1回だけ infrared を実行
+  temporal_every_n_frames: 1   # 毎フレーム実行
+  belief_every_n_frames: 2     # 2フレームに1回だけ belief 更新
+  audio_every_n_frames: 1      # 毎フレーム実行（audio は軽量）
+```
+
+- `1` = 毎フレーム実行（デフォルト）
+- `N` = N フレームごとに 1 回（step % N == 0 のフレームで実行）
+- step=0（先頭フレーム）は N に関わらず常に実行
+
 ### context_history_size について
 
 - **0**: フレーム独立判定（メモリ最小、トレンド検出不可）
@@ -180,15 +196,27 @@ tests/test_e2e.py::test_e2e_agent_no_llm PASSED [100%]
 ```
 data/
 ├── frames/
-│   ├── frame_0.000s.jpg
-│   ├── frame_1.005s.jpg
+│   ├── frame_0.0s.jpg       ← RGB フレーム（.1f 形式）
+│   ├── frame_1.0s.jpg
 │   └── ...
-├── audio.wav
-├── perception_results.json          ← 分析結果（JSON、frames 配列形式）
-└── flow.md                          ← グラフ図（Mermaid）
+├── depth/
+│   ├── frame_0.0s.jpg       ← 深度マップ（enable_depth: true 時）
+│   └── ...
+├── infrared_frames/
+│   └── ...                  ← 赤外線フレーム（enable_infrared: true 時）
+├── perception_results/
+│   ├── manifest.json        ← フレーム数・更新時刻
+│   └── frames/
+│       ├── 000000_img_0.json
+│       ├── 000001_img_1.json
+│       └── ...
+└── flow.md                  ← グラフ図（Mermaid）
 ```
 
-### perception_results.json の例
+> **注**: 旧バージョンの `data/perception_results.json`（単一ファイル）は廃止されました。
+> 現在は `data/perception_results/frames/` にフレームごとのファイルが保存されます。
+
+### フレーム結果ファイルの例（`000000_img_0.json`）
 
 ```json
 {
@@ -284,15 +312,13 @@ data/
 # フレーム処理数
 agent:
   max_steps: -1         # 全フレーム、N を指定すると先頭 N フレーム
+  enable_depth: true    # 深度推定の有効/無効
+  enable_infrared: true # 赤外線解析の有効/無効
+  enable_temporal: true # 時系列解析の有効/無効
 
 # LLM プロバイダー
 llm:
-  provider: "openai"    # or "vllm"
-
-# ビュー選択戦略
-view_planning:
-  safety_priority_weight: 0.7  # 安全性の重み（0.7推奨）
-  info_gain_weight: 0.3        # 情報利得の重み
+  provider: "vllm"    # "openai" or "vllm"
 ```
 
 ## 複数フレーム処理
@@ -305,12 +331,12 @@ view_planning:
 python src/run.py
 
 # 結果確認
-python -c "import json; d=json.load(open('data/perception_results.json')); print(f'Frames: {len(d[\"frames\"])}')"
+python -c "import json; m=json.load(open('data/perception_results/manifest.json')); print(f'Frames: {m[\"frame_count\"]}')"
 ```
 
 **出力**: `Frames: 3`
 
-**注**: `agent_execution` は廃止されました。すべての結果は `frames` 配列に統合されています。
+**注**: 旧バージョンの `data/perception_results.json` および `agent_execution` キーは廃止されました。現在は `data/perception_results/frames/` にフレームごとに保存されます。
 
 ## トラブルシューティング
 
@@ -345,6 +371,7 @@ pytest tests/test_e2e.py -v
 
 ## 次のステップ
 
+- 🖥️ [デモアプリ起動手順](./DEMO_APP.md) - React UI のリアルタイムデモ
 - 📖 [システムアーキテクチャ](./ARCHITECTURE.md) - 詳細な設計を学ぶ
 - 🔧 [拡張ガイド](./EXTENDING.md) - 新しいセンサーやロジックを追加する
 - 💡 [CLAUDE.md](../CLAUDE.md) - プロジェクト全体の仕様書
@@ -377,7 +404,7 @@ cp video.mp4 data/videos/
 python src/run.py
 
 # 結果確認
-python -c "import json; d=json.load(open('data/perception_results.json')); print(len(d['frames']))"
+python -c "import json; m=json.load(open('data/perception_results/manifest.json')); print(m['frame_count'])"
 ```
 
 ### 例 3: OpenAI API で高品質な判断を得る
@@ -390,7 +417,7 @@ export OPENAI_API_KEY="sk-..."
 python src/run.py
 
 # JSON で判断内容を確認
-python -c "import json; d=json.load(open('data/perception_results.json')); print(json.dumps(d['frames'][0]['assessment'], indent=2))"
+python -c "import json, glob; f=sorted(glob.glob('data/perception_results/frames/*.json'))[0]; d=json.load(open(f)); print(json.dumps(d['assessment'], indent=2))"
 ```
 
 **出力例**:

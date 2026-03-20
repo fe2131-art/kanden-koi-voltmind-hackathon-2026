@@ -23,6 +23,7 @@ def normalize_critical_point(cp: dict) -> dict | None:
     if not nb or any(k not in nb for k in ("x_min", "y_min", "x_max", "y_max")):
         return None
     return {
+        "region_id": cp.get("region_id", ""),
         "description": cp.get("description", ""),
         "severity": cp.get("severity", "unknown"),
         "bbox": [nb["x_min"], nb["y_min"], nb["x_max"], nb["y_max"]],
