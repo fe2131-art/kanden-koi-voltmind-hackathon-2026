@@ -40,7 +40,6 @@ echo "MODE=$MODE"
 echo "WORK_DIR=$WORK_DIR"
 echo "CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-<not set>}"
 echo "=========================================="
-nvidia-smi
 
 cd "$WORK_DIR"
 
