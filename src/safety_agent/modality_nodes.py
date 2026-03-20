@@ -450,7 +450,12 @@ class AudioAnalyzer:
         if not audio_input:
             return []
 
-        if not Path(audio_input).exists():
+        try:
+            exists = Path(audio_input).exists()
+        except OSError as e:
+            logger.warning(f"Audio path check failed: {audio_input}: {e}")
+            return []
+        if not exists:
             logger.warning(f"Audio file not found: {audio_input}")
             return []
 
@@ -541,12 +546,22 @@ class DepthEstimator:
         self._device = None
         self._lock = threading.Lock()
 
-        self._device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        resolved_model_id = self._resolve_model_id(model_family, model_size, model_id)
-        self._model = DepthAnything3.from_pretrained(resolved_model_id).to(self._device)
-        logger.info(
-            f"DepthEstimator initialized: {resolved_model_id} on {self._device}"
-        )
+        try:
+            self._device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+            resolved_model_id = self._resolve_model_id(model_family, model_size, model_id)
+            self._model = DepthAnything3.from_pretrained(resolved_model_id).to(
+                self._device
+            )
+            logger.info(
+                f"DepthEstimator initialized: {resolved_model_id} on {self._device}"
+            )
+        except Exception as e:
+            logger.error(
+                f"DepthEstimator: model load failed, depth estimation disabled: {e}",
+                exc_info=True,
+            )
+            self._model = None
+            self._device = None
 
     def _resolve_model_id(
         self,
@@ -655,6 +670,9 @@ class DepthEstimator:
                     process_res_method="upper_bound_resize",
                 )
 
+            if prediction is None:
+                logger.warning("Depth model returned None prediction")
+                return None
             depth = prediction.depth[0].astype(np.float32)
             rgb = prediction.processed_images[0].astype(np.uint8)
 
@@ -701,18 +719,26 @@ class InfraredImageAnalyzer:
             RGB サイズに赤外線をリサイズしてから結合する。
         """
 
-        if rgb_bytes is not None:
-            rgb = np.array(Image.open(BytesIO(rgb_bytes)).convert("RGB"))
-        else:
-            if not Path(rgb_path).exists():
-                logger.warning(f"RGB image not found: {rgb_path}")
-                return None
-            rgb = np.array(Image.open(rgb_path).convert("RGB"))
+        try:
+            if rgb_bytes is not None:
+                rgb = np.array(Image.open(BytesIO(rgb_bytes)).convert("RGB"))
+            else:
+                if not Path(rgb_path).exists():
+                    logger.warning(f"RGB image not found: {rgb_path}")
+                    return None
+                rgb = np.array(Image.open(rgb_path).convert("RGB"))
+        except Exception as e:
+            logger.error(f"InfraredImageAnalyzer: failed to load RGB image: {e}")
+            return None
 
         if not Path(infrared_path).exists():
             logger.warning(f"Infrared image not found: {infrared_path}")
             return None
-        infrared = np.array(Image.open(infrared_path).convert("RGB"))
+        try:
+            infrared = np.array(Image.open(infrared_path).convert("RGB"))
+        except Exception as e:
+            logger.error(f"InfraredImageAnalyzer: failed to load infrared image: {e}")
+            return None
 
         # サイズを RGB に合わせてリサイズ
         if rgb.shape[:2] != infrared.shape[:2]:
@@ -752,18 +778,26 @@ class TemporalImageAnalyzer:
             左: 前フレーム、右: 現フレーム（時系列順）の順に並べる。
             両フレームのサイズが異なる場合は、現フレームのサイズに合わせてリサイズする。
         """
-        if current_bytes is not None:
-            current = np.array(Image.open(BytesIO(current_bytes)).convert("RGB"))
-        else:
-            if not Path(current_path).exists():
-                logger.warning(f"Current frame not found: {current_path}")
-                return None
-            current = np.array(Image.open(current_path).convert("RGB"))
+        try:
+            if current_bytes is not None:
+                current = np.array(Image.open(BytesIO(current_bytes)).convert("RGB"))
+            else:
+                if not Path(current_path).exists():
+                    logger.warning(f"Current frame not found: {current_path}")
+                    return None
+                current = np.array(Image.open(current_path).convert("RGB"))
+        except Exception as e:
+            logger.error(f"TemporalImageAnalyzer: failed to load current frame: {e}")
+            return None
 
         if not Path(prev_path).exists():
             logger.warning(f"Previous frame not found: {prev_path}")
             return None
-        prev = np.array(Image.open(prev_path).convert("RGB"))
+        try:
+            prev = np.array(Image.open(prev_path).convert("RGB"))
+        except Exception as e:
+            logger.error(f"TemporalImageAnalyzer: failed to load previous frame: {e}")
+            return None
 
         # サイズを current に合わせてリサイズ
         if current.shape[:2] != prev.shape[:2]:

@@ -190,9 +190,17 @@ def _robust_json_loads(text: str) -> Dict[str, Any]:
 
 
 def _merge_dict(left, right):
-    """右勝ちの dict merge。right が {} または __reset__ キーを含む場合はリセット。
-    __reset__ キー付きの場合はリセット後にその他エントリを事前投入する。"""
-    if not right or right == {}:
+    """右勝ちの dict merge。
+
+    リセット信号:
+      - right == {}         → 完全リセット（left を破棄）
+      - "__reset__" in right → リセット後にその他エントリを事前投入
+
+    right が None の場合は left をそのまま保持（意図しないリセットを防ぐ）。
+    """
+    if right is None:
+        return left or {}
+    if right == {}:
         return {}
     if "__reset__" in right:
         return {k: v for k, v in right.items() if k != "__reset__"}
@@ -361,7 +369,7 @@ def ingest_observation(state: AgentState, runtime: Runtime[ContextSchema]) -> Co
 
     # フレームスキップ設定を読み込む
     agent_cfg = runtime.context.get("config", {}).get("agent", {})
-    expected = set(runtime.context["expected_modalities"])
+    expected = set(runtime.context.get("expected_modalities", ["vlm"]))
 
     # フレームスキップ判定関数
     def should_run(cfg_key: str) -> bool:

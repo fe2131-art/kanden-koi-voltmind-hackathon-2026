@@ -21,6 +21,10 @@ def normalize_critical_point(cp: dict) -> dict | None:
     """
     nb = cp.get("normalized_bbox") or {}
     if not nb or any(k not in nb for k in ("x_min", "y_min", "x_max", "y_max")):
+        region_id = cp.get("region_id", "<unknown>")
+        logger.debug(
+            f"normalize_critical_point: skipped '{region_id}' — normalized_bbox missing or incomplete"
+        )
         return None
     return {
         "region_id": cp.get("region_id", ""),

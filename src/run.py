@@ -1077,6 +1077,7 @@ def main():
 
     # Clean up data directories before processing
     # Note: data/audio is NOT cleared as it contains source audio files used by multiple runs
+    # TODO: data/voice への書き込みは未実装。将来フレーム単位の音声クリップ出力に使用予定。
     for data_dir in ["data/frames", "data/depth", "data/voice"]:
         if os.path.exists(data_dir):
             shutil.rmtree(data_dir)
