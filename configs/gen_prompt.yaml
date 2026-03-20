@@ -1,0 +1,128 @@
+# Video Generation Configuration - LTX-2 via Diffusers
+# Used by: video_generation/generate.py
+
+# ─── Model Settings ───────────────────────────────────────────────
+model:
+  # HuggingFace repo_id OR absolute path to a local snapshot
+  # Set local_path to override repo_id (for offline operation with cached model)
+  repo_id: "Lightricks/LTX-2"
+  local_path: "/home/team-005/data/ltx-2-models/"
+
+  # torch dtype: "bfloat16" | "float16" | "float32"
+  # bfloat16 recommended for H100 (faster, good quality)
+  dtype: "bfloat16"
+
+  # Device: "cuda" | "cpu"
+  device: "cuda"
+
+  # Restrict to specific GPU(s) via CUDA_VISIBLE_DEVICES.
+  # "1"   → use GPU index 1 only
+  # "0,1" → use GPU 0 and 1
+  # null  → use all visible GPUs (default)
+  cuda_visible_devices: "1"
+
+  # Enable model CPU offload to save VRAM (trades speed for memory)
+  enable_model_cpu_offload: false
+
+  # Enable VAE slicing/tiling for reduced memory usage
+  enable_vae_slicing: true
+  enable_vae_tiling: false
+
+# ─── Generation Parameters ─────────────────────────────────────────
+generation:
+  # Image dimensions - must be divisible by 32
+  # Common: 512x384, 768x512, 1024x576, 1280x720
+  width: 768
+  height: 512
+
+  # Number of frames - CRITICAL: must satisfy (num_frames - 1) % 8 == 0
+  # Valid values: 9, 17, 25, 33, 49, 65, 81, 97, 121, 161, 201
+  # Higher = longer video, more VRAM needed
+  num_frames: 121
+
+  # Diffusion inference steps (quality vs speed tradeoff)
+  # 20-30: fast, acceptable quality
+  # 40-50: good quality
+  # 60+: very high quality (slower)
+  num_inference_steps: 40
+
+  # Classifier-free guidance scale (affects text adherence)
+  # 1.0: no guidance (may be incoherent)
+  # 3.0: default (balanced)
+  # 5.0-7.0: strong text adherence (may sacrifice quality)
+  guidance_scale: 3.0
+
+  # Random seed for reproducibility; null = random each run
+  seed: 42
+
+  # Number of videos to generate per prompt (batch size)
+  num_videos_per_prompt: 1
+
+  # Generate audio alongside video (LTX-2 supports audio)
+  # Note: audio generation adds inference time
+  generate_audio: false
+
+# ─── Text Prompts ──────────────────────────────────────────────────
+prompts:
+  # Negative prompt applied to all generations
+  # Helps exclude unwanted artifacts/qualities
+  negative_prompt: >-
+    worst quality, inconsistent motion, blurry, jittery, distorted,
+    watermark, text, logo, low resolution, unrealistic, deformed
+
+  # List of generation jobs; each becomes one or more output videos
+  items:
+    - id: "factory_floor_normal"
+      prompt: >-
+        A factory floor with workers wearing safety helmets and high-visibility
+        vests, machinery operating smoothly, bright overhead lighting,
+        cinematic wide shot, photorealistic, 4K.
+      # Per-prompt overrides (optional; leave empty {} for defaults)
+      overrides: {}
+
+    - id: "hazard_detection_scenario"
+      prompt: >-
+        Industrial plant corridor with steam pipes overhead, warning signs
+        visible, a worker in safety gear inspecting equipment with a flashlight,
+        safety-critical environment, detailed textures, photorealistic.
+      overrides:
+        guidance_scale: 4.0
+
+    - id: "overhead_crane_operation"
+      prompt: >-
+        Overhead crane moving a heavy metallic load in a large warehouse,
+        multiple workers maintaining safe distances below, all wearing hard hats
+        and reflective safety vests, dynamic motion, aerial perspective,
+        cinematic lighting.
+      overrides:
+        num_frames: 81
+        seed: 100
+
+# ─── Output Settings ───────────────────────────────────────────────
+output:
+  # Directory for generated MP4 files (relative to project root)
+  # Will be created if it doesn't exist
+  dir: "data/videos"
+
+  # Filename template for output videos
+  # Available variables: {id}, {seed}, {timestamp}
+  # Example outputs:
+  #   factory_floor_normal_42_20260320_150000.mp4
+  #   hazard_detection_scenario_rand_20260320_150005.mp4
+  filename_template: "{id}_{seed}_{timestamp}.mp4"
+
+  # Output video frame rate (FPS)
+  fps: 24
+
+  # FFmpeg video codec
+  # "libx264" (default): H.264, good compatibility
+  # "libx265": H.265/HEVC, better compression
+  codec: "libx264"
+
+  # imageio quality parameter (0-10)
+  # Higher = better quality but larger file size
+  quality: 8
+
+  # Also save individual frames as PNG files to data/frames/
+  # Useful for post-processing, but requires disk space
+  save_frames: false
