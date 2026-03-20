@@ -9,7 +9,9 @@ import websockets
 logger = logging.getLogger(__name__)
 
 OUTPUT_DIR = Path(__file__).parent.parent.parent / "data"
-PERCEPTION_RESULTS = OUTPUT_DIR / "perception_results.json"
+RESULTS_DIR = OUTPUT_DIR / "perception_results"
+MANIFEST_PATH = RESULTS_DIR / "manifest.json"
+FRAMES_DIR = RESULTS_DIR / "frames"
 
 
 def normalize_critical_point(cp: dict) -> dict | None:
@@ -28,39 +30,60 @@ def normalize_critical_point(cp: dict) -> dict | None:
 
 
 async def monitor_and_stream(websocket):
-    """Monitor data/perception_results.json and stream changes to client."""
+    """Monitor data/perception_results/manifest.json and stream new frames to client."""
     logger.info("client connected")
     last_count = 0  # 前回送信した frames 数をトラッキング
 
     try:
         while True:
-            # Check if perception_results.json has changed
-            if PERCEPTION_RESULTS.exists():
-                # JSON 読み込みの競合対策：リトライロジック（最大3回、50ms待機）
-                data = None
+            if MANIFEST_PATH.exists():
+                # manifest.json からフレーム数を取得（リトライ最大3回）
+                manifest = None
                 for attempt in range(3):
                     try:
-                        with open(PERCEPTION_RESULTS, "r", encoding="utf-8") as f:
-                            data = json.load(f)
+                        with open(MANIFEST_PATH, "r", encoding="utf-8") as f:
+                            manifest = json.load(f)
                         break
                     except (json.JSONDecodeError, IOError) as e:
                         if attempt < 2:
                             await asyncio.sleep(0.05)
                         elif attempt == 2:
                             logger.error(
-                                f"Error reading perception_results.json (3 attempts): {e}"
+                                f"Error reading manifest (3 attempts): {e}"
                             )
 
-                if data is not None:
-                    # Extract frames
-                    frames = data.get("frames", [])
-                    current_count = len(frames)
+                if manifest is not None:
+                    current_count = manifest.get("frame_count", 0)
 
-                    # 新しいフレームのみを送信（増分ストリーミング）
-                    if current_count > last_count:
-                        for frame_idx, result in enumerate(
-                            frames[last_count:], start=last_count
-                        ):
+                    # 新しいフレームのみを送信
+                    if current_count > last_count and FRAMES_DIR.exists():
+                        # フレームファイルを名前順でソート（000000_xxx.json 形式）
+                        json_files = sorted(FRAMES_DIR.glob("*.json"))
+
+                        for frame_idx in range(last_count, current_count):
+                            if frame_idx >= len(json_files):
+                                break
+
+                            frame_file = json_files[frame_idx]
+
+                            # フレームファイルを読み込み（リトライ最大3回）
+                            result = None
+                            for attempt in range(3):
+                                try:
+                                    with open(frame_file, "r", encoding="utf-8") as f:
+                                        result = json.load(f)
+                                    break
+                                except (json.JSONDecodeError, IOError) as e:
+                                    if attempt < 2:
+                                        await asyncio.sleep(0.05)
+                                    else:
+                                        logger.error(
+                                            f"Error reading {frame_file.name} (3 attempts): {e}"
+                                        )
+
+                            if result is None:
+                                continue
+
                             vision_analysis = result.get("vision_analysis") or {}
                             critical_points = [
                                 p
@@ -71,45 +94,35 @@ async def monitor_and_stream(websocket):
                                 if p is not None
                             ]
 
-                            # タイムスタンプを使用（Unix timestamp）
                             frame_timestamp = result.get("timestamp", time.time())
                             video_ts = result.get("video_timestamp")
 
-                            # フレーム番号から RGB フレームパスを推測（配列インデックスをフレーム番号として使用）
-                            # frame_0.0s.jpg → frame_1.0s.jpg など
+                            # フレーム番号から RGB フレームパスを推測
                             rgb_frame_name = None
                             depth_image_path = None
                             voice_path = None
 
-                            # フレームファイルを検索: frame_{frame_idx}.{timestamp}s.jpg
-                            # または video_timestamp がある場合は対応する時刻のフレーム
                             if video_ts is not None:
-                                # video_timestamp から フレーム番号を推測
                                 expected_frame_name = f"frame_{video_ts:.3f}s.jpg"
-                                potential_path = (
-                                    OUTPUT_DIR / "frames" / expected_frame_name
-                                )
+                                potential_path = OUTPUT_DIR / "frames" / expected_frame_name
                                 if potential_path.exists():
                                     rgb_frame_name = expected_frame_name
 
-                            # fallback: フレームディレクトリから一致するファイルを検出
+                            # fallback: フレームディレクトリからインデックスで検索
                             if not rgb_frame_name:
-                                frames_dir = OUTPUT_DIR / "frames"
-                                if frames_dir.exists():
-                                    frame_files = sorted(frames_dir.glob("frame_*.jpg"))
-                                    if frame_idx < len(frame_files):
-                                        rgb_frame_name = frame_files[frame_idx].name
+                                rgb_frames_dir = OUTPUT_DIR / "frames"
+                                if rgb_frames_dir.exists():
+                                    rgb_files = sorted(rgb_frames_dir.glob("frame_*.jpg"))
+                                    if frame_idx < len(rgb_files):
+                                        rgb_frame_name = rgb_files[frame_idx].name
 
                             # 深度画像と音声ファイルを検出
                             if rgb_frame_name:
-                                potential_depth_path = (
-                                    OUTPUT_DIR / "depth" / rgb_frame_name
-                                )
-                                if potential_depth_path.exists():
+                                potential_depth = OUTPUT_DIR / "depth" / rgb_frame_name
+                                if potential_depth.exists():
                                     depth_image_path = f"/depth/{rgb_frame_name}"
 
-                                # voice_path 検出（RGB フレームのステムに対応する音声ファイル）
-                                stem = Path(rgb_frame_name).stem  # "frame_0.0s" など
+                                stem = Path(rgb_frame_name).stem
                                 for ext in (".wav", ".mp3"):
                                     candidate = OUTPUT_DIR / "voice" / (stem + ext)
                                     if candidate.exists():
@@ -118,10 +131,8 @@ async def monitor_and_stream(websocket):
 
                             frame_id = result.get("frame_id", f"frame_{frame_idx}")
                             msg = {
-                                "t": video_ts
-                                if video_ts is not None
-                                else frame_timestamp,
-                                "video_timestamp": video_ts,  # 動画内秒数（あれば）
+                                "t": video_ts if video_ts is not None else frame_timestamp,
+                                "video_timestamp": video_ts,
                                 "text": vision_analysis.get(
                                     "scene_description", "Analysis complete"
                                 ),
@@ -152,7 +163,7 @@ async def monitor_and_stream(websocket):
 async def main():
     async with websockets.serve(monitor_and_stream, "0.0.0.0", 8001):
         logger.info("ws server: ws://localhost:8001")
-        logger.info(f"monitoring: {PERCEPTION_RESULTS}")
+        logger.info(f"monitoring: {MANIFEST_PATH}")
         await asyncio.Future()  # run forever
 
 

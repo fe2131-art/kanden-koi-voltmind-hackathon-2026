@@ -488,7 +488,7 @@ function App() {
           </div>
           <audio ref={audioRef} style={{ display: 'none' }} />
           <div style={styles.hint}>
-            ※ data/perception_results.json から推論結果を読み込みます。
+            ※ data/perception_results/frames/ から推論結果を読み込みます。
           </div>
         </div>
 

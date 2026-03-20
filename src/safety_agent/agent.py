@@ -208,20 +208,31 @@ def _robust_json_loads(text: str) -> Dict[str, Any]:
 
 
 def _merge_dict(left, right):
-    """右勝ちの dict merge。right が {} のときは完全リセット。"""
-    if right == {}:
+    """右勝ちの dict merge。right が {} または __reset__ キーを含む場合はリセット。
+    __reset__ キー付きの場合はリセット後にその他エントリを事前投入する。"""
+    if not right or right == {}:
         return {}
-    return {**(left or {}), **(right or {})}
+    if "__reset__" in right:
+        return {k: v for k, v in right.items() if k != "__reset__"}
+    return {**(left or {}), **right}
 
 
 _RESET_SENTINEL = "__reset__"
 
 
 def _unique_append_with_reset(left: List[str], right: List[str]) -> List[str]:
-    """リセットセンチネルで空にできる重複なし追記 reducer。"""
-    if _RESET_SENTINEL in (right or []):
-        return []
-    return sorted(set((left or []) + (right or [])))
+    """リセットセンチネルで空にできる重複なし追記 reducer。
+    __reset__ が含まれる場合は既存リストをクリアし、同時に渡された追加要素を新たなベースにする。
+    これにより ingest_observation でスキップ済みモダリティを事前投入できる。
+    """
+    right_items = list(right or [])
+    if _RESET_SENTINEL in right_items:
+        # リセット後、__reset__ 以外の要素（スキップ済みモダリティ）を初期値として採用
+        base: list[str] = [x for x in right_items if x != _RESET_SENTINEL]
+    else:
+        base = list(left or [])
+        base += right_items
+    return sorted(set(base))
 
 
 def _first_write_wins(left: Optional[str], right: Optional[str]) -> Optional[str]:
@@ -321,10 +332,15 @@ class ContextSchema(TypedDict):
 
 def ingest_observation(state: AgentState, runtime: Runtime[ContextSchema]) -> Command:
     """
-    観測を取得して、vlm_node、audio_node へ fan-out で送信。
-    Command + Send API により真の LangGraph 並列実行を実現。
+    観測を取得して、vlm_node と有効なモダリティノードへ fan-out で送信。
+    フレームスキップ機能:
+    - audio_every_n_frames, depth_every_n_frames 等で各モダリティの実行間隔を制御
+    - step % n == 0 のフレームで実行。step=0 は常に全モダリティ実行。
+    - スキップ対象モダリティは空の ModalityResult を事前投入し、バリアが通過できるようにする。
     """
     step = state["step"]
+    max_steps = state.get("max_steps", 0)
+    logger.info(f"[ingest_observation] step={step}, max_steps={max_steps}")
     obs = state.get("observation")
 
     # step==0 で初期観測がある場合はそのまま使う
@@ -339,35 +355,62 @@ def ingest_observation(state: AgentState, runtime: Runtime[ContextSchema]) -> Co
             )
         obs = nxt
 
-    # fan-out: vlm, audio（+ depth）を並列ノードへ送信
-    sends: list[Send] = [
-        Send("vlm_node", {"observation": obs}),
-        Send("audio_node", {"observation": obs}),
-    ]
+    # フレームスキップ設定を読み込む
+    agent_cfg = runtime.context.get("config", {}).get("agent", {})
+    expected = set(runtime.context["expected_modalities"])
 
-    # enable_depth=true の場合のみ depth_node を追加
-    if "depth" in runtime.context["expected_modalities"]:
-        sends.append(Send("depth_node", {"observation": obs}))
+    # フレームスキップ判定関数
+    def should_run(cfg_key: str) -> bool:
+        n = max(1, agent_cfg.get(cfg_key, 1))
+        return (step % n) == 0
 
-    # enable_infrared=true の場合のみ infrared_node を追加
-    if "infrared" in runtime.context["expected_modalities"]:
-        sends.append(Send("infrared_node", {"observation": obs}))
+    # モダリティごとのスキップ判定
+    skip_map = {
+        "audio": ("audio_every_n_frames", "audio_node"),
+        "depth": ("depth_every_n_frames", "depth_node"),
+        "infrared": ("infrared_every_n_frames", "infrared_node"),
+        "temporal": ("temporal_every_n_frames", "temporal_node"),
+    }
 
-    # enable_temporal=true の場合のみ temporal_node を追加
-    if "temporal" in runtime.context["expected_modalities"]:
-        sends.append(Send("temporal_node", {"observation": obs}))
+    sends: list[Send] = [Send("vlm_node", {"observation": obs})]  # VLM は常に実行
+    running_modalities: list[str] = ["vlm"]
+
+    skipped_names: list[str] = []
+    for modality, (cfg_key, node_name) in skip_map.items():
+        if modality not in expected:
+            continue  # そもそも disabled
+        if should_run(cfg_key):
+            sends.append(Send(node_name, {"observation": obs}))
+            running_modalities.append(modality)
+        else:
+            skipped_names.append(modality)  # スキップ対象
+
+    # スキップ対象の空 ModalityResult を事前投入
+    skip_results = {
+        name: ModalityResult(modality_name=name) for name in skipped_names
+    }
+
+    # ログ出力: 実行中のモダリティとスキップ対象を表示
+    logger.info(
+        f"[Frame {step}] {obs.obs_id}: "
+        f"running=({', '.join(running_modalities)})"
+        + (f", skip=({', '.join(skipped_names)})" if skipped_names else "")
+    )
 
     return Command(
         update={
             "observation": obs,
             "done": False,  # 毎フレーム開始時にクリア
-            "modality_results": {},  # dict リセット
-            "received_modalities": [_RESET_SENTINEL],  # バリアカウンタをリセット
+            "modality_results": {"__reset__": True, **skip_results},  # リセット + 事前投入
+            "received_modalities": [_RESET_SENTINEL, *skipped_names],  # バリア用: スキップ済みを事前登録
             "barrier_obs_id": None,  # ラッチをリセット
-            # 注: assessment と last_assessment はリセットしない
+            # 注: assessment と belief_state はリセットしない
             # 前フレーム結果を determine_next_action_llm で参照するため
             "messages": [
-                {"role": "assistant", "content": f"[ingest] fan-out -> {obs.obs_id}"}
+                {
+                    "role": "assistant",
+                    "content": f"[ingest] fan-out -> {obs.obs_id} (skip: {skipped_names})",
+                }
             ],
         },
         goto=sends,
@@ -835,6 +878,23 @@ def update_belief_state_llm(
             ],
         }
 
+    # フレームスキップ判定
+    step = state["step"]
+    agent_cfg = runtime.context.get("config", {}).get("agent", {})
+    belief_n = max(1, agent_cfg.get("belief_every_n_frames", 1))
+    if step % belief_n != 0:
+        # スキップ: 前フレームの belief_state をそのまま維持
+        logger.info(f"[Frame {step}] update_belief_state_llm: SKIPPED (n={belief_n})")
+        return {
+            "belief_state": state.get("belief_state"),
+            "messages": [
+                {
+                    "role": "assistant",
+                    "content": f"[belief] skip (step={step}, n={belief_n})",
+                }
+            ],
+        }
+
     llm = runtime.context.get("llm")
     if llm is None:
         # LLM が未設定の場合、previous belief_state をそのまま維持
@@ -896,6 +956,10 @@ def update_belief_state_llm(
         # BeliefState を直接検証
         belief_state = BeliefState.model_validate(raw)
         # 新しい belief_state を次フレームに引き継ぎ
+        logger.info(
+            f"[Frame {step}] update_belief_state_llm: UPDATED "
+            f"(hazards={len(belief_state.hazard_tracks)}, risk={belief_state.overall_risk})"
+        )
         return {
             "belief_state": belief_state,
             "messages": [
@@ -1178,16 +1242,25 @@ def emit_output(state: AgentState) -> Dict[str, Any]:
 
 
 def bump_step(state: AgentState) -> Dict[str, Any]:
-    return {"step": state["step"] + 1}
+    new_step = state["step"] + 1
+    logger.info(f"[bump_step] incrementing step: {state['step']} → {new_step}")
+    return {"step": new_step}
 
 
 def should_continue(state: AgentState) -> str:
     max_steps = state.get("max_steps", 0)
+    step = state["step"]
+    done = state.get("done", False)
 
-    if max_steps and state["step"] >= max_steps:
+    logger.debug(f"[should_continue] step={step}, max_steps={max_steps}, done={done}")
+
+    if max_steps and step >= max_steps:
+        logger.info(f"[should_continue] STOP: step({step}) >= max_steps({max_steps})")
         return END
-    if state.get("done"):
+    if done:
+        logger.info("[should_continue] STOP: done=True")
         return END
+    logger.debug("[should_continue] CONTINUE to ingest_observation")
     return "ingest_observation"
 
 
