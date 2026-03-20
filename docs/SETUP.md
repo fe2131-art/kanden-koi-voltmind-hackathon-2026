@@ -328,6 +328,74 @@ vLLM-Omni は以下の機能を提供します：
 
 詳細は [vLLM-Omni 公式ドキュメント](https://github.com/vllm-project/vllm-omni) を参照。
 
+## オプション: TTS ナレーション（Kokoro TTS）セットアップ
+
+エージェントの安全判断（`assessment.safety_status`）をフレームごとに音声化する機能です。
+音声ファイルは `data/voice/{frame_id}.wav` に出力されます。
+
+### 依存パッケージ
+
+以下はすべて `pyproject.toml` に記載済みのため、`uv sync` で自動インストールされます：
+
+| パッケージ | 用途 |
+|---|---|
+| `kokoro>=0.9.4` | TTS エンジン本体 |
+| `fugashi>=1.5.2` | MeCab Python ラッパー（日本語形態素解析） |
+| `unidic-lite` | MeCab 辞書 + mecabrc（ホームの venv 内に完結） |
+| `pyopenjtalk>=0.4.1` | 日本語 TTS 用音声合成補助 |
+| `soundfile` | WAV ファイル書き出し |
+
+```bash
+# 依存パッケージをインストール
+uv sync --extra dev
+```
+
+### MeCab 設定について
+
+Kokoro の日本語パイプラインは内部で MeCab（形態素解析器）を使用します。
+`unidic-lite` がインストールされていれば、**システムへの MeCab インストール（root 権限）は不要**です。
+
+`TTSNarrator` は初期化時に自動的に `MECABRC` 環境変数を `unidic-lite` の辞書パスに設定します：
+
+```
+TTSNarrator: MECABRC を unidic-lite に設定 (/path/to/venv/lib/.../unidic_lite/dicdir/mecabrc)
+```
+
+> **注**: `MECABRC` が既に環境変数として設定されている場合はそちらが優先されます。
+
+### 設定（configs/default.yaml）
+
+```yaml
+tts:
+  enabled: true
+  voice: "jf_alpha"     # 日本語女性ナレーター（jf_alpha / jf_gongitsune / jf_nezumi / jf_tebukuro）
+  speed: 1.0            # 読み上げ速度（0.5=遅 / 1.0=標準 / 1.5=速）
+  lang_code: "j"        # j=日本語
+  output_dir: "data/voice"
+  device: null          # null=自動（CUDA 優先）/ "cuda" / "cpu"
+```
+
+### トラブルシューティング
+
+**`Failed initializing MeCab` エラー**
+
+`unidic-lite` が未インストールの場合に発生します。
+
+```bash
+# 再インストール
+uv sync --extra dev
+
+# 確認
+python -c "import unidic_lite; print(unidic_lite.MECABRC)"
+```
+
+**`TTSNarrator: 初期化失敗のため TTS を無効化` ログが出る**
+
+TTS は自動的に無効化され、エージェント本体の処理は継続します。
+上記の `unidic-lite` インストール後に再実行してください。
+
+---
+
 ## ヘルプが必要な場合
 
 - Issues: プロジェクトの GitHub Issues を確認
