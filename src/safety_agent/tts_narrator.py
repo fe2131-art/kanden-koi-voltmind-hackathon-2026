@@ -43,7 +43,7 @@ class TTSNarrator:
             logger.info(
                 f"TTSNarrator: 初期化完了 (voice={self.voice}, speed={self.speed},"
                 f" lang={self.lang_code}, device={self.device or 'auto'},"
-                f" output={self.output_dir}) ※KPipeline は初回フレーム時にロード"
+                f" output={self.output_dir})"
             )
         else:
             logger.info("TTSNarrator: TTS 無効 (tts.enabled=false)")
