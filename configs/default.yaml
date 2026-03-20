@@ -97,3 +97,22 @@ tokens:
 thresholds:
   risk_stop_threshold: 0.2      # Stop if max unobserved risk <= this
   hazard_focus_threshold: 0.6   # Enforce high-risk unobserved coverage
+
+# TTS ナレーション設定（Kokoro TTS）
+# assessment.safety_status の内容をフレームごとに音声ファイルへ変換する
+tts:
+  enabled: true
+  # 日本語女性ナレーターボイス
+  #   jf_alpha      : クリアで汎用的な女性声（推奨）
+  #   jf_gongitsune : やや柔らかい女性声
+  #   jf_nezumi     : 落ち着いた女性声
+  #   jf_tebukuro   : 明るい女性声
+  voice: "jf_alpha"
+  # 読み上げ速度倍率（0.5=2倍遅い / 1.0=標準 / 1.5=1.5倍速い）
+  speed: 1.0
+  # 言語コード（j=日本語, a=英語US, b=英語UK, z=中国語, など）
+  lang_code: "j"
+  # 出力先ディレクトリ（フレームIDをベース名にした WAV を保存）
+  output_dir: "data/voice"
+  # 推論デバイス（null=自動判定/CUDA優先, "cuda", "cpu"）
+  device: "cuda"

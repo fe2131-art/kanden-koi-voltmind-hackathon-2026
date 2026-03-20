@@ -28,6 +28,7 @@ from safety_agent.schema import (
     Observation,
     ObservationProvider,
 )
+from safety_agent.tts_narrator import TTSNarrator
 from util.logger import setup_logger
 
 # .env ファイルから環境変数を読み込む
@@ -661,7 +662,9 @@ def iter_observations_from_video(
             obs = Observation(
                 obs_id=f"img_{frame_count}",
                 image_path=str(frame_path.absolute()),
-                prev_image_path=str(prev_frame_path.absolute()) if prev_frame_path else None,
+                prev_image_path=str(prev_frame_path.absolute())
+                if prev_frame_path
+                else None,
                 audio_path=audio_path,
                 infrared_image_path=infrared_path_map.get(frame_path.stem),
                 camera_pose=CameraPose(pan_deg=0, tilt_deg=0, zoom=1),
@@ -675,7 +678,9 @@ def iter_observations_from_video(
         idx += 1
 
     cap.release()
-    logger.info(f"Lazy extraction complete: {frame_count} frames from {video_path.name}")
+    logger.info(
+        f"Lazy extraction complete: {frame_count} frames from {video_path.name}"
+    )
 
 
 def append_frame_result(
@@ -1077,7 +1082,6 @@ def main():
 
     # Clean up data directories before processing
     # Note: data/audio is NOT cleared as it contains source audio files used by multiple runs
-    # TODO: data/voice への書き込みは未実装。将来フレーム単位の音声クリップ出力に使用予定。
     for data_dir in ["data/frames", "data/depth", "data/voice"]:
         if os.path.exists(data_dir):
             shutil.rmtree(data_dir)
@@ -1125,7 +1129,9 @@ def main():
         )
         provider = LazyObservationProvider(lazy_gen)  # type: ignore[assignment]
         actual_max_steps = lazy_max if lazy_max > 0 else video_cfg.get("max_frames", 0)
-        logger.info(f"Pipeline mode: lazy frame extraction from {video_path_for_lazy.name}")
+        logger.info(
+            f"Pipeline mode: lazy frame extraction from {video_path_for_lazy.name}"
+        )
     else:
         # フレーム既存 or inspesafe モード: 従来通り全フレームを先に準備
         try:
@@ -1253,16 +1259,25 @@ def main():
     else:
         logger.info("Frame skip settings: all modalities run every frame (default)")
 
+    # TTS ナレーター初期化（assessment.safety_status → data/voice/{frame_id}.wav）
+    tts_narrator = TTSNarrator(config)
+
     # フレーム処理時のコールバック関数定義
     # video_timestamp は emit_output が obs.video_timestamp から直接設定するため、
     # 外部マップは不要（None を渡すと emit_output の値がそのまま保存される）
     def _on_frame(frame_output: dict) -> None:
-        """フレーム処理完了時に perception_results/ へ即時保存"""
+        """フレーム処理完了時に perception_results/ へ即時保存し TTS 音声を生成"""
         append_frame_result(
             "data/perception_results",
             frame_output,
             None,
         )
+        # safety_status テキストを WAV ファイルへ変換
+        frame_id = frame_output.get("frame_id", "")
+        assessment = frame_output.get("assessment") or {}
+        safety_status = assessment.get("safety_status", "")
+        if frame_id and safety_status:
+            tts_narrator.generate(frame_id, safety_status)
 
     # Run and log agent with per-frame callback
     run_and_log_agent(agent, initial_state, context, on_frame_callback=_on_frame)
