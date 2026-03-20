@@ -103,39 +103,21 @@ class OpenAICompatLLM:
             # OpenAI（gpt-5-nano はサポートしない可能性）
             response_format = {"type": "json_object"}
 
-        try:
-            # gpt-5 系は max_completion_tokens を使用
-            if self._use_max_completion_tokens:
-                response = self.client.chat.completions.create(
-                    model=self.model,
-                    messages=messages,
-                    max_completion_tokens=max_tokens,
-                    response_format=response_format,
-                )
-            else:
-                response = self.client.chat.completions.create(
-                    model=self.model,
-                    messages=messages,
-                    max_tokens=max_tokens,
-                    response_format=response_format,
-                )
-        except Exception as e:
-            # response_format なしで再試行
-            logger.warning(
-                f"LLM with response_format failed: {e}. Retrying without format."
+        # gpt-5 系は max_completion_tokens を使用
+        if self._use_max_completion_tokens:
+            response = self.client.chat.completions.create(
+                model=self.model,
+                messages=messages,
+                max_completion_tokens=max_tokens,
+                response_format=response_format,
             )
-            if self._use_max_completion_tokens:
-                response = self.client.chat.completions.create(
-                    model=self.model,
-                    messages=messages,
-                    max_completion_tokens=max_tokens,
-                )
-            else:
-                response = self.client.chat.completions.create(
-                    model=self.model,
-                    messages=messages,
-                    max_tokens=max_tokens,
-                )
+        else:
+            response = self.client.chat.completions.create(
+                model=self.model,
+                messages=messages,
+                max_tokens=max_tokens,
+                response_format=response_format,
+            )
 
         content = response.choices[0].message.content
 
@@ -208,20 +190,31 @@ def _robust_json_loads(text: str) -> Dict[str, Any]:
 
 
 def _merge_dict(left, right):
-    """右勝ちの dict merge。right が {} のときは完全リセット。"""
-    if right == {}:
+    """右勝ちの dict merge。right が {} または __reset__ キーを含む場合はリセット。
+    __reset__ キー付きの場合はリセット後にその他エントリを事前投入する。"""
+    if not right or right == {}:
         return {}
-    return {**(left or {}), **(right or {})}
+    if "__reset__" in right:
+        return {k: v for k, v in right.items() if k != "__reset__"}
+    return {**(left or {}), **right}
 
 
 _RESET_SENTINEL = "__reset__"
 
 
 def _unique_append_with_reset(left: List[str], right: List[str]) -> List[str]:
-    """リセットセンチネルで空にできる重複なし追記 reducer。"""
-    if _RESET_SENTINEL in (right or []):
-        return []
-    return sorted(set((left or []) + (right or [])))
+    """リセットセンチネルで空にできる重複なし追記 reducer。
+    __reset__ が含まれる場合は既存リストをクリアし、同時に渡された追加要素を新たなベースにする。
+    これにより ingest_observation でスキップ済みモダリティを事前投入できる。
+    """
+    right_items = list(right or [])
+    if _RESET_SENTINEL in right_items:
+        # リセット後、__reset__ 以外の要素（スキップ済みモダリティ）を初期値として採用
+        base: list[str] = [x for x in right_items if x != _RESET_SENTINEL]
+    else:
+        base = list(left or [])
+        base += right_items
+    return sorted(set(base))
 
 
 def _first_write_wins(left: Optional[str], right: Optional[str]) -> Optional[str]:
@@ -259,6 +252,19 @@ def _sliding_window_errors(left: List[str], right: List[str]) -> List[str]:
     return combined
 
 
+_MAX_ASSESSMENT_HISTORY = 20
+
+
+def _sliding_window_assessments(left, right):
+    """直近 _MAX_ASSESSMENT_HISTORY 件のみ保持する reducer。
+    State 自体を上限管理し、LLM へ渡す件数は context_history_size で別途フィルタする。
+    """
+    combined = (left or []) + (right or [])
+    if len(combined) > _MAX_ASSESSMENT_HISTORY:
+        return combined[-_MAX_ASSESSMENT_HISTORY:]
+    return combined
+
+
 class AgentState(TypedDict):
     # メッセージログ（スライディングウィンドウ化）
     messages: Annotated[List, _sliding_window_messages]
@@ -284,9 +290,9 @@ class AgentState(TypedDict):
 
     # 現フレームの安全判断
     assessment: Optional[SafetyAssessment]  # 現フレームの判断
-    assessment_history: List[
-        SafetyAssessment
-    ]  # 判断履歴（determine_next_action_llm で trim）
+    assessment_history: Annotated[
+        List[SafetyAssessment], _sliding_window_assessments
+    ]  # 判断履歴（reducer で _MAX_ASSESSMENT_HISTORY 件上限、LLM 入力は context_history_size でフィルタ）
 
     # 信念状態：危険のトラッキング（フレーム間の引き継ぎ）
     belief_state: Optional[BeliefState]
@@ -321,10 +327,15 @@ class ContextSchema(TypedDict):
 
 def ingest_observation(state: AgentState, runtime: Runtime[ContextSchema]) -> Command:
     """
-    観測を取得して、vlm_node、audio_node へ fan-out で送信。
-    Command + Send API により真の LangGraph 並列実行を実現。
+    観測を取得して、vlm_node と有効なモダリティノードへ fan-out で送信。
+    フレームスキップ機能:
+    - audio_every_n_frames, depth_every_n_frames 等で各モダリティの実行間隔を制御
+    - step % n == 0 のフレームで実行。step=0 は常に全モダリティ実行。
+    - スキップ対象モダリティは空の ModalityResult を事前投入し、バリアが通過できるようにする。
     """
     step = state["step"]
+    max_steps = state.get("max_steps", 0)
+    logger.info(f"[ingest_observation] step={step}, max_steps={max_steps}")
     obs = state.get("observation")
 
     # step==0 で初期観測がある場合はそのまま使う
@@ -339,35 +350,71 @@ def ingest_observation(state: AgentState, runtime: Runtime[ContextSchema]) -> Co
             )
         obs = nxt
 
-    # fan-out: vlm, audio（+ depth）を並列ノードへ送信
-    sends: list[Send] = [
-        Send("vlm_node", {"observation": obs}),
-        Send("audio_node", {"observation": obs}),
-    ]
+    # 改善B: フレーム画像を1回だけ読み込んでキャッシュ（複数モダリティの重複ファイル読み込みを防ぐ）
+    if obs.image_path and obs.image_bytes is None:
+        try:
+            with open(obs.image_path, "rb") as _f:
+                obs.image_bytes = _f.read()
+            logger.debug(f"[ingest] image preloaded: {len(obs.image_bytes)} bytes")
+        except OSError as _e:
+            logger.warning(f"[ingest] failed to preload image: {_e}")
 
-    # enable_depth=true の場合のみ depth_node を追加
-    if "depth" in runtime.context["expected_modalities"]:
-        sends.append(Send("depth_node", {"observation": obs}))
+    # フレームスキップ設定を読み込む
+    agent_cfg = runtime.context.get("config", {}).get("agent", {})
+    expected = set(runtime.context["expected_modalities"])
 
-    # enable_infrared=true の場合のみ infrared_node を追加
-    if "infrared" in runtime.context["expected_modalities"]:
-        sends.append(Send("infrared_node", {"observation": obs}))
+    # フレームスキップ判定関数
+    def should_run(cfg_key: str) -> bool:
+        n = max(1, agent_cfg.get(cfg_key, 1))
+        return (step % n) == 0
 
-    # enable_temporal=true の場合のみ temporal_node を追加
-    if "temporal" in runtime.context["expected_modalities"]:
-        sends.append(Send("temporal_node", {"observation": obs}))
+    # モダリティごとのスキップ判定
+    skip_map = {
+        "audio": ("audio_every_n_frames", "audio_node"),
+        "depth": ("depth_every_n_frames", "depth_node"),
+        "infrared": ("infrared_every_n_frames", "infrared_node"),
+        "temporal": ("temporal_every_n_frames", "temporal_node"),
+    }
+
+    sends: list[Send] = [Send("vlm_node", {"observation": obs})]  # VLM は常に実行
+    running_modalities: list[str] = ["vlm"]
+
+    skipped_names: list[str] = []
+    for modality, (cfg_key, node_name) in skip_map.items():
+        if modality not in expected:
+            continue  # そもそも disabled
+        if should_run(cfg_key):
+            sends.append(Send(node_name, {"observation": obs}))
+            running_modalities.append(modality)
+        else:
+            skipped_names.append(modality)  # スキップ対象
+
+    # スキップ対象の空 ModalityResult を事前投入
+    skip_results = {
+        name: ModalityResult(modality_name=name) for name in skipped_names
+    }
+
+    # ログ出力: 実行中のモダリティとスキップ対象を表示
+    logger.info(
+        f"[Frame {step}] {obs.obs_id}: "
+        f"running=({', '.join(running_modalities)})"
+        + (f", skip=({', '.join(skipped_names)})" if skipped_names else "")
+    )
 
     return Command(
         update={
             "observation": obs,
             "done": False,  # 毎フレーム開始時にクリア
-            "modality_results": {},  # dict リセット
-            "received_modalities": [_RESET_SENTINEL],  # バリアカウンタをリセット
+            "modality_results": {"__reset__": True, **skip_results},  # リセット + 事前投入
+            "received_modalities": [_RESET_SENTINEL, *skipped_names],  # バリア用: スキップ済みを事前登録
             "barrier_obs_id": None,  # ラッチをリセット
-            # 注: assessment と last_assessment はリセットしない
+            # 注: assessment と belief_state はリセットしない
             # 前フレーム結果を determine_next_action_llm で参照するため
             "messages": [
-                {"role": "assistant", "content": f"[ingest] fan-out -> {obs.obs_id}"}
+                {
+                    "role": "assistant",
+                    "content": f"[ingest] fan-out -> {obs.obs_id} (skip: {skipped_names})",
+                }
             ],
         },
         goto=sends,
@@ -382,7 +429,7 @@ def vlm_node(state: AgentState, runtime: Runtime[ContextSchema]) -> Command:
     vision_analysis = None
     error = None
 
-    if obs and obs.image_path and analyzer:
+    if obs and (obs.image_path or obs.image_bytes) and analyzer:
         try:
             # Vision API のトークン上限を設定から取得
             vision_max_tokens = config.get("tokens", {}).get(
@@ -391,7 +438,7 @@ def vlm_node(state: AgentState, runtime: Runtime[ContextSchema]) -> Command:
 
             vision_analysis = analyzer.analyze(
                 image_path=obs.image_path,
-                prev_image_path=obs.prev_image_path,
+                image_bytes=obs.image_bytes,  # 改善B: キャッシュ済みバイト列を使用
                 max_tokens=vision_max_tokens,
             )
         except Exception as e:
@@ -469,29 +516,12 @@ def depth_node(state: AgentState, runtime: Runtime[ContextSchema]) -> Command:
 
     if depth_estimator and vision_analyzer and obs and obs.image_path:
         try:
-            # ステップ1: 深度推定 + side-by-side PNG
+            # ステップ1: 深度推定 + side-by-side PNG バイト列を取得
             side_by_side_bytes = depth_estimator.estimate(obs.image_path)
             if side_by_side_bytes is None:
                 error = "depth: depth_estimator returned None"
             else:
-                # ステップ1.5: side-by-side 画像をファイルに保存
-                try:
-                    depth_output_dir = Path("data/depth")
-                    depth_output_dir.mkdir(parents=True, exist_ok=True)
-
-                    # ファイル名を frame と完全に同じにする（例：frame_0s.jpg → frame_0s.jpg）
-                    frame_filename = Path(obs.image_path).name  # "frame_0s.jpg"
-                    depth_filename = frame_filename
-                    depth_image_path = str(depth_output_dir / depth_filename)
-
-                    with open(depth_image_path, "wb") as f:
-                        f.write(side_by_side_bytes)
-                    logger.debug(f"Depth image saved to {depth_image_path}")
-                except Exception as e:
-                    logger.warning(f"Failed to save depth image: {e}")
-                    depth_image_path = None
-
-                # ステップ2: VLM で深度画像を分析
+                # ステップ2: VLM で深度画像を分析（ファイル保存前にバイト列を直接渡す）
                 depth_prompt = prompts.get("depth_analysis", {}).get("system")
                 if not depth_prompt:
                     logger.debug(
@@ -522,6 +552,19 @@ def depth_node(state: AgentState, runtime: Runtime[ContextSchema]) -> Command:
                     except Exception as e:
                         logger.warning(f"Failed to validate depth analysis result: {e}")
                         error = f"depth: validation error: {e}"
+
+                # ステップ4: 可視化用にファイル保存（VLM 分析のクリティカルパス外）
+                try:
+                    depth_output_dir = Path("data/depth")
+                    depth_output_dir.mkdir(parents=True, exist_ok=True)
+                    frame_filename = Path(obs.image_path).name
+                    depth_image_path = str(depth_output_dir / frame_filename)
+                    with open(depth_image_path, "wb") as f:
+                        f.write(side_by_side_bytes)
+                    logger.debug(f"Depth image saved to {depth_image_path}")
+                except Exception as e:
+                    logger.warning(f"Failed to save depth image: {e}")
+                    depth_image_path = None
         except Exception as e:
             logger.error(f"Depth node error: {e}")
             error = f"depth: {e}"
@@ -573,7 +616,7 @@ def infrared_node(state: AgentState, runtime: Runtime[ContextSchema]) -> Command
     ):
         try:
             side_by_side_bytes = infrared_analyzer.make_side_by_side_bytes(
-                obs.image_path, obs.infrared_image_path
+                obs.image_path, obs.infrared_image_path, rgb_bytes=obs.image_bytes
             )
             if side_by_side_bytes is None:
                 error = "infrared: failed to create side-by-side image"
@@ -652,7 +695,7 @@ def temporal_node(state: AgentState, runtime: Runtime[ContextSchema]) -> Command
     ):
         try:
             temporal_bytes = temporal_analyzer.make_temporal_bytes(
-                obs.image_path, obs.prev_image_path
+                obs.image_path, obs.prev_image_path, current_bytes=obs.image_bytes
             )
             if temporal_bytes is None:
                 error = "temporal: failed to create temporal image"
@@ -836,6 +879,23 @@ def update_belief_state_llm(
             ],
         }
 
+    # フレームスキップ判定
+    step = state["step"]
+    agent_cfg = runtime.context.get("config", {}).get("agent", {})
+    belief_n = max(1, agent_cfg.get("belief_every_n_frames", 1))
+    if step % belief_n != 0:
+        # スキップ: 前フレームの belief_state をそのまま維持
+        logger.info(f"[Frame {step}] update_belief_state_llm: SKIPPED (n={belief_n})")
+        return {
+            "belief_state": state.get("belief_state"),
+            "messages": [
+                {
+                    "role": "assistant",
+                    "content": f"[belief] skip (step={step}, n={belief_n})",
+                }
+            ],
+        }
+
     llm = runtime.context.get("llm")
     if llm is None:
         # LLM が未設定の場合、previous belief_state をそのまま維持
@@ -897,6 +957,10 @@ def update_belief_state_llm(
         # BeliefState を直接検証
         belief_state = BeliefState.model_validate(raw)
         # 新しい belief_state を次フレームに引き継ぎ
+        logger.info(
+            f"[Frame {step}] update_belief_state_llm: UPDATED "
+            f"(hazards={len(belief_state.hazard_tracks)}, risk={belief_state.overall_risk})"
+        )
         return {
             "belief_state": belief_state,
             "messages": [
@@ -955,16 +1019,9 @@ def determine_next_action_llm(
             temporal_status="unknown",
             confidence_score=0.0,
         )
-        # 履歴を trim
-        history = list(state.get("assessment_history", []))
-        history.append(assessment)
-        if context_history_size > 0:
-            history = history[-context_history_size:]
-        else:
-            history = []
         return {
             "assessment": assessment,
-            "assessment_history": history,
+            "assessment_history": [assessment],
             "errors": ["No IR, used default assessment"],
             "messages": [
                 {
@@ -987,16 +1044,9 @@ def determine_next_action_llm(
             temporal_status="unknown",
             confidence_score=0.0,
         )
-        # 履歴を trim
-        history = list(state.get("assessment_history", []))
-        history.append(assessment)
-        if context_history_size > 0:
-            history = history[-context_history_size:]
-        else:
-            history = []
         return {
             "assessment": assessment,
-            "assessment_history": history,
+            "assessment_history": [assessment],
             "messages": [
                 {
                     "role": "assistant",
@@ -1057,16 +1107,9 @@ def determine_next_action_llm(
 
         # SafetyAssessment を直接取得
         assessment = SafetyAssessment.model_validate(raw)
-        # 履歴を trim
-        history = list(state.get("assessment_history", []))
-        history.append(assessment)
-        if context_history_size > 0:
-            history = history[-context_history_size:]
-        else:
-            history = []
         return {
             "assessment": assessment,
-            "assessment_history": history,
+            "assessment_history": [assessment],
             "messages": [
                 {
                     "role": "assistant",
@@ -1091,16 +1134,9 @@ def determine_next_action_llm(
         )
         # エラーメッセージを最初の 150 文字に制限（JSON パースエラー等が長いため）
         error_summary = f"{type(e).__name__}: {str(e)[:150]}"
-        # 履歴を trim
-        history = list(state.get("assessment_history", []))
-        history.append(assessment)
-        if context_history_size > 0:
-            history = history[-context_history_size:]
-        else:
-            history = []
         return {
             "assessment": assessment,
-            "assessment_history": history,
+            "assessment_history": [assessment],
             "errors": [f"LLM assessment failed: {error_summary}"],
             "messages": [
                 {
@@ -1179,16 +1215,25 @@ def emit_output(state: AgentState) -> Dict[str, Any]:
 
 
 def bump_step(state: AgentState) -> Dict[str, Any]:
-    return {"step": state["step"] + 1}
+    new_step = state["step"] + 1
+    logger.info(f"[bump_step] incrementing step: {state['step']} → {new_step}")
+    return {"step": new_step}
 
 
 def should_continue(state: AgentState) -> str:
     max_steps = state.get("max_steps", 0)
+    step = state["step"]
+    done = state.get("done", False)
 
-    if max_steps and state["step"] >= max_steps:
+    logger.debug(f"[should_continue] step={step}, max_steps={max_steps}, done={done}")
+
+    if max_steps and step >= max_steps:
+        logger.info(f"[should_continue] STOP: step({step}) >= max_steps({max_steps})")
         return END
-    if state.get("done"):
+    if done:
+        logger.info("[should_continue] STOP: done=True")
         return END
+    logger.debug("[should_continue] CONTINUE to ingest_observation")
     return "ingest_observation"
 
 

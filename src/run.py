@@ -6,10 +6,12 @@ import subprocess
 import sys
 import time
 from pathlib import Path
-from typing import Optional
+from typing import Iterator, Optional
 
 import cv2
 import yaml
+from depth_anything_3.utils.logger import LOG_LEVELS as _DA3_LEVELS
+from depth_anything_3.utils.logger import logger as _da3_logger
 from dotenv import load_dotenv
 
 from safety_agent.agent import AgentState, OpenAICompatLLM, build_agent
@@ -20,13 +22,31 @@ from safety_agent.modality_nodes import (
     TemporalImageAnalyzer,
     VisionAnalyzer,
 )
-from safety_agent.schema import CameraPose, Observation, ObservationProvider
+from safety_agent.schema import (
+    CameraPose,
+    LazyObservationProvider,
+    Observation,
+    ObservationProvider,
+)
 from util.logger import setup_logger
 
 # .env ファイルから環境変数を読み込む
 load_dotenv()
 
 logger = setup_logger("safety_view_agent", level=logging.DEBUG)
+
+# Depth-Anything-3 の verbose な INFO ログを抑制。
+# Logger はモジュールロード時にシングルトンを生成するため、直接 level を上書きする。
+_da3_logger.level = _DA3_LEVELS["WARN"]  # 1: INFO(2) を超えないため INFO は出力されない
+
+# safety_agent.* モジュールのログが run.py と同じハンドラーに出力されるよう設定。
+# agent.py は logging.getLogger(__name__) = "safety_agent.agent" を使用するため、
+# 親ロガー "safety_agent" にハンドラーを追加する（ルートロガーは WARNING のため素通りしてしまう）。
+_sa_logger = logging.getLogger("safety_agent")
+_sa_logger.setLevel(logging.INFO)
+for _h in logger.handlers:
+    _sa_logger.addHandler(_h)
+_sa_logger.propagate = False  # ルートへの重複出力を防ぐ
 
 # ==========================================
 # 注: ビデオ・音声定数は configs/default.yaml から読み込まれます
@@ -441,7 +461,7 @@ def split_video_to_frames(
             if max_frames > 0 and frame_count >= max_frames:
                 break
 
-            # Calculate timestamp in seconds (keep 1 decimal place = 0.1s unit)
+            # Calculate timestamp in seconds (1 decimal place = 0.1s unit)
             timestamp = idx / source_fps
             timestamp_str = f"{timestamp:.1f}"
 
@@ -575,63 +595,175 @@ def load_frames(frames_dir: str = "data/frames") -> list[Path]:
     return frame_files
 
 
-def save_analysis_results(
-    output_dir: str,
-    analysis_results: dict,
-    video_timestamps: Optional[dict[str, float]] = None,
-    _agent_output: Optional[dict] = None,
-) -> None:
-    """分析結果を出力ディレクトリに保存（追記モードで履歴を保持）。
+def iter_observations_from_video(
+    video_path: Path,
+    audio_path: str,
+    infrared_path_map: dict,
+    video_cfg: dict,
+    frame_output_format: str,
+    max_steps: int = 0,
+) -> Iterator[Observation]:
+    """動画からフレームを逐次抽出しながら Observation を yield するジェネレータ（改善D）。
+
+    全フレーム抽出完了を待たずにエージェントが推論を開始できる（パイプライン化）。
+    各フレームを disk に保存した直後に Observation を yield するため、
+    フレーム抽出と LLM 推論がオーバーラップして実行される。
 
     Args:
-        output_dir: 出力ディレクトリパス
-        analysis_results: 結果リストを含む 'frames' キーの辞書
-        video_timestamps: obs_id をビデオタイムスタンプ（秒単位）にマッピングする辞書（オプション）
-        _agent_output: 使用されていません（互換性のため保持）
+        video_path: 動画ファイルパス
+        audio_path: 音声ファイルパス（全 Observation 共通）
+        infrared_path_map: フレーム stem → 赤外線フレームパスのマップ
+        video_cfg: video 設定辞書（fps / max_frames）
+        frame_output_format: フレームファイル名形式テンプレート
+        max_steps: 最大フレーム数（0 = 無制限）
     """
-    os.makedirs(output_dir, exist_ok=True)
+    frames_dir = Path("data/frames")
+    frames_dir.mkdir(parents=True, exist_ok=True)
 
-    results_file = Path(output_dir) / "perception_results.json"
-    default_data = {"frames": []}
-
-    # 既存データを読み込む（追記式）
-    if results_file.exists():
-        try:
-            with open(results_file, "r", encoding="utf-8") as f:
-                existing_data = json.load(f)
-        except (json.JSONDecodeError, IOError):
-            existing_data = default_data
-    else:
-        existing_data = default_data
-
-    # Ensure frames key exists (migration support)
-    if "frames" not in existing_data:
-        existing_data["frames"] = []
-
-    # タイムスタンプを付与して新しいフレームを追加
-    current_timestamp = time.time()
-    for result in analysis_results.get("frames", []):
-        result["timestamp"] = current_timestamp  # Unix timestamp（秒単位）
-
-        # Add video_timestamp if available
-        if video_timestamps:
-            frame_id = result.get("frame_id")
-            if frame_id and frame_id in video_timestamps:
-                result["video_timestamp"] = video_timestamps[frame_id]
-
-        existing_data["frames"].append(result)
-
-    # ファイルに保存（アトミック書き込みで破損防止）
-    try:
-        tmp = results_file.with_suffix(".tmp")
-        with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(existing_data, f, ensure_ascii=False, indent=2)
-        os.replace(tmp, results_file)
-    except (IOError, TypeError, OSError) as e:
-        logger.error(f"Failed to save results to {results_file}: {e}")
+    cap = cv2.VideoCapture(str(video_path))
+    if not cap.isOpened():
+        logger.warning(f"Could not open video for lazy extraction: {video_path}")
         return
-    frame_count = len(analysis_results.get("frames", []))
-    logger.info(f"Results appended to {results_file} ({frame_count} frames)")
+
+    source_fps = cap.get(cv2.CAP_PROP_FPS)
+    target_fps = video_cfg.get("fps", 1.0)
+    cfg_max_frames = video_cfg.get("max_frames", 0)
+
+    if target_fps <= 0 or source_fps <= 0:
+        cap.release()
+        return
+
+    frame_interval = max(1, int(round(source_fps / target_fps)))
+    frame_count = 0
+    idx = 0
+    prev_frame_path: Optional[Path] = None
+
+    while True:
+        ret, frame = cap.read()
+        if not ret:
+            break
+
+        if idx % frame_interval == 0:
+            # フレーム数制限チェック（config の max_frames と max_steps の両方を考慮）
+            limit = min(
+                cfg_max_frames if cfg_max_frames > 0 else float("inf"),
+                max_steps if max_steps > 0 else float("inf"),
+            )
+            if frame_count >= limit:
+                break
+
+            timestamp = idx / source_fps
+            timestamp_str = f"{timestamp:.1f}"
+            frame_filename = frame_output_format.format(timestamp=timestamp_str)
+            frame_path = frames_dir / frame_filename
+            cv2.imwrite(str(frame_path), frame)
+
+            obs = Observation(
+                obs_id=f"img_{frame_count}",
+                image_path=str(frame_path.absolute()),
+                prev_image_path=str(prev_frame_path.absolute()) if prev_frame_path else None,
+                audio_path=audio_path,
+                infrared_image_path=infrared_path_map.get(frame_path.stem),
+                camera_pose=CameraPose(pan_deg=0, tilt_deg=0, zoom=1),
+                video_timestamp=timestamp,
+            )
+            yield obs
+
+            prev_frame_path = frame_path
+            frame_count += 1
+
+        idx += 1
+
+    cap.release()
+    logger.info(f"Lazy extraction complete: {frame_count} frames from {video_path.name}")
+
+
+def append_frame_result(
+    results_dir: str,
+    frame_output: dict,
+    video_timestamps: Optional[dict[str, float]] = None,
+) -> None:
+    """1フレームの結果を perception_results/ ディレクトリに追記保存（アトミック書き込み）。
+
+    保存先構成:
+        results_dir/
+            manifest.json          # frame_count / created_at / updated_at / latest_frame
+            frames/
+                000000_img_0.json  # 連番 + frame_id のフレームファイル
+                000001_img_1.json
+                ...
+
+    Args:
+        results_dir: 出力ディレクトリパス (例: "data/perception_results")
+        frame_output: フレーム出力辞書
+        video_timestamps: obs_id をビデオタイムスタンプにマッピングする辞書（オプション）
+    """
+    results_path = Path(results_dir)
+    frames_path = results_path / "frames"
+    manifest_path = results_path / "manifest.json"
+
+    frames_path.mkdir(parents=True, exist_ok=True)
+
+    current_timestamp = time.time()
+
+    # タイムスタンプを付与（コピーして元を汚さない）
+    frame_data = dict(frame_output)
+    frame_data["timestamp"] = current_timestamp
+    if video_timestamps:
+        fid = frame_data.get("frame_id")
+        if fid and fid in video_timestamps:
+            frame_data["video_timestamp"] = video_timestamps[fid]
+
+    # マニフェストを読み込み（なければ初期化）
+    default_manifest: dict = {
+        "version": "1.0",
+        "frame_count": 0,
+        "created_at": current_timestamp,
+        "updated_at": current_timestamp,
+        "latest_frame": None,
+    }
+    if manifest_path.exists():
+        try:
+            with open(manifest_path, "r", encoding="utf-8") as f:
+                manifest = json.load(f)
+        except (json.JSONDecodeError, IOError):
+            manifest = default_manifest
+    else:
+        manifest = default_manifest
+
+    # 連番ファイル名を生成
+    frame_idx = manifest.get("frame_count", 0)
+    frame_id_str = frame_data.get("frame_id", f"frame_{frame_idx}")
+    safe_id = frame_id_str.replace("/", "_").replace("\\", "_")
+    frame_filename = f"{frame_idx:06d}_{safe_id}.json"
+    frame_file = frames_path / frame_filename
+
+    # フレームファイルをアトミック書き込み
+    try:
+        tmp = frame_file.with_suffix(".tmp")
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(frame_data, f, ensure_ascii=False, indent=2)
+        os.replace(tmp, frame_file)
+    except (IOError, TypeError, OSError) as e:
+        logger.error(f"Failed to save frame {frame_idx} to {frame_file}: {e}")
+        return
+
+    # マニフェストを更新してアトミック書き込み
+    manifest["frame_count"] = frame_idx + 1
+    manifest["updated_at"] = current_timestamp
+    manifest["latest_frame"] = frame_filename
+    manifest.setdefault("created_at", current_timestamp)
+
+    try:
+        tmp_m = manifest_path.with_suffix(".tmp")
+        with open(tmp_m, "w", encoding="utf-8") as f:
+            json.dump(manifest, f, ensure_ascii=False, indent=2)
+        os.replace(tmp_m, manifest_path)
+    except (IOError, TypeError, OSError) as e:
+        logger.error(f"Failed to update manifest {manifest_path}: {e}")
+        return
+
+    logger.info(f"Frame {frame_idx} saved: {frame_filename}")
 
 
 def prepare_observations_inspesafe(
@@ -881,33 +1013,34 @@ def run_and_log_agent(
     logger.info("Running Safety View Agent")
 
     all_frame_outputs: list[dict] = []
-    final_state: dict = {}
+    # 改善C: stream_mode="updates" で差分のみ受け取り、全 state シリアライズを回避
+    accumulated: dict = {}
     prev_latest_obs_id: str | None = None
 
     try:
-        for state in agent.stream(initial_state, context=context, stream_mode="values"):
-            latest = state.get("latest_output")
-            if "latest_output" in state and latest:
-                frame_id = latest.get("frame_id")
-                # フレームが更新されたときのみ追加（重複回避）
-                if frame_id != prev_latest_obs_id:
-                    all_frame_outputs.append(latest)
-                    prev_latest_obs_id = frame_id
-                    # フレーム処理後、コールバックがあれば即時実行
-                    if on_frame_callback:
-                        on_frame_callback(latest)
-            final_state = state
+        for update_item in agent.stream(  # type: ignore[attr-defined]
+            initial_state, context=context, stream_mode="updates"
+        ):
+            # update_item は {node_name: {updated_keys: updated_values}} 形式
+            node_name, node_updates = next(iter(update_item.items()))
+            accumulated.update(node_updates)
+
+            # emit_output ノードの出力から latest_output を検出
+            if node_name == "emit_output":
+                latest = node_updates.get("latest_output")
+                if latest:
+                    frame_id = latest.get("frame_id")
+                    if frame_id != prev_latest_obs_id:
+                        all_frame_outputs.append(latest)
+                        prev_latest_obs_id = frame_id
+                        if on_frame_callback:
+                            on_frame_callback(latest)
     except Exception as e:
         logger.error(f"Agent streaming error: {e}", exc_info=True)
-        # 収集済みのフレームを返す
+
+    final_state = accumulated
 
     # Log agent results
-    if final_state.get("selected"):
-        logger.info(
-            f"Selected view: {final_state['selected'].view_id} "
-            f"(pan={final_state['selected'].pan_deg}°, tilt={final_state['selected'].tilt_deg}°)"
-        )
-
     if final_state.get("assessment"):
         logger.info(
             f"Assessment: {final_state['assessment'].action_type} risk={final_state['assessment'].risk_level}"
@@ -932,17 +1065,15 @@ def main():
     # Setup data directory
     os.makedirs("data", exist_ok=True)
 
-    # Archive existing perception_results.json with timestamp before starting new run
-    perception_results_file = "data/perception_results.json"
-    results_archive_dir = "data/results_archive"
-    if os.path.exists(perception_results_file):
-        os.makedirs(results_archive_dir, exist_ok=True)
-        timestamp = time.strftime("%Y%m%d_%H%M%S")
-        archived_file = os.path.join(
-            results_archive_dir, f"perception_results_{timestamp}.json"
-        )
-        shutil.move(perception_results_file, archived_file)
-        logger.info(f"Archived perception_results.json → {archived_file}")
+    # 既存の perception_results/ ディレクトリをタイムスタンプ付きで results_archive/ に移動
+    perception_results_dir = Path("data/perception_results")
+    results_archive_dir = Path("data/results_archive")
+    if perception_results_dir.exists():
+        results_archive_dir.mkdir(parents=True, exist_ok=True)
+        archive_ts = time.strftime("%Y%m%d_%H%M%S")
+        archived_dir = results_archive_dir / archive_ts
+        shutil.move(str(perception_results_dir), str(archived_dir))
+        logger.info(f"Archived perception_results/ → {archived_dir}")
 
     # Clean up data directories before processing
     # Note: data/audio is NOT cleared as it contains source audio files used by multiple runs
@@ -960,31 +1091,62 @@ def main():
         "frame_output", "frame_{timestamp}s.jpg"
     )
 
-    # Prepare observations from video and frames
-    try:
-        obs_list, video_timestamps_map = prepare_observations(
-            config, video_extensions, frame_output_format, audio_cfg
-        )
-    except FileNotFoundError as e:
-        logger.error(f"Data preparation failed: {e}")
-        sys.exit(1)
-
-    # Apply max_steps filter to obs_list
+    # max_steps 設定を先に取得（改善D で lazy provider に渡す）
     max_steps_cfg = agent_cfg.get("max_steps", 1)
-    if max_steps_cfg == -1:
-        actual_max_steps = len(obs_list)
+
+    # 改善D: 動画がある場合はパイプライン化（フレーム抽出と推論をオーバーラップ）
+    data_mode = config.get("data", {}).get("mode", "manual")
+    video_path_for_lazy = None
+    if data_mode == "manual":
+        video_path_for_lazy = find_video(["data/videos", "data"], video_extensions)
+
+    if video_path_for_lazy is not None:
+        # 動画入力: 音声を先に抽出してから lazy provider でパイプライン化
+        audio_output_filename = audio_cfg.get("output_filename", "audio.wav")
+        extract_audio(
+            str(video_path_for_lazy),
+            "data/audio",
+            audio_output_filename=audio_output_filename,
+            audio_codec=audio_cfg.get("codec", "pcm_s16le"),
+            audio_sample_rate=audio_cfg.get("sample_rate", 16000),
+            audio_channels=audio_cfg.get("channels", 1),
+        )
+        infrared_files = load_frames("data/infrared_frames")
+        infrared_path_map = {fp.stem: str(fp.absolute()) for fp in infrared_files}
+        lazy_max = max_steps_cfg if max_steps_cfg != -1 else 0
+        lazy_gen = iter_observations_from_video(
+            video_path_for_lazy,
+            audio_path=f"data/audio/{audio_cfg.get('output_filename', 'audio.wav')}",
+            infrared_path_map=infrared_path_map,
+            video_cfg=video_cfg,
+            frame_output_format=frame_output_format,
+            max_steps=lazy_max,
+        )
+        provider = LazyObservationProvider(lazy_gen)  # type: ignore[assignment]
+        actual_max_steps = lazy_max if lazy_max > 0 else video_cfg.get("max_frames", 0)
+        logger.info(f"Pipeline mode: lazy frame extraction from {video_path_for_lazy.name}")
     else:
-        # N フレームだけ実行（obs_list を先頭から max_steps_cfg 件に制限）
-        obs_list = obs_list[:max_steps_cfg]
-        actual_max_steps = len(obs_list)
+        # フレーム既存 or inspesafe モード: 従来通り全フレームを先に準備
+        try:
+            obs_list, _ = prepare_observations(
+                config, video_extensions, frame_output_format, audio_cfg
+            )
+        except FileNotFoundError as e:
+            logger.error(f"Data preparation failed: {e}")
+            sys.exit(1)
+
+        if max_steps_cfg == -1:
+            actual_max_steps = len(obs_list)
+        else:
+            obs_list = obs_list[:max_steps_cfg]
+            actual_max_steps = len(obs_list)
+
+        provider = ObservationProvider(obs_list)
 
     if actual_max_steps > 0:
-        logger.info(f"Configured to process {actual_max_steps} observation(s)")
+        logger.info(f"Configured to process up to {actual_max_steps} observation(s)")
     else:
-        logger.warning("No observations to process")
-
-    # Initialize agent components
-    provider = ObservationProvider(obs_list)
+        logger.info("Configured to process all available observations")
     llm = get_llm(config)
     vision_analyzer = get_vlm(config, prompts)
     audio_analyzer = (
@@ -1074,22 +1236,35 @@ def main():
         "run_mode": "until_provider_ends",  # provider が None を返すまで継続
     }
 
+    # ログ出力: 有効なモダリティとフレームスキップ設定を表示
+    logger.info(f"Enabled modalities: {', '.join(expected_modalities)}")
+    frame_skip_cfg = {
+        "audio_every_n_frames": agent_cfg.get("audio_every_n_frames", 1),
+        "depth_every_n_frames": agent_cfg.get("depth_every_n_frames", 1),
+        "infrared_every_n_frames": agent_cfg.get("infrared_every_n_frames", 1),
+        "temporal_every_n_frames": agent_cfg.get("temporal_every_n_frames", 1),
+        "belief_every_n_frames": agent_cfg.get("belief_every_n_frames", 1),
+    }
+    # 1以外の設定のみ表示
+    non_default = {k: v for k, v in frame_skip_cfg.items() if v != 1}
+    if non_default:
+        logger.info(f"Frame skip settings: {non_default}")
+    else:
+        logger.info("Frame skip settings: all modalities run every frame (default)")
+
     # フレーム処理時のコールバック関数定義
+    # video_timestamp は emit_output が obs.video_timestamp から直接設定するため、
+    # 外部マップは不要（None を渡すと emit_output の値がそのまま保存される）
     def _on_frame(frame_output: dict) -> None:
-        """フレーム処理完了時に JSON に即時保存"""
-        save_analysis_results(
-            "data",
-            {"frames": [frame_output]},
-            video_timestamps_map,
+        """フレーム処理完了時に perception_results/ へ即時保存"""
+        append_frame_result(
+            "data/perception_results",
+            frame_output,
+            None,
         )
 
     # Run and log agent with per-frame callback
-    _, all_frame_outputs = run_and_log_agent(
-        agent,
-        initial_state,
-        context,
-        on_frame_callback=_on_frame,
-    )
+    run_and_log_agent(agent, initial_state, context, on_frame_callback=_on_frame)
 
     # Save Mermaid diagram
     try:

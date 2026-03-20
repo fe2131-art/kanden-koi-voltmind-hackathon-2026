@@ -9,6 +9,14 @@ agent:
   enable_temporal: true            # 時系列変化検出有効化（前後フレーム比較、enable_temporal: true でアクティベート）
   context_history_size: 0           # LLM に渡す前回判断の数（0=なし, 1=直近1フレーム, N=直近Nフレーム）
 
+  # フレームスキップ設定（1=毎フレーム実行, N=Nフレームごとに1回実行）
+  # step % n == 0 のフレームで実行。step=0（先頭フレーム）は常に実行。
+  audio_every_n_frames: 1
+  depth_every_n_frames: 2
+  infrared_every_n_frames: 2
+  temporal_every_n_frames: 1
+  belief_every_n_frames: 2   # update_belief_state_llm の実行間隔
+
 # LLM configuration
 llm:
   # Provider: "vllm" (local) or "openai" (API)

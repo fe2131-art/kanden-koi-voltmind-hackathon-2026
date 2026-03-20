@@ -150,18 +150,22 @@ class VisionAnalyzer:
 
     def analyze(
         self,
-        image_path: str,
-        prev_image_path: Optional[str] = None,
+        image_path: Optional[str] = None,
         prompt: Optional[str] = None,
         max_tokens: Optional[int] = None,
+        image_bytes: Optional[bytes] = None,
+        media_type: str = "image/jpeg",
     ) -> Optional[VisionAnalysisResult]:
-        """2枚の画像（現フレーム + 前フレーム）を VLM で分析し構造化結果を返す。
+        """現フレーム画像を VLM で分析し構造化結果を返す。
 
-        prev_image_path が None の場合は同じ画像を2枚送る（最初のフレーム対応）。
+        image_bytes が指定された場合はバイト列を直接使用し、ファイル読み込みをスキップ（改善B）。
+        時系列比較が必要な場合は temporal_node（side-by-side 結合画像）を使用する。
         """
-        if not Path(image_path).exists():
-            logger.warning(f"Image not found: {image_path}")
-            return None
+        if image_bytes is None:
+            # パス経由の従来フロー
+            if not image_path or not Path(image_path).exists():
+                logger.warning(f"Image not found: {image_path}")
+                return None
 
         if prompt is None:
             prompt = self.default_prompt or "この画像を詳しく説明してください。"
@@ -169,27 +173,21 @@ class VisionAnalyzer:
         if max_tokens is None:
             max_tokens = self.max_tokens or 2048
 
-        # 現フレームをエンコード
-        current_url, _ = self._encode_image(image_path)
-
-        # 前フレーム（なければ同じ画像をフォールバック）
-        if prev_image_path and Path(prev_image_path).exists():
-            prev_url, _ = self._encode_image(prev_image_path)
+        # 現フレームをエンコード（bytes 優先、なければファイル読み込み）
+        if image_bytes is not None:
+            current_url = self._encode_image_bytes(image_bytes, media_type)
         else:
-            prev_url = current_url
+            current_url, _ = self._encode_image(image_path)  # type: ignore[arg-type]
 
-        # コンテンツブロック: テキスト + 1枚目（先の時刻）+ 2枚目（現在）
-        # TODO: vLLM が複数画像をサポートするまでは、2枚目のみ送る形で運用することも検討
+        # コンテンツブロック: テキスト + 1枚の画像
         if self.provider == "vllm":
             content = [
                 {"type": "text", "text": prompt},
-                # {"type": "image_url", "image_url": {"url": prev_url}},
                 {"type": "image_url", "image_url": {"url": current_url}},
             ]
         else:
             content = [
                 {"type": "text", "text": prompt},
-                {"type": "image_url", "image_url": {"url": prev_url, "detail": "high"}},
                 {
                     "type": "image_url",
                     "image_url": {"url": current_url, "detail": "high"},
@@ -683,12 +681,17 @@ class InfraredImageAnalyzer:
     """
 
     @staticmethod
-    def make_side_by_side_bytes(rgb_path: str, infrared_path: str) -> Optional[bytes]:
+    def make_side_by_side_bytes(
+        rgb_path: str,
+        infrared_path: str,
+        rgb_bytes: Optional[bytes] = None,
+    ) -> Optional[bytes]:
         """RGB 画像と赤外線画像を横並びに結合し PNG バイト列を返す。
 
         Args:
             rgb_path: RGB フレームファイルパス
             infrared_path: 赤外線フレームファイルパス
+            rgb_bytes: RGB 画像のバイト列（指定時はファイル読み込みをスキップ・改善B）
 
         Returns:
             Side-by-side PNG バイト列。どちらかのファイルが存在しない場合は None。
@@ -698,14 +701,17 @@ class InfraredImageAnalyzer:
             RGB サイズに赤外線をリサイズしてから結合する。
         """
 
-        if not Path(rgb_path).exists():
-            logger.warning(f"RGB image not found: {rgb_path}")
-            return None
+        if rgb_bytes is not None:
+            rgb = np.array(Image.open(BytesIO(rgb_bytes)).convert("RGB"))
+        else:
+            if not Path(rgb_path).exists():
+                logger.warning(f"RGB image not found: {rgb_path}")
+                return None
+            rgb = np.array(Image.open(rgb_path).convert("RGB"))
+
         if not Path(infrared_path).exists():
             logger.warning(f"Infrared image not found: {infrared_path}")
             return None
-
-        rgb = np.array(Image.open(rgb_path).convert("RGB"))
         infrared = np.array(Image.open(infrared_path).convert("RGB"))
 
         # サイズを RGB に合わせてリサイズ
@@ -727,12 +733,17 @@ class TemporalImageAnalyzer:
     """
 
     @staticmethod
-    def make_temporal_bytes(current_path: str, prev_path: str) -> Optional[bytes]:
+    def make_temporal_bytes(
+        current_path: str,
+        prev_path: str,
+        current_bytes: Optional[bytes] = None,
+    ) -> Optional[bytes]:
         """現フレームと前フレームを横並び結合し PNG バイト列を返す。
 
         Args:
             current_path: 現フレームのパス（左側）
             prev_path: 前フレームのパス（右側）
+            current_bytes: 現フレームのバイト列（指定時はファイル読み込みをスキップ・改善B）
 
         Returns:
             PNG バイト列。どちらかのファイルが存在しない場合は None。
@@ -741,14 +752,17 @@ class TemporalImageAnalyzer:
             左: 前フレーム、右: 現フレーム（時系列順）の順に並べる。
             両フレームのサイズが異なる場合は、現フレームのサイズに合わせてリサイズする。
         """
-        if not Path(current_path).exists():
-            logger.warning(f"Current frame not found: {current_path}")
-            return None
+        if current_bytes is not None:
+            current = np.array(Image.open(BytesIO(current_bytes)).convert("RGB"))
+        else:
+            if not Path(current_path).exists():
+                logger.warning(f"Current frame not found: {current_path}")
+                return None
+            current = np.array(Image.open(current_path).convert("RGB"))
+
         if not Path(prev_path).exists():
             logger.warning(f"Previous frame not found: {prev_path}")
             return None
-
-        current = np.array(Image.open(current_path).convert("RGB"))
         prev = np.array(Image.open(prev_path).convert("RGB"))
 
         # サイズを current に合わせてリサイズ
