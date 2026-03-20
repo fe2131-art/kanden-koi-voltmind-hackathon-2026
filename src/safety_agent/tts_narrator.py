@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import os
 from pathlib import Path
 from typing import Any, Optional
 
@@ -52,6 +53,22 @@ class TTSNarrator:
         if self._pipeline is not None:
             return
         try:
+            # 日本語パイプライン用: fugashi が参照する MeCab 設定を unidic-lite へ向ける
+            # システムの /usr/local/etc/mecabrc ではなくホームの venv 内辞書を使用
+            if self.lang_code == "j" and "MECABRC" not in os.environ:
+                try:
+                    import unidic_lite  # type: ignore[import-untyped]
+
+                    os.environ["MECABRC"] = unidic_lite.MECABRC
+                    logger.info(
+                        f"TTSNarrator: MECABRC を unidic-lite に設定 ({unidic_lite.MECABRC})"
+                    )
+                except ImportError:
+                    logger.warning(
+                        "TTSNarrator: unidic-lite が未インストールです。"
+                        " 日本語 TTS が失敗する場合は `uv sync` を再実行してください。"
+                    )
+
             from kokoro import KPipeline  # type: ignore[import-untyped]
 
             # repo_id を明示して不要な print() ノイズを抑制

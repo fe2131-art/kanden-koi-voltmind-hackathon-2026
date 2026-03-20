@@ -32,6 +32,7 @@ dependencies = [
     "kokoro>=0.9.4",
     "pyopenjtalk>=0.4.1",
     "fugashi>=1.5.2",
+    "unidic-lite",
     "jaconv>=0.5.0",
     "mojimoji",
     "soundfile",
