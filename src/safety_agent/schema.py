@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Dict, List, Literal, Optional
+from typing import Any, Dict, Iterator, List, Literal, Optional
 
 from pydantic import BaseModel, Field
 
@@ -311,6 +311,7 @@ class Observation:
     infrared_image_path: Optional[str] = None  # 赤外線フレームパス
     camera_pose: Optional[CameraPose] = None
     video_timestamp: Optional[float] = None  # 動画内の秒数
+    image_bytes: Optional[bytes] = None  # ingest_observation で1回だけ読み込みキャッシュ（改善B）
 
 
 class ObservationProvider:
@@ -330,6 +331,26 @@ class ObservationProvider:
         o = self._obs[self._i]
         self._i += 1
         return o
+
+
+class LazyObservationProvider:
+    """ジェネレータから Observation を遅延評価するプロバイダ（改善D）。
+
+    動画フレームの逐次抽出とエージェント推論のパイプライン化を実現する。
+    全フレームを抽出し終える前にエージェントが推論を開始できる。
+
+    使用箇所: agent.py の ingest_observation() が next() を呼ぶ（ObservationProvider と同一インターフェース）。
+    初期化: run.py で LazyObservationProvider(generator) を作成し context に渡す。
+    """
+
+    def __init__(self, gen: "Iterator[Observation]"):
+        self._gen = gen
+
+    def next(self) -> Optional[Observation]:
+        try:
+            return next(self._gen)  # type: ignore[call-overload]
+        except StopIteration:
+            return None
 
 
 # =============================================================================

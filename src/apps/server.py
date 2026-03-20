@@ -103,7 +103,7 @@ async def monitor_and_stream(websocket):
                             voice_path = None
 
                             if video_ts is not None:
-                                expected_frame_name = f"frame_{video_ts:.3f}s.jpg"
+                                expected_frame_name = f"frame_{video_ts:.1f}s.jpg"
                                 potential_path = OUTPUT_DIR / "frames" / expected_frame_name
                                 if potential_path.exists():
                                     rgb_frame_name = expected_frame_name

@@ -355,6 +355,15 @@ def ingest_observation(state: AgentState, runtime: Runtime[ContextSchema]) -> Co
             )
         obs = nxt
 
+    # 改善B: フレーム画像を1回だけ読み込んでキャッシュ（複数モダリティの重複ファイル読み込みを防ぐ）
+    if obs.image_path and obs.image_bytes is None:
+        try:
+            with open(obs.image_path, "rb") as _f:
+                obs.image_bytes = _f.read()
+            logger.debug(f"[ingest] image preloaded: {len(obs.image_bytes)} bytes")
+        except OSError as _e:
+            logger.warning(f"[ingest] failed to preload image: {_e}")
+
     # フレームスキップ設定を読み込む
     agent_cfg = runtime.context.get("config", {}).get("agent", {})
     expected = set(runtime.context["expected_modalities"])
@@ -425,7 +434,7 @@ def vlm_node(state: AgentState, runtime: Runtime[ContextSchema]) -> Command:
     vision_analysis = None
     error = None
 
-    if obs and obs.image_path and analyzer:
+    if obs and (obs.image_path or obs.image_bytes) and analyzer:
         try:
             # Vision API のトークン上限を設定から取得
             vision_max_tokens = config.get("tokens", {}).get(
@@ -434,6 +443,7 @@ def vlm_node(state: AgentState, runtime: Runtime[ContextSchema]) -> Command:
 
             vision_analysis = analyzer.analyze(
                 image_path=obs.image_path,
+                image_bytes=obs.image_bytes,  # 改善B: キャッシュ済みバイト列を使用
                 max_tokens=vision_max_tokens,
             )
         except Exception as e:
@@ -511,29 +521,12 @@ def depth_node(state: AgentState, runtime: Runtime[ContextSchema]) -> Command:
 
     if depth_estimator and vision_analyzer and obs and obs.image_path:
         try:
-            # ステップ1: 深度推定 + side-by-side PNG
+            # ステップ1: 深度推定 + side-by-side PNG バイト列を取得
             side_by_side_bytes = depth_estimator.estimate(obs.image_path)
             if side_by_side_bytes is None:
                 error = "depth: depth_estimator returned None"
             else:
-                # ステップ1.5: side-by-side 画像をファイルに保存
-                try:
-                    depth_output_dir = Path("data/depth")
-                    depth_output_dir.mkdir(parents=True, exist_ok=True)
-
-                    # ファイル名を frame と完全に同じにする（例：frame_0s.jpg → frame_0s.jpg）
-                    frame_filename = Path(obs.image_path).name  # "frame_0s.jpg"
-                    depth_filename = frame_filename
-                    depth_image_path = str(depth_output_dir / depth_filename)
-
-                    with open(depth_image_path, "wb") as f:
-                        f.write(side_by_side_bytes)
-                    logger.debug(f"Depth image saved to {depth_image_path}")
-                except Exception as e:
-                    logger.warning(f"Failed to save depth image: {e}")
-                    depth_image_path = None
-
-                # ステップ2: VLM で深度画像を分析
+                # ステップ2: VLM で深度画像を分析（ファイル保存前にバイト列を直接渡す）
                 depth_prompt = prompts.get("depth_analysis", {}).get("system")
                 if not depth_prompt:
                     logger.debug(
@@ -564,6 +557,19 @@ def depth_node(state: AgentState, runtime: Runtime[ContextSchema]) -> Command:
                     except Exception as e:
                         logger.warning(f"Failed to validate depth analysis result: {e}")
                         error = f"depth: validation error: {e}"
+
+                # ステップ4: 可視化用にファイル保存（VLM 分析のクリティカルパス外）
+                try:
+                    depth_output_dir = Path("data/depth")
+                    depth_output_dir.mkdir(parents=True, exist_ok=True)
+                    frame_filename = Path(obs.image_path).name
+                    depth_image_path = str(depth_output_dir / frame_filename)
+                    with open(depth_image_path, "wb") as f:
+                        f.write(side_by_side_bytes)
+                    logger.debug(f"Depth image saved to {depth_image_path}")
+                except Exception as e:
+                    logger.warning(f"Failed to save depth image: {e}")
+                    depth_image_path = None
         except Exception as e:
             logger.error(f"Depth node error: {e}")
             error = f"depth: {e}"
@@ -615,7 +621,7 @@ def infrared_node(state: AgentState, runtime: Runtime[ContextSchema]) -> Command
     ):
         try:
             side_by_side_bytes = infrared_analyzer.make_side_by_side_bytes(
-                obs.image_path, obs.infrared_image_path
+                obs.image_path, obs.infrared_image_path, rgb_bytes=obs.image_bytes
             )
             if side_by_side_bytes is None:
                 error = "infrared: failed to create side-by-side image"
@@ -694,7 +700,7 @@ def temporal_node(state: AgentState, runtime: Runtime[ContextSchema]) -> Command
     ):
         try:
             temporal_bytes = temporal_analyzer.make_temporal_bytes(
-                obs.image_path, obs.prev_image_path
+                obs.image_path, obs.prev_image_path, current_bytes=obs.image_bytes
             )
             if temporal_bytes is None:
                 error = "temporal: failed to create temporal image"
