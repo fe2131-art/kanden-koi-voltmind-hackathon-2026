@@ -444,17 +444,18 @@ class AudioAnalyzer:
         return ""
 
     @staticmethod
-    def _parse_audio_json(text: str) -> list[dict[str, Any]]:
+    def _parse_audio_json(text: str) -> Optional[list[dict[str, Any]]]:
+        """JSON をパースして events リストを返す。パース失敗時は None（空イベントは []）。"""
         parsed = VisionAnalyzer._parse_vision_json(text)
         if parsed is None:
-            return []
+            return None
         if isinstance(parsed, list):
             return [item for item in parsed if isinstance(item, dict)]
         if isinstance(parsed, dict):
             events = parsed.get("events")
             if isinstance(events, list):
                 return [item for item in events if isinstance(item, dict)]
-        return []
+        return None
 
     def _trim_audio_window(
         self,
@@ -664,7 +665,7 @@ class AudioAnalyzer:
                 )
 
             events = self._parse_audio_json(raw)
-            if not events:
+            if events is None:
                 logger.warning(
                     "[audio_analyze] Audio model response could not be parsed as JSON. "
                     f"Returning empty cues. Raw response (first 500 chars): {raw[:500]!r}"
