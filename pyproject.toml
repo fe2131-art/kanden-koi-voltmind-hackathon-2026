@@ -27,7 +27,7 @@ dependencies = [
     "qwen-vl-utils>=0.0.14",
     "xformers",
     "depth-anything-3",
-2    "sam3",
+    "sam3",
     "vllm-omni",
     "librosa",
     "kokoro>=0.9.4",
