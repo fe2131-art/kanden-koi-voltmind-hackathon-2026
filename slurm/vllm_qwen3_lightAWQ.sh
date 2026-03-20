@@ -1,10 +1,10 @@
 #!/bin/bash
-#SBATCH -J vllm-qwen3-light
+#SBATCH -J qwen3-light-awq
 #SBATCH -p gpu
 #SBATCH --gres=gpu:1
 #SBATCH -c 8
 #SBATCH --mem=32G
-#SBATCH -t 01:00:00
+#SBATCH -t 12:00:00
 #SBATCH -o slurm-%j.out
 
 set -euo pipefail
@@ -68,6 +68,7 @@ uv run vllm serve "$MODEL" \
   --gpu-memory-utilization 0.9 \
   --speculative-config '{"method":"mtp","num_speculative_tokens":2}' \
   --default-chat-template-kwargs '{"enable_thinking": false}' \
+  --enable-prefix-caching \
   > "vllm_${SLURM_JOB_ID}.log" 2>&1 &
 # --reasoning-parser qwen3 は Qwen3 thinking モデル用。必要なら上記に追加。
 

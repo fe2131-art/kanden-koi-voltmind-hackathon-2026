@@ -3,7 +3,7 @@
 # Agent parameters
 agent:
   max_steps: -1    # -1 = 動画全体を実行、N = 最初のN フレームのみ
-  enable_audio: false           # 音声解析有効化（enable_audio: true でアクティベート）
+  enable_audio: true           # 音声解析有効化（enable_audio: true でアクティベート）
   enable_depth: true
   enable_infrared: true            # 赤外線画像解析有効化（enable_infrared: true でアクティベート）
   enable_temporal: true            # 時系列変化検出有効化（前後フレーム比較、enable_temporal: true でアクティベート）
@@ -58,7 +58,7 @@ alm:
     timeout_s: 60.0
   vllm:
     base_url: "http://localhost:8001/v1"
-    model: "Qwen/Qwen2.5-Omni-7B"
+    model: "Qwen/Qwen2.5-Omni-3B"
     timeout_s: 60.0
 
 # Data input mode
