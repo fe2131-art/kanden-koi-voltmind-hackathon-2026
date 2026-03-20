@@ -271,8 +271,36 @@ def test_speed_passed_to_pipeline(tmp_path: Path):
 
 
 # ---------------------------------------------------------------------------
-# run.py の _on_frame 統合テスト（assessment=None ケース）
+# run.py の _on_frame 統合テスト
 # ---------------------------------------------------------------------------
+
+
+def test_on_frame_filename_uses_video_timestamp(tmp_path: Path):
+    """video_timestamp がある場合、WAV ファイル名が frame_{ts:.1f}s.wav になる。"""
+    config = _make_config(output_dir=str(tmp_path))
+    narrator = TTSNarrator(config)
+
+    dummy_audio = np.zeros(2400, dtype=np.float32)
+    fake_result = _make_fake_result(dummy_audio)
+    mock_pipeline = MagicMock(return_value=[fake_result])
+
+    # run.py _on_frame のファイル名ロジックを再現
+    frame_output = {
+        "frame_id": "img_0",
+        "video_timestamp": 1.0,
+        "assessment": {"safety_status": "継続観測中"},
+    }
+    assessment = frame_output.get("assessment") or {}
+    safety_status = assessment.get("safety_status", "")
+    ts = frame_output.get("video_timestamp")
+    tts_name = f"frame_{ts:.1f}s" if ts is not None else frame_output.get("frame_id", "frame")
+
+    with patch("safety_agent.tts_narrator.TTSNarrator._ensure_pipeline"):
+        narrator._pipeline = mock_pipeline
+        out_path = narrator.generate(tts_name, safety_status)
+
+    assert out_path is not None
+    assert out_path.name == "frame_1.0s.wav"
 
 
 def test_on_frame_assessment_none_no_error(tmp_path: Path):
@@ -280,14 +308,12 @@ def test_on_frame_assessment_none_no_error(tmp_path: Path):
     config = _make_config(output_dir=str(tmp_path))
     narrator = TTSNarrator(config)
 
-    frame_output = {"frame_id": "img_0", "assessment": None}
+    frame_output = {"frame_id": "img_0", "video_timestamp": 0.0, "assessment": None}
 
-    # run.py の _on_frame 内の処理を再現
     assessment = frame_output.get("assessment") or {}
     safety_status = assessment.get("safety_status", "")
 
-    # enabled=True でも空テキストならスキップ
-    result = narrator.generate(frame_output["frame_id"], safety_status)
+    result = narrator.generate("frame_0.0s", safety_status)
     assert result is None
 
 
@@ -296,10 +322,10 @@ def test_on_frame_assessment_missing_no_error(tmp_path: Path):
     config = _make_config(output_dir=str(tmp_path))
     narrator = TTSNarrator(config)
 
-    frame_output = {"frame_id": "img_1"}
+    frame_output = {"frame_id": "img_1", "video_timestamp": 1.0}
 
     assessment = frame_output.get("assessment") or {}
     safety_status = assessment.get("safety_status", "")
 
-    result = narrator.generate(frame_output["frame_id"], safety_status)
+    result = narrator.generate("frame_1.0s", safety_status)
     assert result is None

@@ -1273,11 +1273,15 @@ def main():
             None,
         )
         # safety_status テキストを WAV ファイルへ変換
-        frame_id = frame_output.get("frame_id", "")
+        # ファイル名は他モダリティ（frames/, depth/）と同じ frame_{timestamp:.1f}s 形式
         assessment = frame_output.get("assessment") or {}
         safety_status = assessment.get("safety_status", "")
-        if frame_id and safety_status:
-            tts_narrator.generate(frame_id, safety_status)
+        if safety_status:
+            ts = frame_output.get("video_timestamp")
+            tts_name = (
+                f"frame_{ts:.1f}s" if ts is not None else frame_output.get("frame_id", "frame")
+            )
+            tts_narrator.generate(tts_name, safety_status)
 
     # Run and log agent with per-frame callback
     run_and_log_agent(agent, initial_state, context, on_frame_callback=_on_frame)
