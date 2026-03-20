@@ -240,64 +240,38 @@ class VisionAnalyzer:
         if max_tokens is None:
             max_tokens = self.max_tokens or 2048
 
-        # vLLM: file:// URI（image_path が実在すれば直接使う、なければ image_bytes を temp file に）
-        # OpenAI: base64 data URI（現状維持）
+        # URL 解決: vLLM → file:// URI、OpenAI → base64 data URI
         if self.provider == "vllm":
             suffix = Path(image_path).suffix if image_path else ".jpg"
-            # image_path が実在するときだけ直接参照（race condition 等でなければ bytes も存在する）
             _path = image_path if (image_path and Path(image_path).exists()) else None
             with _vllm_image_file(
                 image_path=_path,
                 image_bytes=image_bytes if _path is None else None,
                 suffix=suffix or ".jpg",
                 tmp_dir=self.vllm_tmp_dir,
-            ) as current_url:
-                content = [
-                    {"type": "text", "text": prompt},
-                    {"type": "image_url", "image_url": {"url": current_url}},
-                ]
-                try:
-                    response = self.client.chat.completions.create(
-                        model=self.model,
-                        messages=[{"role": "user", "content": content}],  # type: ignore[arg-type]
-                        max_tokens=max_tokens,
-                    )
-                except Exception as e:
-                    logger.error(f"Vision API error: {e}", exc_info=True)
-                    return None
+            ) as url:
+                content = [{"type": "text", "text": prompt}, self._image_block(url)]
+                raw = self._call_vlm(content, max_tokens)
         else:
-            # OpenAI: base64 data URI（現状維持）
-            if image_bytes is not None:
-                current_url = self._encode_image_bytes(image_bytes, media_type)
-                if current_url is None:
-                    return None
-            else:
-                current_url, _ = self._encode_image(image_path)  # type: ignore[arg-type]
-            content = [
-                {"type": "text", "text": prompt},
-                {
-                    "type": "image_url",
-                    "image_url": {"url": current_url, "detail": "high"},
-                },
-            ]
-            try:
-                response = self.client.chat.completions.create(
-                    model=self.model,
-                    messages=[{"role": "user", "content": content}],  # type: ignore[arg-type]
-                    max_completion_tokens=max_tokens,
-                )
-            except Exception as e:
-                logger.error(f"Vision API error: {e}", exc_info=True)
+            current_url = (
+                self._encode_image_bytes(image_bytes, media_type)
+                if image_bytes is not None
+                else self._encode_image(image_path)[0]  # type: ignore[arg-type]
+            )
+            if not current_url:
                 return None
+            content = [{"type": "text", "text": prompt}, self._image_block(current_url)]
+            raw = self._call_vlm(content, max_tokens)
 
-        # 共通パース処理（vLLM / OpenAI 共通）
-        raw = response.choices[0].message.content or ""
+        if raw is None:
+            return None
+
+        # 共通パース処理
         parsed = self._parse_vision_json(raw)
         if parsed is None:
             logger.warning(
                 f"[vision_analyze] VLM response could not be parsed as JSON. First 300 chars:\n{raw[:300]}"
             )
-            # フォールバック: scene_description のみで VisionAnalysisResult を構築
             return VisionAnalysisResult(
                 scene_description=raw[:500] if raw else "No response",
                 overall_risk="unknown",
@@ -315,6 +289,35 @@ class VisionAnalyzer:
             return None
         image_data = base64.b64encode(image_bytes).decode("utf-8")
         return f"data:{media_type};base64,{image_data}"
+
+    def _image_block(self, url: str) -> dict[str, Any]:
+        """image_url コンテンツブロックを生成。OpenAI は detail: high を付与。"""
+        block: dict[str, Any] = {"type": "image_url", "image_url": {"url": url}}
+        if self.provider != "vllm":
+            block["image_url"]["detail"] = "high"
+        return block
+
+    def _call_vlm(
+        self, content: list[dict[str, Any]], max_tokens: int
+    ) -> Optional[str]:
+        """vLLM / OpenAI 共通の chat.completions 呼び出し。生テキストを返す。失敗時は None。"""
+        try:
+            if self.provider == "vllm":
+                resp = self.client.chat.completions.create(
+                    model=self.model,
+                    messages=[{"role": "user", "content": content}],  # type: ignore[arg-type]
+                    max_tokens=max_tokens,
+                )
+            else:
+                resp = self.client.chat.completions.create(
+                    model=self.model,
+                    messages=[{"role": "user", "content": content}],  # type: ignore[arg-type]
+                    max_completion_tokens=max_tokens,
+                )
+            return resp.choices[0].message.content or ""
+        except Exception as e:
+            logger.error(f"Vision API error: {e}", exc_info=True)
+            return None
 
     def analyze_bytes_raw(
         self,
@@ -340,10 +343,8 @@ class VisionAnalyzer:
         if max_tokens is None:
             max_tokens = self.max_tokens or 2048
 
-        # vLLM: image_path があれば既存ファイルを直接参照、なければ bytes → temp file
-        # OpenAI: base64 data URI（現状維持）
+        # URL 解決: vLLM → file:// URI、OpenAI → base64 data URI
         suffix = ".png" if "png" in media_type else ".jpg"
-        content: list[dict[str, Any]]
 
         if self.provider == "vllm":
             _path = image_path if (image_path and Path(image_path).exists()) else None
@@ -352,54 +353,27 @@ class VisionAnalyzer:
                 image_bytes=image_bytes if _path is None else None,
                 suffix=suffix,
                 tmp_dir=self.vllm_tmp_dir,
-            ) as image_url:
-                content = [
-                    {"type": "text", "text": prompt},
-                    {"type": "image_url", "image_url": {"url": image_url}},
-                ]
-                try:
-                    response = self.client.chat.completions.create(
-                        model=self.model,
-                        messages=[{"role": "user", "content": content}],  # type: ignore[arg-type]
-                        max_tokens=max_tokens,
-                    )
-                except Exception as e:
-                    logger.error(
-                        f"Vision API error (depth analysis): {e}", exc_info=True
-                    )
-                    return None
+            ) as url:
+                content = [{"type": "text", "text": prompt}, self._image_block(url)]
+                raw = self._call_vlm(content, max_tokens)
         else:
-            # OpenAI: base64 data URI（現状維持）
             image_url = self._encode_image_bytes(image_bytes, media_type)
             if image_url is None:
                 logger.warning("analyze_bytes_raw: image_bytes is None, skipping")
                 return None
-            content = [
-                {"type": "text", "text": prompt},
-                {
-                    "type": "image_url",
-                    "image_url": {"url": image_url, "detail": "high"},
-                },
-            ]
-            try:
-                response = self.client.chat.completions.create(
-                    model=self.model,
-                    messages=[{"role": "user", "content": content}],  # type: ignore[arg-type]
-                    max_completion_tokens=max_tokens,
-                )
-            except Exception as e:
-                logger.error(f"Vision API error (depth analysis): {e}", exc_info=True)
-                return None
+            content = [{"type": "text", "text": prompt}, self._image_block(image_url)]
+            raw = self._call_vlm(content, max_tokens)
 
-        # 共通パース処理（vLLM / OpenAI 共通）
-        raw = response.choices[0].message.content or ""
+        if raw is None:
+            return None
+
+        # 共通パース処理
         parsed = self._parse_vision_json(raw)
         if parsed is None:
             logger.warning(
                 f"[depth_analysis] VLM response could not be parsed as JSON. "
                 f"First 500 chars:\n{raw[:500]}"
             )
-            # フォールバック: 生テキストを scene_description として返し、depth_layers はデフォルト値
             return {
                 "scene_description": raw[:500]
                 if raw

@@ -141,73 +141,45 @@ def _strip_trailing_commas(text: str) -> str:
     return re.sub(r",\s*([}\]])", r"\1", text)
 
 
-def _robust_json_loads(text: str) -> Dict[str, Any]:
-    """LLM 出力から JSON を抽出・パース。複数の形式に対応。"""
-    # 1) 直接パース
-    try:
-        return json.loads(text)
-    except Exception:
-        pass
-
-    # 2) trailing comma を除去して再試行
-    cleaned = _strip_trailing_commas(text)
-    if cleaned != text:
-        try:
-            return json.loads(cleaned)
-        except Exception:
-            pass
-
-    # 3) markdown コードブロック（```json ... ```）を抽出
-    m = re.search(r"```(?:json)?\s*\n(.*?)\n```", text, flags=re.DOTALL)
-    if m:
-        candidate = m.group(1)
+def _try_loads(text: str) -> Optional[Dict[str, Any]]:
+    """text をそのまま、次に trailing comma 除去してパースを試みる。失敗時は None。"""
+    for candidate in (text, _strip_trailing_commas(text)):
         try:
             return json.loads(candidate)
         except Exception:
             pass
-        try:
-            return json.loads(_strip_trailing_commas(candidate))
-        except Exception:
-            pass
+    return None
 
-    # 4) ネストを考慮した JSON 抽出（最初の { から最後の } まで）
-    text = text.strip()
-    if text.startswith("{"):
-        # 最初の開き括弧から始まる
+
+def _robust_json_loads(text: str) -> Dict[str, Any]:
+    """LLM 出力から JSON を抽出・パース。複数の形式に対応。"""
+    # 1) 直接パース（+ trailing comma 除去）
+    if (result := _try_loads(text)) is not None:
+        return result
+
+    # 2) markdown コードブロック（```json ... ```）を抽出
+    m = re.search(r"```(?:json)?\s*\n(.*?)\n```", text, flags=re.DOTALL)
+    if m and (result := _try_loads(m.group(1))) is not None:
+        return result
+
+    # 3) ネストを考慮した JSON 抽出（最初の { から最後の } まで）
+    stripped = text.strip()
+    if stripped.startswith("{"):
         depth = 0
-        end_idx = -1
-        for i, ch in enumerate(text):
+        for i, ch in enumerate(stripped):
             if ch == "{":
                 depth += 1
             elif ch == "}":
                 depth -= 1
                 if depth == 0:
-                    end_idx = i + 1
+                    if (result := _try_loads(stripped[: i + 1])) is not None:
+                        return result
                     break
 
-        if end_idx > 0:
-            candidate = text[:end_idx]
-            try:
-                return json.loads(candidate)
-            except Exception:
-                pass
-            try:
-                return json.loads(_strip_trailing_commas(candidate))
-            except Exception:
-                pass
-
-    # 5) 簡易的な正規表現で { から } を抽出（最後の手段）
+    # 4) 簡易的な正規表現で { から } を抽出（最後の手段）
     m = re.search(r"\{.*\}", text, flags=re.DOTALL)
-    if m:
-        candidate = m.group(0)
-        try:
-            return json.loads(candidate)
-        except Exception:
-            pass
-        try:
-            return json.loads(_strip_trailing_commas(candidate))
-        except Exception:
-            pass
+    if m and (result := _try_loads(m.group(0))) is not None:
+        return result
 
     raise ValueError(f"LLM出力からJSONを解析できませんでした: {text[:500]}...")
 
