@@ -1,6 +1,7 @@
 """Test schema validation."""
 
 from src.safety_agent.schema import (
+    AssessmentEvidence,
     AudioCue,
     CameraPose,
     CriticalPoint,
@@ -13,6 +14,7 @@ from src.safety_agent.schema import (
     SafetyAssessment,
     VisionAnalysisResult,
     VisionBlindSpot,
+    VisionOverallAssessment,
 )
 
 
@@ -50,17 +52,21 @@ def test_safety_assessment():
         reason="高リスク未確認領域を優先観測",
         priority=0.85,
         temporal_status="worsening",
-        confidence_score=0.9,
+        evidence=AssessmentEvidence(
+            vision=["フォークリフトが接近中"],
+        ),
     )
     assert assessment.risk_level == "high"
     assert assessment.action_type == "inspect_region"
     assert assessment.priority == 0.85
     assert assessment.temporal_status == "worsening"
-    assert assessment.confidence_score == 0.9
+    assert assessment.evidence is not None
+    assert len(assessment.evidence.vision) == 1
+    assert assessment.evidence.audio == []
 
 
 def test_safety_assessment_defaults():
-    """temporal_status と confidence_score のデフォルト値を確認。"""
+    """temporal_status と evidence のデフォルト値を確認。"""
     assessment = SafetyAssessment(
         risk_level="low",
         safety_status="異常なし",
@@ -69,7 +75,7 @@ def test_safety_assessment_defaults():
         priority=0.1,
     )
     assert assessment.temporal_status == "unknown"
-    assert assessment.confidence_score == 0.0
+    assert assessment.evidence is None
     assert assessment.detected_hazards == []
 
 
@@ -93,7 +99,6 @@ def test_vision_analysis_result_basic():
         scene_description="工場内の状況。フォークリフト1台と作業員2名が確認。",
         critical_points=[
             CriticalPoint(
-                region_id="critical_point_0",
                 description="フォークリフトが接近中",
                 severity="high",
                 normalized_bbox=NormalizedBBox(
@@ -102,15 +107,11 @@ def test_vision_analysis_result_basic():
             )
         ],
         blind_spots=[
-            VisionBlindSpot(
-                region_id="blind_spot_0",
-                description="棚の背後が見えない",
-                position="右奥",
-                severity="medium",
-            )
+            VisionBlindSpot(description="棚の背後が見えない", position="右奥")
         ],
-        overall_risk="high",
-        confidence_score=0.95,
+        overall_assessment=VisionOverallAssessment(
+            severity="high", reason="フォークリフト接近による高リスク"
+        ),
     )
     assert result.scene_description.startswith("工場")
     assert len(result.critical_points) == 1
@@ -122,8 +123,7 @@ def test_perception_ir_with_vision_analysis():
     """PerceptionIR が vision_analysis フィールドを持つことを確認。"""
     analysis = VisionAnalysisResult(
         scene_description="テスト分析結果",
-        overall_risk="low",
-        confidence_score=0.8,
+        overall_assessment=VisionOverallAssessment(severity="low", reason="異常なし"),
     )
     ir = PerceptionIR(obs_id="t0", vision_analysis=analysis)
     assert ir.vision_analysis is not None
@@ -150,6 +150,7 @@ def test_observation_provider():
 def test_depth_analysis_result():
     """DepthAnalysisResult の基本構築を検証。"""
     depth = DepthAnalysisResult(
+        scene_description="近い領域に危険物あり。段階的に奥へ深くなる。",
         depth_layers=[
             DepthZoneDescription(
                 zone="near", description="フォークリフト（0.3m）接近中"
@@ -157,9 +158,8 @@ def test_depth_analysis_result():
             DepthZoneDescription(zone="mid", description="棚（0.5-2m）"),
             DepthZoneDescription(zone="far", description="壁（2m以上）"),
         ],
-        overall_risk="medium",
-        confidence_score=0.85,
     )
+    assert depth.scene_description.startswith("近い領域")
     assert len(depth.depth_layers) == 3
     assert depth.depth_layers[0].zone == "near"
 
@@ -167,25 +167,23 @@ def test_depth_analysis_result():
 def test_perception_ir_with_depth_analysis():
     """PerceptionIR が depth_analysis フィールドを持つことを確認。"""
     depth = DepthAnalysisResult(
+        scene_description="テスト深度分析",
         depth_layers=[],
-        overall_risk="low",
-        confidence_score=0.8,
     )
     ir = PerceptionIR(obs_id="t0", depth_analysis=depth)
     assert ir.depth_analysis is not None
+    assert ir.depth_analysis.scene_description == "テスト深度分析"
 
 
 def test_perception_ir_full_modalities():
     """PerceptionIR に vision_analysis と depth_analysis の両方を含めることを確認。"""
     vision = VisionAnalysisResult(
         scene_description="ビジョン分析結果",
-        overall_risk="low",
-        confidence_score=0.9,
+        overall_assessment=VisionOverallAssessment(severity="low", reason="OK"),
     )
     depth = DepthAnalysisResult(
+        scene_description="深度分析結果",
         depth_layers=[],
-        overall_risk="low",
-        confidence_score=0.8,
     )
     ir = PerceptionIR(
         obs_id="t0",
@@ -195,3 +193,4 @@ def test_perception_ir_full_modalities():
     assert ir.vision_analysis is not None
     assert ir.depth_analysis is not None
     assert ir.vision_analysis.scene_description == "ビジョン分析結果"
+    assert ir.depth_analysis.scene_description == "深度分析結果"

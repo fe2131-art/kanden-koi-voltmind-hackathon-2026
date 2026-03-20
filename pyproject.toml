@@ -30,6 +30,7 @@ dependencies = [
     "vllm-omni",
     "librosa",
     "soundfile",
+    "qwen-tts>=0.1.0",
     "autoawq",
     # "flash-attn>=2.8.3",
     # "ninja"
@@ -105,7 +106,12 @@ select = [
     "F",    # pyflakes
     "I",    # isort
 ]
-ignore = ["E501"]  # line-too-long
+ignore = [
+    "E501",  # line-too-long
+]
+extend-select = [
+    "E402",  # module-level import not at top
+]
 
 [tool.ruff.lint.isort]
 known-first-party = ["safety_agent"]
