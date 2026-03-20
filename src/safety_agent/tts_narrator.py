@@ -38,6 +38,14 @@ class TTSNarrator:
         self._pipeline: Optional[Any] = (
             None  # 遅延初期化（最初の generate() 呼び出し時にロード）
         )
+        if self.enabled:
+            logger.info(
+                f"TTSNarrator: 初期化完了 (voice={self.voice}, speed={self.speed},"
+                f" lang={self.lang_code}, device={self.device or 'auto'},"
+                f" output={self.output_dir}) ※KPipeline は初回フレーム時にロード"
+            )
+        else:
+            logger.info("TTSNarrator: TTS 無効 (tts.enabled=false)")
 
     def _ensure_pipeline(self) -> None:
         """KPipeline を遅延初期化する。"""
