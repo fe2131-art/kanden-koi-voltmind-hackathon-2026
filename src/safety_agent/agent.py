@@ -103,39 +103,21 @@ class OpenAICompatLLM:
             # OpenAI（gpt-5-nano はサポートしない可能性）
             response_format = {"type": "json_object"}
 
-        try:
-            # gpt-5 系は max_completion_tokens を使用
-            if self._use_max_completion_tokens:
-                response = self.client.chat.completions.create(
-                    model=self.model,
-                    messages=messages,
-                    max_completion_tokens=max_tokens,
-                    response_format=response_format,
-                )
-            else:
-                response = self.client.chat.completions.create(
-                    model=self.model,
-                    messages=messages,
-                    max_tokens=max_tokens,
-                    response_format=response_format,
-                )
-        except Exception as e:
-            # response_format なしで再試行
-            logger.warning(
-                f"LLM with response_format failed: {e}. Retrying without format."
+        # gpt-5 系は max_completion_tokens を使用
+        if self._use_max_completion_tokens:
+            response = self.client.chat.completions.create(
+                model=self.model,
+                messages=messages,
+                max_completion_tokens=max_tokens,
+                response_format=response_format,
             )
-            if self._use_max_completion_tokens:
-                response = self.client.chat.completions.create(
-                    model=self.model,
-                    messages=messages,
-                    max_completion_tokens=max_tokens,
-                )
-            else:
-                response = self.client.chat.completions.create(
-                    model=self.model,
-                    messages=messages,
-                    max_tokens=max_tokens,
-                )
+        else:
+            response = self.client.chat.completions.create(
+                model=self.model,
+                messages=messages,
+                max_tokens=max_tokens,
+                response_format=response_format,
+            )
 
         content = response.choices[0].message.content
 
@@ -270,6 +252,19 @@ def _sliding_window_errors(left: List[str], right: List[str]) -> List[str]:
     return combined
 
 
+_MAX_ASSESSMENT_HISTORY = 20
+
+
+def _sliding_window_assessments(left, right):
+    """直近 _MAX_ASSESSMENT_HISTORY 件のみ保持する reducer。
+    State 自体を上限管理し、LLM へ渡す件数は context_history_size で別途フィルタする。
+    """
+    combined = (left or []) + (right or [])
+    if len(combined) > _MAX_ASSESSMENT_HISTORY:
+        return combined[-_MAX_ASSESSMENT_HISTORY:]
+    return combined
+
+
 class AgentState(TypedDict):
     # メッセージログ（スライディングウィンドウ化）
     messages: Annotated[List, _sliding_window_messages]
@@ -295,9 +290,9 @@ class AgentState(TypedDict):
 
     # 現フレームの安全判断
     assessment: Optional[SafetyAssessment]  # 現フレームの判断
-    assessment_history: List[
-        SafetyAssessment
-    ]  # 判断履歴（determine_next_action_llm で trim）
+    assessment_history: Annotated[
+        List[SafetyAssessment], _sliding_window_assessments
+    ]  # 判断履歴（reducer で _MAX_ASSESSMENT_HISTORY 件上限、LLM 入力は context_history_size でフィルタ）
 
     # 信念状態：危険のトラッキング（フレーム間の引き継ぎ）
     belief_state: Optional[BeliefState]
@@ -1024,16 +1019,9 @@ def determine_next_action_llm(
             temporal_status="unknown",
             confidence_score=0.0,
         )
-        # 履歴を trim
-        history = list(state.get("assessment_history", []))
-        history.append(assessment)
-        if context_history_size > 0:
-            history = history[-context_history_size:]
-        else:
-            history = []
         return {
             "assessment": assessment,
-            "assessment_history": history,
+            "assessment_history": [assessment],
             "errors": ["No IR, used default assessment"],
             "messages": [
                 {
@@ -1056,16 +1044,9 @@ def determine_next_action_llm(
             temporal_status="unknown",
             confidence_score=0.0,
         )
-        # 履歴を trim
-        history = list(state.get("assessment_history", []))
-        history.append(assessment)
-        if context_history_size > 0:
-            history = history[-context_history_size:]
-        else:
-            history = []
         return {
             "assessment": assessment,
-            "assessment_history": history,
+            "assessment_history": [assessment],
             "messages": [
                 {
                     "role": "assistant",
@@ -1126,16 +1107,9 @@ def determine_next_action_llm(
 
         # SafetyAssessment を直接取得
         assessment = SafetyAssessment.model_validate(raw)
-        # 履歴を trim
-        history = list(state.get("assessment_history", []))
-        history.append(assessment)
-        if context_history_size > 0:
-            history = history[-context_history_size:]
-        else:
-            history = []
         return {
             "assessment": assessment,
-            "assessment_history": history,
+            "assessment_history": [assessment],
             "messages": [
                 {
                     "role": "assistant",
@@ -1160,16 +1134,9 @@ def determine_next_action_llm(
         )
         # エラーメッセージを最初の 150 文字に制限（JSON パースエラー等が長いため）
         error_summary = f"{type(e).__name__}: {str(e)[:150]}"
-        # 履歴を trim
-        history = list(state.get("assessment_history", []))
-        history.append(assessment)
-        if context_history_size > 0:
-            history = history[-context_history_size:]
-        else:
-            history = []
         return {
             "assessment": assessment,
-            "assessment_history": history,
+            "assessment_history": [assessment],
             "errors": [f"LLM assessment failed: {error_summary}"],
             "messages": [
                 {
