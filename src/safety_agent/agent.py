@@ -842,6 +842,12 @@ def sam3_node(state: AgentState, runtime: Runtime[ContextSchema]) -> Command:
         error = "sam3: analyzer not available"
 
     n_regions = len(sam3_analysis.regions) if sam3_analysis else 0
+    logger.info(
+        f"[sam3_node] available={sam3_analyzer.available if sam3_analyzer else False} "
+        f"regions={n_regions} error={error} "
+        f"save_masks={sam3_config.get('save_masks')} "
+        f"output_dir={sam3_config.get('output_dir')}"
+    )
     result = ModalityResult(
         modality_name="sam3",
         extra={"sam3_analysis": sam3_analysis},

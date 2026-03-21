@@ -1103,7 +1103,7 @@ class Sam3Analyzer:
 
                         # mask PNG 保存
                         mask_path: Optional[str] = None
-                        logger.debug(
+                        logger.info(
                             f"Sam3Analyzer: save_masks={save_masks} "
                             f"masks_np.shape={masks_np.shape} idx={idx} "
                             f"output_path={output_path.resolve()}"
