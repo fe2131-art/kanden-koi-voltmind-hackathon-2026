@@ -38,6 +38,7 @@ dependencies = [
     "mojimoji",
     "soundfile",
     "autoawq",
+    "pycocotools",
     # "flash-attn>=2.8.3",
     # "ninja"
 ]
