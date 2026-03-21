@@ -293,7 +293,9 @@ def test_on_frame_filename_uses_video_timestamp(tmp_path: Path):
     assessment = frame_output.get("assessment") or {}
     safety_status = assessment.get("safety_status", "")
     ts = frame_output.get("video_timestamp")
-    tts_name = f"frame_{ts:.1f}s" if ts is not None else frame_output.get("frame_id", "frame")
+    tts_name = (
+        f"frame_{ts:.1f}s" if ts is not None else frame_output.get("frame_id", "frame")
+    )
 
     with patch("safety_agent.tts_narrator.TTSNarrator._ensure_pipeline"):
         narrator._pipeline = mock_pipeline

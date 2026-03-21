@@ -16,12 +16,15 @@ from .modality_nodes import (
     DepthEstimator,
     InfraredImageAnalyzer,
     ModalityResult,
+    Sam3Analyzer,
     TemporalImageAnalyzer,
     VisionAnalyzer,
 )
 from .schema import (
+    ActionWithGrounding,
     BeliefState,
     DepthAnalysisResult,
+    GroundedCriticalPoint,
     InfraredAnalysisResult,
     Observation,
     ObservationProvider,
@@ -71,7 +74,9 @@ class OpenAICompatLLM:
         system: str,
         user: str,
         max_tokens: int = 800,
-        schema_type: Literal["belief_state", "safety_assessment"] = "safety_assessment",
+        schema_type: Literal[
+            "belief_state", "safety_assessment", "action_with_grounding"
+        ] = "safety_assessment",
     ) -> Dict[str, Any]:
         """JSON 出力を期待するチャット API 呼び出し。
 
@@ -79,7 +84,7 @@ class OpenAICompatLLM:
             system: システムプロンプト
             user: ユーザーメッセージ
             max_tokens: 最大トークン数
-            schema_type: "belief_state" または "safety_assessment"
+            schema_type: "belief_state", "safety_assessment", または "action_with_grounding"
 
         Returns:
             パースされた JSON 辞書
@@ -302,6 +307,9 @@ class AgentState(TypedDict):
         List[SafetyAssessment], _sliding_window_assessments
     ]  # 判断履歴（reducer で _MAX_ASSESSMENT_HISTORY 件上限、LLM 入力は context_history_size でフィルタ）
 
+    # SAM3 grounded 危険点（determine_next_action_llm() が毎フレーム上書き）
+    grounded_critical_points: List[GroundedCriticalPoint]
+
     # 信念状態：危険のトラッキング（フレーム間の引き継ぎ）
     belief_state: Optional[BeliefState]
 
@@ -317,6 +325,9 @@ class ContextSchema(TypedDict):
     depth_estimator: Optional[DepthEstimator]
     infrared_analyzer: Optional[InfraredImageAnalyzer]
     temporal_analyzer: Optional[TemporalImageAnalyzer]
+    sam3_analyzer: Optional[Sam3Analyzer]
+    sam3_prompts: List[str]
+    sam3_config: dict
     prompts: dict  # プロンプト設定全体
     config: dict
     chat_max_tokens: int
@@ -382,6 +393,7 @@ def ingest_observation(state: AgentState, runtime: Runtime[ContextSchema]) -> Co
         "depth": ("depth_every_n_frames", "depth_node"),
         "infrared": ("infrared_every_n_frames", "infrared_node"),
         "temporal": ("temporal_every_n_frames", "temporal_node"),
+        "sam3": ("sam3_every_n_frames", "sam3_node"),
     }
 
     sends: list[Send] = [Send("vlm_node", {"observation": obs})]  # VLM は常に実行
@@ -794,6 +806,64 @@ def temporal_node(state: AgentState, runtime: Runtime[ContextSchema]) -> Command
     )
 
 
+def sam3_node(state: AgentState, runtime: Runtime[ContextSchema]) -> Command:
+    """
+    SAM3 image mode によるセグメンテーションノード。
+    テキストプロンプトごとに regions[] を生成し、PerceptionIR.sam3_analysis に格納する。
+    SAM3 が unavailable の場合は空 Sam3AnalysisResult で継続（fail-open）。
+    """
+    obs = state.get("observation")
+    sam3_analyzer = runtime.context.get("sam3_analyzer")
+    sam3_prompts: list[str] = runtime.context.get("sam3_prompts", [])
+    sam3_config: dict = runtime.context.get("sam3_config", {})
+    sam3_analysis = None
+    error = None
+
+    if (
+        sam3_analyzer
+        and sam3_analyzer.available
+        and obs
+        and obs.image_path
+        and sam3_prompts
+    ):
+        try:
+            sam3_analysis = sam3_analyzer.analyze(
+                image_path=obs.image_path,
+                frame_id=obs.obs_id,
+                prompts=sam3_prompts,
+                score_threshold=sam3_config.get("score_threshold", 0.35),
+                max_regions_per_prompt=sam3_config.get("max_regions_per_prompt", 2),
+                max_regions_total=sam3_config.get("max_regions_total", 8),
+                save_masks=sam3_config.get("save_masks", True),
+                output_dir=sam3_config.get("output_dir", "data/sam3_masks"),
+            )
+        except Exception as e:
+            error = f"sam3: {e}"
+    elif not sam3_analyzer or not sam3_analyzer.available:
+        error = "sam3: analyzer not available"
+
+    n_regions = len(sam3_analysis.regions) if sam3_analysis else 0
+    result = ModalityResult(
+        modality_name="sam3",
+        extra={"sam3_analysis": sam3_analysis},
+        error=error,
+    )
+    return Command(
+        update={
+            "modality_results": {"sam3": result},
+            "received_modalities": ["sam3"],
+            "messages": [
+                {
+                    "role": "assistant",
+                    "content": f"[sam3] regions={n_regions}"
+                    + (f" error={error}" if error else ""),
+                }
+            ],
+        },
+        goto="join_modalities",
+    )
+
+
 def join_modalities(state: AgentState, runtime: Runtime[ContextSchema]) -> Command:
     """
     Fan-in バリア + ラッチ：全て期待するモダリティが受け取ったかを確認。
@@ -861,15 +931,20 @@ def fuse_modalities(
     depth = results.get("depth")
     infrared = results.get("infrared")
     temporal = results.get("temporal")
+    sam3 = results.get("sam3")
 
     audio_cues = audio.audio_cues if audio and audio.audio_cues else []
     vision_analysis = vlm.extra.get("vision_analysis") if vlm else None
     depth_analysis = depth.extra.get("depth_analysis") if depth else None
     infrared_analysis = infrared.extra.get("infrared_analysis") if infrared else None
     temporal_analysis = temporal.extra.get("temporal_analysis") if temporal else None
+    sam3_analysis = sam3.extra.get("sam3_analysis") if sam3 else None
     modality_errors = [r.error for r in results.values() if r.error]
 
-    # PerceptionIR を作成
+    # VLM の critical_points を provisional_points として保持（fuse 後に determine が grounding する）
+    provisional_points = vision_analysis.critical_points if vision_analysis else []
+
+    # PerceptionIR を作成（region-centric: sam3_analysis + provisional_points を中心に）
     ir = PerceptionIR(
         obs_id=obs.obs_id,
         camera_pose=obs.camera_pose,
@@ -878,6 +953,8 @@ def fuse_modalities(
         depth_analysis=depth_analysis,
         infrared_analysis=infrared_analysis,
         temporal_analysis=temporal_analysis,
+        sam3_analysis=sam3_analysis,
+        provisional_points=provisional_points,
         modality_errors=modality_errors,
     )
 
@@ -973,6 +1050,11 @@ def update_belief_state_llm(
             else None
         ),
         "audio_cues": [a.model_dump() for a in ir.audio],
+        "sam3_regions": (
+            [r.model_dump(exclude_none=True) for r in ir.sam3_analysis.regions]
+            if ir.sam3_analysis
+            else []
+        ),
         "previous_belief_state": (
             previous_belief_state.model_dump(exclude_none=True)
             if previous_belief_state
@@ -1061,6 +1143,7 @@ def determine_next_action_llm(
         )
         return {
             "assessment": assessment,
+            "grounded_critical_points": [],
             "assessment_history": [assessment],
             "errors": ["No IR, used default assessment"],
             "messages": [
@@ -1086,6 +1169,7 @@ def determine_next_action_llm(
         )
         return {
             "assessment": assessment,
+            "grounded_critical_points": [],
             "assessment_history": [assessment],
             "messages": [
                 {
@@ -1124,6 +1208,16 @@ def determine_next_action_llm(
         "belief_state": (
             belief_state.model_dump(exclude_none=True) if belief_state else None
         ),
+        # SAM3 regions: 位置情報の主経路（enable_sam3=false 時は空配列）
+        "sam3_regions": (
+            [r.model_dump(exclude_none=True) for r in ir.sam3_analysis.regions]
+            if ir.sam3_analysis
+            else []
+        ),
+        # VLM の provisional 危険ヒント（最終 grounding は LLM が担当）
+        "provisional_points": [
+            cp.model_dump(exclude_none=True) for cp in ir.provisional_points
+        ],
     }
 
     # context_history_size > 0 のときのみ previous_assessments を追加（キー自体を除外）
@@ -1142,18 +1236,25 @@ def determine_next_action_llm(
             system=system,
             user=json.dumps(context_data, ensure_ascii=False),
             max_tokens=chat_max_tokens,
-            schema_type="safety_assessment",
+            schema_type="action_with_grounding",
         )
 
-        # SafetyAssessment を直接取得
-        assessment = SafetyAssessment.model_validate(raw)
+        # ActionWithGrounding から assessment と grounded_critical_points を取得
+        action_result = ActionWithGrounding.model_validate(raw)
+        assessment = action_result.assessment
+        grounded_critical_points = action_result.grounded_critical_points
         return {
             "assessment": assessment,
+            "grounded_critical_points": grounded_critical_points,
             "assessment_history": [assessment],
             "messages": [
                 {
                     "role": "assistant",
-                    "content": f"[assess] {assessment.action_type} risk={assessment.risk_level} priority={assessment.priority:.2f} (llm)",
+                    "content": (
+                        f"[assess] {assessment.action_type} risk={assessment.risk_level} "
+                        f"priority={assessment.priority:.2f} "
+                        f"grounded={len(grounded_critical_points)} (llm)"
+                    ),
                 }
             ],
         }
@@ -1176,6 +1277,7 @@ def determine_next_action_llm(
         error_summary = f"{type(e).__name__}: {str(e)[:150]}"
         return {
             "assessment": assessment,
+            "grounded_critical_points": [],
             "assessment_history": [assessment],
             "errors": [f"LLM assessment failed: {error_summary}"],
             "messages": [
@@ -1233,6 +1335,17 @@ def emit_output(state: AgentState) -> Dict[str, Any]:
         ),
         # assessment は target_region を常に含めるため exclude_none=False
         "assessment": assessment.model_dump() if assessment else None,
+        # SAM3 セグメンテーション結果
+        "sam3_analysis": (
+            ir.sam3_analysis.model_dump(exclude_none=True)
+            if ir and ir.sam3_analysis
+            else None
+        ),
+        # LLM が SAM3 regions を参照して生成した最終 region-grounded 危険点
+        "grounded_critical_points": [
+            cp.model_dump(exclude_none=True)
+            for cp in state.get("grounded_critical_points", [])
+        ],
         "errors": errors,
     }
 
@@ -1292,6 +1405,7 @@ def build_agent():
     builder.add_node("depth_node", depth_node)
     builder.add_node("infrared_node", infrared_node)
     builder.add_node("temporal_node", temporal_node)
+    builder.add_node("sam3_node", sam3_node)
     builder.add_node("join_modalities", join_modalities)  # ラッチ付き fan-in バリア
     builder.add_node("fuse_modalities", fuse_modalities)
     builder.add_node("update_belief_state_llm", update_belief_state_llm)

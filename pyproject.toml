@@ -27,6 +27,7 @@ dependencies = [
     "qwen-vl-utils>=0.0.14",
     "xformers",
     "depth-anything-3",
+    "sam3",
     "vllm-omni",
     "librosa",
     "kokoro>=0.9.4",
@@ -37,6 +38,7 @@ dependencies = [
     "mojimoji",
     "soundfile",
     "autoawq",
+    "pycocotools",
     # "flash-attn>=2.8.3",
     # "ninja"
 ]
@@ -46,6 +48,7 @@ torch = [{ index = "torch-cu128" }]
 torchaudio = [{ index = "torch-cu128" }]
 vllm  = [{ index = "vllm-nightly" }]
 xformers  = [{ index = "xformers-cu128" }]
+sam3 = [{ path = "./external/sam3", editable = true }]
 depth-anything-3 = { path = "./external/Depth-Anything-3", editable = true }
 vllm-omni = { path = "./external/vllm-omni", editable = true }
 

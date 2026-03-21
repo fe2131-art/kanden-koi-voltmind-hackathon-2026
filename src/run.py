@@ -19,6 +19,7 @@ from safety_agent.modality_nodes import (
     AudioAnalyzer,
     DepthEstimator,
     InfraredImageAnalyzer,
+    Sam3Analyzer,
     TemporalImageAnalyzer,
     VisionAnalyzer,
 )
@@ -1194,6 +1195,36 @@ def main():
             )
             agent_cfg["enable_temporal"] = False
 
+    sam3_analyzer = None
+    sam3_prompts: list[str] = []
+    sam3_config: dict = {}
+    if agent_cfg.get("enable_sam3", False):
+        try:
+            sam3_cfg = config.get("sam3", {})
+            sam3_prompts = sam3_cfg.get("prompts", ["person", "worker", "tool"])
+            sam3_config = {
+                "score_threshold": sam3_cfg.get("score_threshold", 0.35),
+                "max_regions_per_prompt": sam3_cfg.get("max_regions_per_prompt", 2),
+                "max_regions_total": sam3_cfg.get("max_regions_total", 8),
+                "save_masks": sam3_cfg.get("save_masks", True),
+                "output_dir": sam3_cfg.get("output_dir", "data/sam3_masks"),
+            }
+            sam3_analyzer = Sam3Analyzer(
+                model_cfg={
+                    "checkpoint_path": sam3_cfg.get("checkpoint_path", None),
+                }
+            )
+            if not sam3_analyzer.available:
+                logger.warning("Sam3Analyzer: model not available, SAM3 disabled")
+                agent_cfg["enable_sam3"] = False
+            else:
+                os.makedirs(sam3_config["output_dir"], exist_ok=True)
+        except Exception as e:
+            logger.warning(
+                f"Failed to initialize Sam3Analyzer: {e}, SAM3 analysis will not be available"
+            )
+            agent_cfg["enable_sam3"] = False
+
     # Initial state (with modality_results for fan-in)
     initial_state: AgentState = {
         "messages": [],
@@ -1208,6 +1239,7 @@ def main():
         "last_vision_summary": None,
         "assessment": None,
         "assessment_history": [],
+        "grounded_critical_points": [],
         "belief_state": None,
         "done": False,
         "errors": [],
@@ -1223,6 +1255,8 @@ def main():
         expected_modalities.append("infrared")
     if agent_cfg.get("enable_temporal", False):
         expected_modalities.append("temporal")
+    if agent_cfg.get("enable_sam3", False):
+        expected_modalities.append("sam3")
 
     # Context (with modality analyzers for fan-out nodes)
     context = {
@@ -1233,6 +1267,9 @@ def main():
         "depth_estimator": depth_estimator,
         "infrared_analyzer": infrared_analyzer,
         "temporal_analyzer": temporal_analyzer,
+        "sam3_analyzer": sam3_analyzer,
+        "sam3_prompts": sam3_prompts,
+        "sam3_config": sam3_config,
         "prompts": prompts,
         "config": config,  # depth_node で config.get("tokens", ...) 使用
         "chat_max_tokens": tokens_cfg.get("chat_max_tokens", 2000),
@@ -1279,7 +1316,9 @@ def main():
         if safety_status:
             ts = frame_output.get("video_timestamp")
             tts_name = (
-                f"frame_{ts:.1f}s" if ts is not None else frame_output.get("frame_id", "frame")
+                f"frame_{ts:.1f}s"
+                if ts is not None
+                else frame_output.get("frame_id", "frame")
             )
             tts_narrator.generate(tts_name, safety_status)
 

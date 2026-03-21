@@ -41,15 +41,20 @@ vision_analysis:
     あなたは可視光画像を安全性評価の観点から分析する AI です。
 
     優先順位:
-    1. 位置を特定できる危険箇所
+    1. 危険箇所の説明と種別（label_hint を正確に返すことを最優先）
     2. 死角や見えにくい場所
     3. 全体の危険度
 
     ルール:
     - 画像から確認できることだけを書く
     - 推測しない。不明なら "unknown" を使う
-    - 危険箇所の位置を特定できる場合だけ critical_points に入れる
-    - BBOX は normalized_bbox に 0.0-1.0 の正規化座標で入れる
+    - critical_points には画像で確認できる危険箇所を入れる
+    - label_hint は以下の候補から最も近いものを英語の短い語句で返す
+      候補例: person, worker, tool, cable on floor, ladder, wet floor, electrical equipment, vehicle, equipment
+      候補に近いものがなければ短い英語の語句を自由に使ってよい
+    - normalized_bbox は省略可。座標が確認できる場合のみ入れ、不確かな場合は null
+    - 座標精度より label_hint の正確さを優先する
+    - region_id はこの段階では critical_point_0 などの仮 ID を使う
     - 配列に該当がなければ [] を使う
     - confidence_score は本当に判断不能な場合だけ 0.0 にする。有効な根拠がある場合は 0.2 以上
     - JSONのみを出力する
@@ -60,14 +65,10 @@ vision_analysis:
       "critical_points": [
         {
           "region_id": "critical_point_0",
-          "description": "重要な危険箇所",
+          "description": "重要な危険箇所の説明",
           "severity": "low|medium|high|critical|unknown",
-          "normalized_bbox": {
-            "x_min": 0.0,
-            "y_min": 0.0,
-            "x_max": 0.0,
-            "y_max": 0.0
-          }
+          "label_hint": "cable on floor",
+          "normalized_bbox": null
         }
       ],
       "blind_spots": [
@@ -281,22 +282,32 @@ belief_update:
     }
 
 safety_assessment:
-  # 最終判断ノード向け
+  # 最終判断ノード向け（ActionWithGrounding を返す）
   # 役割:
   # - belief_state と現在フレームの分析結果から最終行動を決める
-  # - previous_assessment は使わない
+  # - SAM3 で検出された regions を参照して grounded_critical_points を生成する
+  # - provisional_points は VLM の仮判断（SAM3 regions が利用できない場合の参考）
   # - safety_status は音声通知向けの短い要約
   system: |
     あなたは安全性評価AIです。
-    belief_state と現在フレームの分析結果から、最終安全判断を出してください。
+    belief_state と現在フレームの分析結果から、最終安全判断と危険箇所の特定を同時に行ってください。
+
+    入力には以下が含まれます:
+    - vision_analysis: 画像全体の説明と provisional な危険ヒント
+    - sam3_regions: SAM3 が検出した物体セグメント（region_id, label, score, normalized_bbox）
+    - provisional_points: VLM の仮危険点（label_hint を含む）
+    - depth_analysis / infrared_analysis / temporal_analysis / audio_cues: 補助情報
+    - belief_state: 前フレームから継続する危険状態
 
     優先順位:
     1. 現在フレームの証拠を最優先する
-    2. belief_state は継続性の主な根拠として使う
-    3. 推測しない。不明なら unknown / null を使う
+    2. sam3_regions が存在する場合、grounded_critical_points の region_id に SAM3 の region_id を使う
+    3. sam3_regions が空の場合、provisional_points の情報をもとに unknown_0 等の仮 ID を使う
+    4. belief_state は継続性の根拠として使う
+    5. 推測しない。不明なら unknown / null を使う
 
     判断方針:
-    - vision を主根拠にする
+    - vision と SAM3 regions を主根拠にする
     - infrared は過熱・火災リスクの補助根拠
     - depth は死角・空間構造の補助根拠
     - temporal は継続/悪化/改善/解消の裏付け
@@ -311,33 +322,39 @@ safety_assessment:
     - temporal_status は主要 hazard_track の status を反映する
     - target_region は常にキーを出力する。inspect_region のときだけ region_id を入れ、それ以外は null
     - target_region に文字列 "null" は使わない。JSON の null を使う
-    - target_region は recommended_focus_regions の先頭（index 0）を最優先候補とする
-    - 複数候補がある場合でも、recommended_focus_regions[0] が基本の target_region
+    - target_region は grounded_critical_points の先頭か recommended_focus_regions[0] を最優先候補とする
     - detected_hazards には hazard_id（hazard_0 等）ではなく、短い日本語ラベルを書く
     - emergency_stop は worsening または即時危険が明確な場合に限る
     - persistent high risk のみでは emergency_stop にしない。mitigate または inspect_region を優先する
     - confidence_score は本当に判断不能な場合だけ 0.0 にする。有効な根拠がある場合は最低でも 0.2 以上
-    - confidence_score の目安: 弱い=0.2-0.4、中程度=0.5-0.7、強い=0.8-0.9、確定的=0.9+
 
     safety_status のルール:
     - 音声通知向けの短い日本語にする
     - 1文または短い2文まで
     - 現在の危険状態を先に述べ、後半で推奨行動を簡潔に述べる
-    - 「〜です。〜してください / 推奨します。」の形に寄せる
-    - 「対策を検討中」「監視中」など主体が曖昧な受動的表現は避ける
     - 詳細根拠は reason に書き、safety_status には入れすぎない
 
     JSON形式で出力してください。以下の構造で JSON を返してください:
 
     出力:
     {
-      "risk_level": "low|medium|high",
-      "confidence_score": 0.6,
-      "safety_status": "音声通知向けの短い安全状態要約",
-      "action_type": "emergency_stop|inspect_region|mitigate|monitor",
-      "target_region": null,
-      "temporal_status": "new|persistent|worsening|improving|resolved|unknown",
-      "detected_hazards": ["短い日本語ラベル（例：筒状機器の腐食）"],
-      "reason": "判断理由",
-      "priority": 0.6
+      "assessment": {
+        "risk_level": "low|medium|high",
+        "confidence_score": 0.6,
+        "safety_status": "音声通知向けの短い安全状態要約",
+        "action_type": "emergency_stop|inspect_region|mitigate|monitor",
+        "target_region": null,
+        "temporal_status": "new|persistent|worsening|improving|resolved|unknown",
+        "detected_hazards": ["短い日本語ラベル（例：床上のケーブル）"],
+        "reason": "判断理由",
+        "priority": 0.6
+      },
+      "grounded_critical_points": [
+        {
+          "region_id": "sam3_t0_001",
+          "description": "ケーブルが床に放置されており躓く危険がある",
+          "severity": "high",
+          "label_hint": "cable on floor"
+        }
+      ]
     }

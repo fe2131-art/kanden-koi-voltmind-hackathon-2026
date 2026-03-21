@@ -53,9 +53,7 @@ async def monitor_and_stream(websocket):
                         if attempt < 2:
                             await asyncio.sleep(0.05)
                         else:
-                            logger.error(
-                                f"Error reading manifest (3 attempts): {e}"
-                            )
+                            logger.error(f"Error reading manifest (3 attempts): {e}")
 
                 if manifest is not None:
                     current_count = manifest.get("frame_count", 0)
@@ -82,7 +80,9 @@ async def monitor_and_stream(websocket):
                                     if attempt < 2:
                                         await asyncio.sleep(0.05)
                                     else:
-                                        logger.error(f"Error reading {frame_file.name} (3 attempts): {e}")
+                                        logger.error(
+                                            f"Error reading {frame_file.name} (3 attempts): {e}"
+                                        )
 
                             if result is None:
                                 continue
@@ -107,7 +107,9 @@ async def monitor_and_stream(websocket):
 
                             if video_ts is not None:
                                 expected_frame_name = f"frame_{video_ts:.1f}s.jpg"
-                                potential_path = OUTPUT_DIR / "frames" / expected_frame_name
+                                potential_path = (
+                                    OUTPUT_DIR / "frames" / expected_frame_name
+                                )
                                 if potential_path.exists():
                                     rgb_frame_name = expected_frame_name
 
@@ -115,7 +117,9 @@ async def monitor_and_stream(websocket):
                             if not rgb_frame_name:
                                 rgb_frames_dir = OUTPUT_DIR / "frames"
                                 if rgb_frames_dir.exists():
-                                    rgb_files = sorted(rgb_frames_dir.glob("frame_*.jpg"))
+                                    rgb_files = sorted(
+                                        rgb_frames_dir.glob("frame_*.jpg")
+                                    )
                                     if frame_idx < len(rgb_files):
                                         rgb_frame_name = rgb_files[frame_idx].name
 
@@ -134,7 +138,9 @@ async def monitor_and_stream(websocket):
 
                             frame_id = result.get("frame_id", f"frame_{frame_idx}")
                             msg = {
-                                "t": video_ts if video_ts is not None else frame_timestamp,
+                                "t": video_ts
+                                if video_ts is not None
+                                else frame_timestamp,
                                 "video_timestamp": video_ts,
                                 "text": vision_analysis.get(
                                     "scene_description", "Analysis complete"

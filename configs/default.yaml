@@ -16,6 +16,8 @@ agent:
   infrared_every_n_frames: 2
   temporal_every_n_frames: 1
   belief_every_n_frames: 2   # update_belief_state_llm の実行間隔
+  enable_sam3: true
+  sam3_every_n_frames: 1
 
 # LLM configuration
 llm:
@@ -100,6 +102,24 @@ thresholds:
 
 # TTS ナレーション設定（Kokoro TTS）
 # assessment.safety_status の内容をフレームごとに音声ファイルへ変換する
+sam3:
+  enabled: true
+  mode: image
+  checkpoint_path: /home/team-005/.cache/huggingface/hub/models--1038lab--sam3/snapshots/f055b060a4de0a040891ba2ebac9c5cb3c1c0132/sam3.pt   # null = HF Hub (facebook/sam3) から自動DL。ローカルパスも可
+  prompts:
+    - person
+    - worker
+    - steam
+    - smoke
+    - leak
+    - rotating machinery
+    - turbine
+  score_threshold: 0.35
+  max_regions_per_prompt: 2
+  max_regions_total: 8
+  save_masks: true
+  output_dir: data/sam3_masks
+
 tts:
   enabled: true
   # 日本語女性ナレーターボイス

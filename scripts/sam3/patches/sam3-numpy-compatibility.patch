@@ -1,0 +1,13 @@
+diff --git a/external/sam3/pyproject.toml b/external/sam3/pyproject.toml
+index dummy..dummy 100644
+--- a/external/sam3/pyproject.toml
++++ b/external/sam3/pyproject.toml
+@@ -27,7 +27,7 @@ classifiers = [
+ ]
+ dependencies = [
+     "timm>=1.0.17",
+-    "numpy>=1.26,<2",
++    "numpy>=1.26",
+     "tqdm",
+     "ftfy==6.1.1",
+     "regex",
