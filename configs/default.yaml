@@ -1,139 +1,99 @@
-# Safety View Agent - Default Configuration
-
-# Agent parameters
 agent:
-  max_steps: -1    # -1 = 動画全体を実行、N = 最初のN フレームのみ
-  enable_audio: true           # 音声解析有効化（enable_audio: true でアクティベート）
+  max_steps: -1
+  enable_audio: true
   enable_depth: true
-  enable_infrared: true            # 赤外線画像解析有効化（enable_infrared: true でアクティベート）
-  enable_temporal: true            # 時系列変化検出有効化（前後フレーム比較、enable_temporal: true でアクティベート）
-  context_history_size: 0           # LLM に渡す前回判断の数（0=なし, 1=直近1フレーム, N=直近Nフレーム）
-
-  # フレームスキップ設定（1=毎フレーム実行, N=Nフレームごとに1回実行）
-  # step % n == 0 のフレームで実行。step=0（先頭フレーム）は常に実行。
+  enable_infrared: true
+  enable_temporal: true
+  context_history_size: 0
   audio_every_n_frames: 1
   depth_every_n_frames: 2
   infrared_every_n_frames: 2
   temporal_every_n_frames: 1
-  belief_every_n_frames: 2   # update_belief_state_llm の実行間隔
+  belief_every_n_frames: 2
   enable_sam3: true
   sam3_every_n_frames: 1
-
-# LLM configuration
 llm:
-  # Provider: "vllm" (local) or "openai" (API)
-  provider: "vllm"
-
-  # vLLM settings (local server)
+  provider: vllm
   vllm:
-    base_url: "http://localhost:8000/v1"
-    model: "QuantTrio/Qwen3.5-4B-AWQ"
-    api_key: "EMPTY"
+    base_url: http://localhost:8000/v1
+    model: QuantTrio/Qwen3.5-4B-AWQ
+    api_key: EMPTY
     timeout_s: 60.0
-
-  # OpenAI settings (API)
   openai:
-    base_url: "https://api.openai.com/v1"
-    model: "gpt-5-nano"    # Vision-capable model
-    api_key: null                      # Must be set via OPENAI_API_KEY
+    base_url: https://api.openai.com/v1
+    model: gpt-5-nano
+    api_key: null
     timeout_s: 60.0
-
-# VLM 設定（Vision Language Model）
-# model: null の場合 → llm.openai.model を自動参照（共有設定）
 vlm:
-  provider: "vllm"     # "openai" | "vllm"（ローカル vLLM サーバー）
+  provider: vllm
   openai:
-    base_url: "https://api.openai.com/v1"
-    model: "gpt-5-nano"    # null → llm.openai.model を流用
+    base_url: https://api.openai.com/v1
+    model: gpt-5-nano
     timeout_s: 60.0
   vllm:
-    base_url: "http://localhost:8000/v1"
-    model: "QuantTrio/Qwen3.5-4B-AWQ"
+    base_url: http://localhost:8000/v1
+    model: QuantTrio/Qwen3.5-4B-AWQ
     timeout_s: 60.0
-
-# ALM (Audio-Language Model) 設定
 alm:
-  provider: "vllm"     # "openai" | "vllm"
+  provider: vllm
   openai:
-    base_url: "https://api.openai.com/v1"
-    model: "gpt-5-nano"
+    base_url: https://api.openai.com/v1
+    model: gpt-5-nano
     timeout_s: 60.0
   vllm:
-    base_url: "http://localhost:8002/v1"
-    model: "Qwen/Qwen2.5-Omni-3B"
+    base_url: http://localhost:8002/v1
+    model: Qwen/Qwen2.5-Omni-3B
     timeout_s: 60.0
-
-# Data input mode
 data:
-  mode: "inspesafe"  # "manual" | "inspesafe"
-
-  # manual モード: data/videos/ の動画を使用（デフォルト）
-
-  # inspesafe モード: InspecSafe-V1 のセッションを指定
+  mode: inspesafe
   inspesafe:
-    dataset_path: "/home/team-005/data/InspecSafe-V1"
-    session: "train/Other_modalities/58132919535743_20251118_session_1400_2#bowenguanshang-you"
-
-# Video and Audio processing
+    dataset_path: /home/team-005/data/InspecSafe-V1
+    session: test/Other_modalities/58132919742126_20251114_session_0500_1haozhubianAxiangbileiqi
 video:
-  fps: 1.0            # フレーム抽出レート (0.5-2.0 推奨)
-  max_frames: 0       # 最大フレーム数 (0 = 無制限、全フレーム処理用)
-  clear_frames: false # true = 実行前に data/frames/ を削除して再実行
+  fps: 1.0
+  max_frames: 0
+  clear_frames: false
   formats:
-    extensions: [".mp4", ".avi", ".mov", ".mkv", ".webm"]
-    frame_output: "frame_{timestamp}s.jpg"
-
+    extensions:
+    - .mp4
+    - .avi
+    - .mov
+    - .mkv
+    - .webm
+    frame_output: frame_{timestamp}s.jpg
 audio:
-  output_filename: "audio.wav"
+  output_filename: audio.wav
   sample_rate: 16000
   window_seconds: 3.0
   channels: 1
-  codec: "pcm_s16le"
-
-# LLM トークン設定
+  codec: pcm_s16le
 tokens:
-  vision_max_completion_tokens: 4098  # Vision API: 16k コンテキスト対応
-  chat_max_tokens: 4098               # テキスト生成用: 詳細な構造化出力対応
-
-# Thresholds
+  vision_max_completion_tokens: 4098
+  chat_max_tokens: 4098
 thresholds:
-  risk_stop_threshold: 0.2      # Stop if max unobserved risk <= this
-  hazard_focus_threshold: 0.6   # Enforce high-risk unobserved coverage
-
-# TTS ナレーション設定（Kokoro TTS）
-# assessment.safety_status の内容をフレームごとに音声ファイルへ変換する
+  risk_stop_threshold: 0.2
+  hazard_focus_threshold: 0.6
 sam3:
   enabled: true
   mode: image
-  checkpoint_path: /home/team-005/.cache/huggingface/hub/models--1038lab--sam3/snapshots/f055b060a4de0a040891ba2ebac9c5cb3c1c0132/sam3.pt   # null = HF Hub (facebook/sam3) から自動DL。ローカルパスも可
+  checkpoint_path: /home/team-005/.cache/huggingface/hub/models--1038lab--sam3/snapshots/f055b060a4de0a040891ba2ebac9c5cb3c1c0132/sam3.pt
   prompts:
-    - person
-    - worker
-    - steam
-    - smoke
-    - leak
-    - rotating machinery
-    - turbine
+  - person
+  - worker
+  - steam
+  - smoke
+  - leak
+  - rotating machinery
+  - turbine
   score_threshold: 0.35
   max_regions_per_prompt: 2
   max_regions_total: 8
   save_masks: true
   output_dir: data/sam3_masks
-
 tts:
   enabled: true
-  # 日本語女性ナレーターボイス
-  #   jf_alpha      : クリアで汎用的な女性声（推奨）
-  #   jf_gongitsune : やや柔らかい女性声
-  #   jf_nezumi     : 落ち着いた女性声
-  #   jf_tebukuro   : 明るい女性声
-  voice: "jf_alpha"
-  # 読み上げ速度倍率（0.5=2倍遅い / 1.0=標準 / 1.5=1.5倍速い）
+  voice: jf_alpha
   speed: 1.0
-  # 言語コード（j=日本語, a=英語US, b=英語UK, z=中国語, など）
-  lang_code: "j"
-  # 出力先ディレクトリ（フレームIDをベース名にした WAV を保存）
-  output_dir: "data/voice"
-  # 推論デバイス（null=自動判定/CUDA優先, "cuda", "cpu"）
-  # "cuda" 固定は CUDA 非搭載環境でクラッシュするため null 推奨
+  lang_code: j
+  output_dir: data/voice
   device: null
