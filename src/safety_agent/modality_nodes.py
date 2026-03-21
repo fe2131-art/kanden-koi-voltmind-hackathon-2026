@@ -1048,8 +1048,8 @@ class Sam3Analyzer:
                     try:
                         # プロンプト切り替え前に前回の言語特徴・geometric_prompt をリセット
                         self._processor.reset_all_prompts(state)
-                        # confidence_threshold をプロンプトごとに適用
-                        self._processor.confidence_threshold = score_threshold
+                        # SAM3 内部 threshold は 0.0（全検出を返させる）→ 外部フィルタで制御
+                        self._processor.confidence_threshold = 0.0
                         state = self._processor.set_text_prompt(
                             state=state, prompt=prompt
                         )

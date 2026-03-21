@@ -109,12 +109,17 @@ sam3:
   prompts:
     - person
     - worker
-    - tool
-    - cable on floor
-    - ladder
-    - wet floor
-    - electrical equipment
-  score_threshold: 0.35
+    - pipe
+    - valve
+    - flange
+    - steam
+    - smoke
+    - turbine
+    - fan
+    - rust
+    - leak
+    - rotating machinery
+  score_threshold: 0.15
   max_regions_per_prompt: 3
   save_masks: true
   output_dir: data/sam3_masks
