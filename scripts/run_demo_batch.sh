@@ -7,7 +7,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 CONFIG_FILE="$REPO_ROOT/configs/default.yaml"
-CONFIG_BAK="$REPO_ROOT/configs/default.yaml.bak"
+CONFIG_BAK="/tmp/safety_agent_config_backup.yaml"
 RESULTS_DIR="/home/team-005/data/output"
 VIDEOS_DIR="$REPO_ROOT/data/videos"
 DATASET_PATH="/home/team-005/data/InspecSafe-V1"
