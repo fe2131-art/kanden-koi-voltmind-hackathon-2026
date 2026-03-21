@@ -44,7 +44,7 @@ generation:
   # 20-30: fast, acceptable quality
   # 40-50: good quality
   # 60+: very high quality (slower)
-  num_inference_steps: 40
+  num_inference_steps: 60
 
   # Classifier-free guidance scale (affects text adherence)
   # 1.0: no guidance (may be incoherent)
@@ -68,35 +68,80 @@ prompts:
   # Helps exclude unwanted artifacts/qualities
   negative_prompt: >-
     worst quality, inconsistent motion, blurry, jittery, distorted,
-    watermark, text, logo, low resolution, unrealistic, deformed
+    watermark, text overlay, logo, low resolution, unrealistic, deformed,
+    user interface, HUD, heads-up display, bounding box, segmentation overlay,
+    AR overlay, annotation, label, subtitle, caption, sci-fi interface,
+    futuristic UI, cinematic title card, graphic overlay, heatmap,
+    telemetry display, first person shooter game, video game style
 
   # List of generation jobs; each becomes one or more output videos
+  #
+  # シーン設計（危険バリエーション3種）:
+  #   blind_spot_forklift    : 死角からのフォークリフト突然進入
+  #   danger_zone_proximity  : 作業員が回転機械に身を乗り出す
+  #   welding_sparks_hazard  : 溶接火花方向へ無防備な作業員が歩く
   items:
-    - id: "factory_floor_normal"
+    - id: "blind_spot_forklift"
+      # 日本語メモ:
+      #   工場通路を自律移動ロボット一人称視点で前進。前方交差点の死角から
+      #   フォークリフトが無警戒に進入。右壁パネルを向いた作業員は気づいていない。
+      #   左壁沿いに不安定なパレット。車輪由来の微細な揺れ。UIなし・ラベルなし。
       prompt: >-
-        A factory floor with workers wearing safety helmets and high-visibility
-        vests, machinery operating smoothly, bright overhead lighting,
-        cinematic wide shot, photorealistic, 4K.
-      # Per-prompt overrides (optional; leave empty {} for defaults)
-      overrides: {}
-
-    - id: "hazard_detection_scenario"
-      prompt: >-
-        Industrial plant corridor with steam pipes overhead, warning signs
-        visible, a worker in safety gear inspecting equipment with a flashlight,
-        safety-critical environment, detailed textures, photorealistic.
+        First-person view from an autonomous factory patrol robot camera mounted at head
+        height approximately 1.2 meters above the ground, slowly moving forward through an
+        industrial factory corridor. Concrete floor with yellow safety line markings, overhead
+        fluorescent tube lighting, metal overhead pipes visible. A forklift enters from around
+        a blind corner intersection ahead without any warning signal, emerging from behind
+        large metal shelving units stacked to the ceiling. A worker in a high-visibility yellow
+        vest and hard hat stands facing away from the approaching forklift, inspecting a control
+        panel on the right wall, unaware of the danger. Unstable-looking pallets are stacked at
+        an angle along the left wall. Subtle camera vibration from robot wheel movement. No
+        overlays, no UI elements, no text annotations, no bounding boxes, no HUD, raw factory
+        patrol footage.
       overrides:
         guidance_scale: 4.0
+        seed: 42
 
-    - id: "overhead_crane_operation"
+    - id: "floor_hazard_clutter"
+      # 日本語メモ:
+      #   工場通路をロボット一人称視点で前進。床に工具・電気ケーブル・ホースが散乱し
+      #   転倒・つまずきの危険がある。通路を横断する作業員が足元を見ておらず
+      #   散乱物に気づいていない。奥でコンベア作業中の別作業員。UIなし・ラベルなし。
       prompt: >-
-        Overhead crane moving a heavy metallic load in a large warehouse,
-        multiple workers maintaining safe distances below, all wearing hard hats
-        and reflective safety vests, dynamic motion, aerial perspective,
-        cinematic lighting.
+        First-person view from an autonomous factory patrol robot camera at head height slowly
+        moving through an industrial factory corridor. Concrete floor with scattered hand tools,
+        a coiled electrical cable, and a hydraulic hose lying across the patrol path, creating
+        tripping hazards in the walkway. A worker in a hard hat and high-visibility vest is
+        crossing the corridor from left to right, not looking down at the cluttered floor,
+        about to step over the cable without noticing it. In the background another worker is
+        loading boxes onto a conveyor belt. Overhead fluorescent lighting, metal shelving units
+        along the right wall, oil stains on the floor. Raw unprocessed camera footage with
+        slight mechanical camera shake from wheel movement. No annotations, no overlays, no
+        interface elements, no text labels, no HUD.
       overrides:
-        num_frames: 81
-        seed: 100
+        guidance_scale: 4.0
+        seed: 77
+
+    - id: "welding_sparks_hazard"
+      # 日本語メモ:
+      #   やや暗い通路を自律移動ロボット一人称視点で溶接エリアへ前進。前方10mに
+      #   オレンジ・黄色の溶接火花が散る。溶接面シールドなしの作業員が火花源へ歩く。
+      #   床に電気ケーブル・金属パイプ横断。天井に露出配管。UIなし・ラベルなし。
+      prompt: >-
+        First-person view from an autonomous factory patrol robot camera mounted at head height
+        slowly advancing down a dimly lit factory corridor toward a welding bay area. Bright
+        orange and yellow welding sparks are clearly visible scattering from an active welding
+        station approximately 10 meters ahead, high contrast illumination against the dark metal
+        walls. A worker without a welding face shield, wearing only a regular hard hat and
+        high-visibility vest, is walking toward the welding spark source from the side without
+        protective eyewear. Electrical cables and a metal pipe lying across the floor of the
+        corridor. Exposed conduits and pipes on the ceiling. Dark industrial atmosphere with
+        dramatic welding spark light. Raw documentary-style patrol robot footage with subtle
+        camera vibration from wheel movement. No text overlays, no interface elements, no
+        visual annotations, no HUD.
+      overrides:
+        guidance_scale: 3.5
+        seed: 123
 
 # ─── Output Settings ───────────────────────────────────────────────
 output:
