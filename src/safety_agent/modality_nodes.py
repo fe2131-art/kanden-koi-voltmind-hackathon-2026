@@ -1039,6 +1039,8 @@ class Sam3Analyzer:
             image = Image.open(image_path).convert("RGB")
             width, height = image.size
             output_path = Path(output_dir)
+            if save_masks:
+                output_path.mkdir(parents=True, exist_ok=True)
 
             with self._lock:
                 state = self._processor.set_image(image)
@@ -1101,6 +1103,11 @@ class Sam3Analyzer:
 
                         # mask PNG 保存
                         mask_path: Optional[str] = None
+                        logger.debug(
+                            f"Sam3Analyzer: save_masks={save_masks} "
+                            f"masks_np.shape={masks_np.shape} idx={idx} "
+                            f"output_path={output_path.resolve()}"
+                        )
                         if save_masks and len(masks_np) > idx:
                             try:
                                 mask_filename = (
@@ -1116,10 +1123,10 @@ class Sam3Analyzer:
                                     mask_arr = (mask_arr > 0.5).astype(np.uint8) * 255
                                 Image.fromarray(mask_arr).save(str(mask_file))
                                 mask_path = str(mask_file)
-                            except Exception as e:
-                                logger.warning(
+                            except Exception:
+                                logger.exception(
                                     f"Sam3Analyzer: mask save failed for "
-                                    f"{frame_id}/{prompt_safe}/{idx}: {e}"
+                                    f"{frame_id}/{prompt_safe}/{idx}"
                                 )
 
                         regions.append(
