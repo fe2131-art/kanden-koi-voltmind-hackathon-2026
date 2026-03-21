@@ -36,15 +36,13 @@ class TTSNarrator:
         self.output_dir: Path = Path(tts_cfg.get("output_dir", "data/voice"))
         self.lang_code: str = tts_cfg.get("lang_code", "j")
         self.device: Optional[str] = tts_cfg.get("device", None)
-        self._pipeline: Optional[Any] = (
-            None  # 遅延初期化（最初の generate() 呼び出し時にロード）
-        )
+        self._pipeline: Optional[Any] = None
         if self.enabled:
-            logger.info(
-                f"TTSNarrator: 初期化完了 (voice={self.voice}, speed={self.speed},"
-                f" lang={self.lang_code}, device={self.device or 'auto'},"
-                f" output={self.output_dir})"
-            )
+            try:
+                self._ensure_pipeline()
+            except Exception as e:
+                logger.error(f"TTSNarrator: 起動時初期化失敗のため TTS を無効化: {e}")
+                self.enabled = False
         else:
             logger.info("TTSNarrator: TTS 無効 (tts.enabled=false)")
 
