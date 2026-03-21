@@ -105,7 +105,7 @@ thresholds:
 sam3:
   enabled: true
   mode: image
-  checkpoint: "facebook/sam3-hiera-large"
+  checkpoint_path: null   # null = HF Hub (facebook/sam3) から自動DL。ローカルパスも可
   prompts:
     - person
     - worker

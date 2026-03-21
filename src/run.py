@@ -1210,9 +1210,7 @@ def main():
             }
             sam3_analyzer = Sam3Analyzer(
                 model_cfg={
-                    "checkpoint": sam3_cfg.get(
-                        "checkpoint", "facebook/sam3-hiera-large"
-                    )
+                    "checkpoint_path": sam3_cfg.get("checkpoint_path", None),
                 }
             )
             if not sam3_analyzer.available:

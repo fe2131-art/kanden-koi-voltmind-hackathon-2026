@@ -985,13 +985,23 @@ class Sam3Analyzer:
         self._device = device or ("cuda" if torch.cuda.is_available() else "cpu")
 
         try:
-            from sam3 import Sam3Processor, build_sam3_image_model  # noqa: PLC0415
+            from sam3 import build_sam3_image_model  # noqa: PLC0415
+            from sam3.model.sam3_image_processor import Sam3Processor  # noqa: PLC0415
 
-            checkpoint = model_cfg.get("checkpoint", "facebook/sam3-hiera-large")
-            self._model = build_sam3_image_model(checkpoint).to(self._device).eval()
-            self._processor = Sam3Processor.from_pretrained(checkpoint)
+            # checkpoint_path が指定されていれば local ファイルを使用。
+            # 未指定 (None) の場合は load_from_HF=True で HF Hub から自動ダウンロード。
+            checkpoint_path = model_cfg.get("checkpoint_path", None)
+            self._model = build_sam3_image_model(
+                device=self._device,
+                checkpoint_path=checkpoint_path,
+                load_from_HF=(checkpoint_path is None),
+            )
+            self._processor = Sam3Processor(model=self._model, device=self._device)
             self.available = True
-            logger.info(f"Sam3Analyzer initialized on {self._device} ({checkpoint})")
+            logger.info(
+                f"Sam3Analyzer initialized on {self._device} "
+                f"(checkpoint_path={checkpoint_path or 'HF Hub'})"
+            )
         except Exception as e:
             logger.warning(f"Sam3Analyzer: model load failed, SAM3 disabled: {e}")
 
@@ -1031,15 +1041,19 @@ class Sam3Analyzer:
             output_path = Path(output_dir)
 
             with self._lock:
+                state = self._processor.set_image(image)
                 for prompt in prompts:
                     try:
-                        state = self._processor.init_state(image=image)
-                        output = self._processor.set_text_prompt(
+                        # プロンプト切り替え前に前回の言語特徴・geometric_prompt をリセット
+                        self._processor.reset_all_prompts(state)
+                        # confidence_threshold をプロンプトごとに適用
+                        self._processor.confidence_threshold = score_threshold
+                        state = self._processor.set_text_prompt(
                             state=state, prompt=prompt
                         )
-                        masks = output["masks"]  # [N, H, W]
-                        boxes = output["boxes"]  # [N, 4] xyxy 絶対座標
-                        scores = output["scores"]  # [N]
+                        masks = state["masks"]  # [N, 1, H, W] bool
+                        boxes = state["boxes"]  # [N, 4] xyxy 絶対座標
+                        scores = state["scores"]  # [N]
                     except Exception as e:
                         logger.warning(f"Sam3Analyzer: prompt '{prompt}' failed: {e}")
                         continue
@@ -1094,6 +1108,9 @@ class Sam3Analyzer:
                                 )
                                 mask_file = output_path / mask_filename
                                 mask_arr = masks_np[idx]
+                                # masks shape は (1, H, W) — チャンネル次元を除去
+                                if mask_arr.ndim == 3 and mask_arr.shape[0] == 1:
+                                    mask_arr = mask_arr[0]
                                 # bool/float → uint8
                                 if mask_arr.dtype != np.uint8:
                                     mask_arr = (mask_arr > 0.5).astype(np.uint8) * 255
