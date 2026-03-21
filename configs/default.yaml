@@ -119,8 +119,9 @@ sam3:
     - rust
     - leak
     - rotating machinery
-  score_threshold: 0.15
-  max_regions_per_prompt: 3
+  score_threshold: 0.35
+  max_regions_per_prompt: 2
+  max_regions_total: 8
   save_masks: true
   output_dir: data/sam3_masks
 

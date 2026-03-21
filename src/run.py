@@ -1204,7 +1204,8 @@ def main():
             sam3_prompts = sam3_cfg.get("prompts", ["person", "worker", "tool"])
             sam3_config = {
                 "score_threshold": sam3_cfg.get("score_threshold", 0.35),
-                "max_regions_per_prompt": sam3_cfg.get("max_regions_per_prompt", 3),
+                "max_regions_per_prompt": sam3_cfg.get("max_regions_per_prompt", 2),
+                "max_regions_total": sam3_cfg.get("max_regions_total", 8),
                 "save_masks": sam3_cfg.get("save_masks", True),
                 "output_dir": sam3_cfg.get("output_dir", "data/sam3_masks"),
             }

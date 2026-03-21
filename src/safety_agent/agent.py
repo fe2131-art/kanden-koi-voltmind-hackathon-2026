@@ -832,7 +832,8 @@ def sam3_node(state: AgentState, runtime: Runtime[ContextSchema]) -> Command:
                 frame_id=obs.obs_id,
                 prompts=sam3_prompts,
                 score_threshold=sam3_config.get("score_threshold", 0.35),
-                max_regions_per_prompt=sam3_config.get("max_regions_per_prompt", 3),
+                max_regions_per_prompt=sam3_config.get("max_regions_per_prompt", 2),
+                max_regions_total=sam3_config.get("max_regions_total", 8),
                 save_masks=sam3_config.get("save_masks", True),
                 output_dir=sam3_config.get("output_dir", "data/sam3_masks"),
             )
@@ -842,12 +843,6 @@ def sam3_node(state: AgentState, runtime: Runtime[ContextSchema]) -> Command:
         error = "sam3: analyzer not available"
 
     n_regions = len(sam3_analysis.regions) if sam3_analysis else 0
-    logger.info(
-        f"[sam3_node] available={sam3_analyzer.available if sam3_analyzer else False} "
-        f"regions={n_regions} error={error} "
-        f"save_masks={sam3_config.get('save_masks')} "
-        f"output_dir={sam3_config.get('output_dir')}"
-    )
     result = ModalityResult(
         modality_name="sam3",
         extra={"sam3_analysis": sam3_analysis},

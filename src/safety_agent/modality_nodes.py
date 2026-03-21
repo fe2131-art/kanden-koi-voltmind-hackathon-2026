@@ -1011,7 +1011,8 @@ class Sam3Analyzer:
         frame_id: str,
         prompts: list[str],
         score_threshold: float = 0.35,
-        max_regions_per_prompt: int = 3,
+        max_regions_per_prompt: int = 2,
+        max_regions_total: int = 8,
         save_masks: bool = True,
         output_dir: str = "data/sam3_masks",
     ) -> Sam3AnalysisResult:
@@ -1033,6 +1034,8 @@ class Sam3Analyzer:
             return Sam3AnalysisResult()
 
         regions: list[Sam3Region] = []
+        # 可視化用データ: (mask_arr_hw, label, score, box_xyxy_abs)
+        viz_items: list[tuple[np.ndarray, str, float, Optional[np.ndarray]]] = []
         global_idx = 0
 
         try:
@@ -1075,11 +1078,6 @@ class Sam3Analyzer:
                         masks_np = np.array(masks)
 
                     # スコアフィルタ → 降順ソート → 上位 N 件に絞る
-                    logger.info(
-                        f"Sam3Analyzer: prompt='{prompt}' "
-                        f"raw_scores={scores_np.tolist()[:5]} "
-                        f"threshold={score_threshold}"
-                    )
                     valid_indices = np.where(scores_np >= score_threshold)[0]
                     if len(valid_indices) == 0:
                         continue
@@ -1091,11 +1089,14 @@ class Sam3Analyzer:
                     prompt_safe = re.sub(r"[^a-zA-Z0-9_-]", "_", prompt)
 
                     for idx in sorted_indices:
+                        if global_idx >= max_regions_total:
+                            break
                         region_id = f"sam3_{frame_id}_{global_idx:03d}"
                         score = float(scores_np[idx])
 
                         # bbox 正規化 (xyxy → 0-1)
                         bbox: Optional[NormalizedBBox] = None
+                        box_abs: Optional[np.ndarray] = None
                         if len(boxes_np) > idx:
                             box = boxes_np[idx]
                             if len(box) >= 4:
@@ -1105,34 +1106,34 @@ class Sam3Analyzer:
                                     x_max=max(0.0, min(1.0, float(box[2]) / width)),
                                     y_max=max(0.0, min(1.0, float(box[3]) / height)),
                                 )
+                                box_abs = box[:4].copy()
 
-                        # mask PNG 保存
+                        # mask 取り出し・正規化
                         mask_path: Optional[str] = None
-                        logger.info(
-                            f"Sam3Analyzer: save_masks={save_masks} "
-                            f"masks_np.shape={masks_np.shape} idx={idx} "
-                            f"output_path={output_path.resolve()}"
-                        )
-                        if save_masks and len(masks_np) > idx:
-                            try:
-                                mask_filename = (
-                                    f"{frame_id}_region_{global_idx:03d}.png"
-                                )
-                                mask_file = output_path / mask_filename
-                                mask_arr = masks_np[idx]
-                                # masks shape は (1, H, W) — チャンネル次元を除去
-                                if mask_arr.ndim == 3 and mask_arr.shape[0] == 1:
-                                    mask_arr = mask_arr[0]
-                                # bool/float → uint8
-                                if mask_arr.dtype != np.uint8:
-                                    mask_arr = (mask_arr > 0.5).astype(np.uint8) * 255
-                                Image.fromarray(mask_arr).save(str(mask_file))
-                                mask_path = str(mask_file)
-                            except Exception:
-                                logger.exception(
-                                    f"Sam3Analyzer: mask save failed for "
-                                    f"{frame_id}/{prompt_safe}/{idx}"
-                                )
+                        if len(masks_np) > idx:
+                            mask_arr = masks_np[idx]
+                            if mask_arr.ndim == 3 and mask_arr.shape[0] == 1:
+                                mask_arr = mask_arr[0]
+                            mask_hw = (mask_arr > 0.5)
+
+                            # 個別 PNG 保存
+                            if save_masks:
+                                try:
+                                    mask_filename = (
+                                        f"{frame_id}_region_{global_idx:03d}.png"
+                                    )
+                                    mask_file = output_path / mask_filename
+                                    Image.fromarray(
+                                        mask_hw.astype(np.uint8) * 255
+                                    ).save(str(mask_file))
+                                    mask_path = str(mask_file)
+                                except Exception:
+                                    logger.exception(
+                                        f"Sam3Analyzer: mask save failed for "
+                                        f"{frame_id}/{prompt_safe}/{idx}"
+                                    )
+
+                            viz_items.append((mask_hw, prompt, score, box_abs))
 
                         regions.append(
                             Sam3Region(
@@ -1146,6 +1147,12 @@ class Sam3Analyzer:
                         )
                         global_idx += 1
 
+            # カラーオーバーレイ可視化画像を生成
+            if save_masks and regions:
+                self._save_visualization(
+                    image, viz_items, output_path, frame_id
+                )
+
         except Exception as e:
             logger.warning(f"Sam3Analyzer.analyze() failed for {frame_id}: {e}")
             return Sam3AnalysisResult()
@@ -1154,3 +1161,73 @@ class Sam3Analyzer:
             float(np.mean([r.score for r in regions])) if regions else 0.0
         )
         return Sam3AnalysisResult(regions=regions, confidence_score=confidence_score)
+
+    def _save_visualization(
+        self,
+        image: Image.Image,
+        viz_items: list[tuple[np.ndarray, str, float, Optional[np.ndarray]]],
+        output_path: Path,
+        frame_id: str,
+    ) -> None:
+        """全 region のカラーオーバーレイ可視化画像を保存する。
+
+        matplotlib Agg バックエンドを使いヘッドレスで描画。
+        各 region を異なる色で半透明オーバーレイし、bbox・ラベル・スコアを描画。
+        """
+        try:
+            import matplotlib
+            matplotlib.use("Agg")
+            import matplotlib.patches as mpatches
+            import matplotlib.pyplot as plt
+
+            width, height = image.size
+            fig, ax = plt.subplots(1, 1, figsize=(width / 100, height / 100), dpi=100)
+            fig.patch.set_facecolor("black")
+            fig.subplots_adjust(left=0, right=1, top=1, bottom=0)
+            ax.set_position((0, 0, 1, 1))
+            ax.imshow(np.array(image))
+            ax.axis("off")
+
+            cmap = plt.get_cmap("tab20")
+
+            for i, (mask_hw, label, score, box_abs) in enumerate(viz_items):
+                color = cmap(i % 20)[:3]  # RGB tuple
+
+                # 半透明カラーマスクオーバーレイ
+                overlay = np.zeros((height, width, 4), dtype=np.float32)
+                overlay[mask_hw, :3] = color
+                overlay[mask_hw, 3] = 0.45
+                ax.imshow(overlay)
+
+                # bbox 描画
+                if box_abs is not None:
+                    x1, y1, x2, y2 = box_abs
+                    rect = mpatches.Rectangle(
+                        (x1, y1), x2 - x1, y2 - y1,
+                        linewidth=2,
+                        edgecolor=color,
+                        facecolor="none",
+                    )
+                    ax.add_patch(rect)
+                    # ラベル + スコア
+                    ax.text(
+                        x1, max(y1 - 4, 0),
+                        f"{label} {score:.2f}",
+                        color="white",
+                        fontsize=9,
+                        fontweight="bold",
+                        bbox=dict(facecolor=color, alpha=0.75, pad=2, edgecolor="none"),
+                    )
+
+            viz_file = output_path / f"{frame_id}_viz.jpg"
+            fig.savefig(
+                str(viz_file),
+                dpi=100,
+                bbox_inches=None,
+                pad_inches=0,
+                pil_kwargs={"quality": 90},
+            )
+            plt.close(fig)
+            logger.info(f"Sam3Analyzer: visualization saved → {viz_file}")
+        except Exception:
+            logger.exception(f"Sam3Analyzer: visualization failed for {frame_id}")
