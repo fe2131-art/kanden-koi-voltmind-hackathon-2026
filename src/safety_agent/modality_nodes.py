@@ -1075,6 +1075,11 @@ class Sam3Analyzer:
                         masks_np = np.array(masks)
 
                     # スコアフィルタ → 降順ソート → 上位 N 件に絞る
+                    logger.info(
+                        f"Sam3Analyzer: prompt='{prompt}' "
+                        f"raw_scores={scores_np.tolist()[:5]} "
+                        f"threshold={score_threshold}"
+                    )
                     valid_indices = np.where(scores_np >= score_threshold)[0]
                     if len(valid_indices) == 0:
                         continue
