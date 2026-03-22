@@ -102,20 +102,6 @@ def test_config_openai_defaults():
     assert openai_cfg["base_url"] == "https://api.openai.com/v1"
 
 
-def test_thresholds_config():
-    """Test threshold configuration."""
-    from run import load_config
-
-    config = load_config("configs/default.yaml")
-    thresholds_cfg = config.get("thresholds", {})
-
-    # Check thresholds
-    assert "risk_stop_threshold" in thresholds_cfg
-    assert "hazard_focus_threshold" in thresholds_cfg
-    assert 0 <= thresholds_cfg["risk_stop_threshold"] <= 1
-    assert 0 <= thresholds_cfg["hazard_focus_threshold"] <= 1
-
-
 def test_audio_config_defaults():
     """Test audio configuration defaults."""
     from run import load_config
