@@ -123,11 +123,16 @@ async def monitor_and_stream(websocket):
                                     if frame_idx < len(rgb_files):
                                         rgb_frame_name = rgb_files[frame_idx].name
 
-                            # 深度画像と音声ファイルを検出
+                            # 深度画像・赤外線画像・音声ファイルを検出
+                            infrared_image_path = None
                             if rgb_frame_name:
                                 potential_depth = OUTPUT_DIR / "depth" / rgb_frame_name
                                 if potential_depth.exists():
                                     depth_image_path = f"/depth/{rgb_frame_name}"
+
+                                potential_infrared = OUTPUT_DIR / "infrared_frames" / rgb_frame_name
+                                if potential_infrared.exists():
+                                    infrared_image_path = f"/infrared_frames/{rgb_frame_name}"
 
                                 stem = Path(rgb_frame_name).stem
                                 for ext in (".wav", ".mp3"):
@@ -151,7 +156,9 @@ async def monitor_and_stream(websocket):
                                 "scene_description": vision_analysis.get(
                                     "scene_description", ""
                                 ),
+                                "audio_cues": result.get("audio", []),
                                 "depth_image_path": depth_image_path,
+                                "infrared_image_path": infrared_image_path,
                                 "voice_path": voice_path,
                             }
 
@@ -170,7 +177,7 @@ async def monitor_and_stream(websocket):
 
 
 async def main():
-    async with websockets.serve(monitor_and_stream, "0.0.0.0", 8001):
+    async with websockets.serve(monitor_and_stream, "127.0.0.1", 8001):
         logger.info("ws server: ws://localhost:8001")
         logger.info(f"monitoring: {MANIFEST_PATH}")
         await asyncio.Future()  # run forever

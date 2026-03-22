@@ -831,6 +831,34 @@ def prepare_observations_inspesafe(
     else:
         logger.warning(f"[inspesafe] 音声ファイルなし: {session_dir}")
 
+    # フロントエンド用に音声付き動画を data/videos/video.mp4 へ出力
+    videos_out_dir = Path("data/videos")
+    videos_out_dir.mkdir(parents=True, exist_ok=True)
+    demo_video_path = videos_out_dir / "video.mp4"
+    try:
+        if audio_files:
+            # 映像 + 音声をmux（映像はコピー、音声はAAC変換）
+            subprocess.run(
+                [
+                    "ffmpeg", "-y",
+                    "-i", str(video_path),
+                    "-i", str(audio_files[0]),
+                    "-c:v", "copy",
+                    "-c:a", "aac",
+                    "-shortest",
+                    str(demo_video_path),
+                ],
+                check=True,
+                capture_output=True,
+            )
+            logger.info(f"[inspesafe] デモ用動画 (映像+音声): {demo_video_path}")
+        else:
+            shutil.copy2(str(video_path), str(demo_video_path))
+            logger.info(f"[inspesafe] デモ用動画 (映像のみ): {demo_video_path}")
+    except (subprocess.CalledProcessError, FileNotFoundError) as e:
+        logger.warning(f"[inspesafe] デモ用動画の生成失敗、直接コピー: {e}")
+        shutil.copy2(str(video_path), str(demo_video_path))
+
     # フレーム展開（既存の split_video_to_frames を再利用）
     frames, video_timestamps = split_video_to_frames(
         video_path=str(video_path),

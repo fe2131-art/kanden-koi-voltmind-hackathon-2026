@@ -267,10 +267,35 @@ server.py が送信する JSON の構造です。
 
 | フィールド | 値の例 |
 |-----------|-------|
-| `risk_level` | `"low"` / `"medium"` / `"high"` |
+| `risk_level` | `"low"` / `"medium"` / `"high"` / `"critical"` |
 | `action_type` | `"monitor"` / `"inspect_region"` / `"mitigate"` / `"emergency_stop"` |
 | `temporal_status` | `"new"` / `"persistent"` / `"worsening"` / `"improving"` / `"resolved"` / `"unknown"` |
 | `priority` | 0.0 〜 1.0 |
+| `confidence_score` | 0.0 〜 1.0 |
+
+#### action_type の意味
+
+LLMが判断した「次に取るべき行動」です。`configs/prompt.yaml` で4択に制約することで出力の一貫性を保っています。
+
+| 値 | 意味 | 想定リスクレベル |
+|---|------|----------------|
+| `emergency_stop` | **緊急停止** — 即座に作業・機械を止める必要がある重大な危険を検出 | critical / high |
+| `inspect_region` | **現場確認** — 特定の領域を目視・物理的に詳しく確認すべき状況 | high / medium |
+| `mitigate` | **リスク軽減** — 停止はしないが、対策（立入禁止・警告など）が必要 | medium |
+| `monitor` | **継続監視** — 現時点で行動は不要だが、引き続き注意して観察する | low / medium |
+
+#### temporal_status の意味
+
+ハザードの**時間的な変化状態**を表します。LLM は `belief_state`（前フレームまでの世界モデル）を参照してこの値を決定します。`persistent` は「危険が長時間続いている」ことを示し、`new` より優先度を上げる判断根拠になります。
+
+| 値 | 意味 |
+|---|------|
+| `new` | **新規検出** — 今回初めて現れたハザード |
+| `persistent` | **継続中** — 前回からずっと存在し続けているハザード |
+| `worsening` | **悪化中** — 前回より状況が悪くなっている |
+| `improving` | **改善中** — 前回より状況が良くなっている |
+| `resolved` | **解消** — 以前あったハザードが消えた |
+| `unknown` | **不明** — 判断できない（初回フレームや情報不足など） |
 
 ### critical_points の bbox
 

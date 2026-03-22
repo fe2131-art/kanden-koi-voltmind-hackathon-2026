@@ -326,6 +326,7 @@ safety_assessment:
     - emergency_stop は worsening または即時危険が明確な場合に限る
     - persistent high risk のみでは emergency_stop にしない。mitigate または inspect_region を優先する
     - confidence_score は本当に判断不能な場合だけ 0.0 にする。有効な根拠がある場合は最低でも 0.2 以上
+    - SAM3の情報がないといった文言は reason に記載しない。
 
     safety_status のルール:
     - 音声通知向けの短い日本語にする
