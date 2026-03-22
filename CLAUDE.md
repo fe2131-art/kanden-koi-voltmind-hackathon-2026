@@ -1,4 +1,12 @@
 # Safety View Agent - Project Guide
+## License
+The original source code, documentation, and configuration files in this
+repository are licensed under Apache License 2.0. See `LICENSE` and `NOTICE`
+for the exact terms and attribution notes.
+
+Third-party models, checkpoints, datasets, and external repositories are not
+relicensed by this repository. Use them under their original licenses and
+terms.
 
 このファイルは、Safety View Agent の現在の実装に合わせた高信号ガイドです。
 詳細な手順は `docs/` に分離し、ここでは構成・前提・重要コマンド・ハマりどころだけをまとめます。

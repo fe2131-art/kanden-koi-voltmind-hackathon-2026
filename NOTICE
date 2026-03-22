@@ -1,0 +1,23 @@
+Safety View Agent
+Copyright 2026 fe2131-art, Tanaka0912, and HnToMo
+
+The original source code, documentation, and configuration files in the
+kanden-koi-voltmind-hackathon-2026 repository are distributed under the
+Apache License, Version 2.0.
+
+Additional notices:
+
+- Third-party models, checkpoints, datasets, and external repositories are not
+  automatically relicensed under Apache-2.0 by this repository.
+- Use of third-party models, checkpoints, datasets, and external repositories
+  remains subject to their respective licenses, terms of use, acceptable use
+  policies, and any model or dataset card restrictions.
+- This includes, for example, externally obtained model families and assets
+  referenced by this project such as Qwen, SAM3, Depth-Anything-3,
+  vLLM-Omni, Kokoro TTS, and InspecSafe-V1.
+- You are responsible for separately reviewing and complying with the upstream
+  terms that apply to any model weights, datasets, checkpoints, or external
+  code that you download, install, fine-tune, redistribute, or serve.
+
+Trademarks and product names mentioned in this repository belong to their
+respective owners and are used only to describe compatibility or provenance.
