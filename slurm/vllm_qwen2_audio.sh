@@ -54,7 +54,7 @@ mkdir -p "$UV_CACHE_DIR" "$HF_HOME"
 # 依存を揃える
 uv sync --frozen || uv sync
 
-MODEL="Qwen/Qwen2.5-Omni-3B" #"Qwen/Qwen2.5-Omni-7B"
+MODEL="Qwen/Qwen2.5-Omni-3B" #"Qwen/Qwen2.5-Omni-7B" "Qwen/Qwen2.5-Omni-7B-AWQ" "Qwen/Qwen2.5-Omni-3B"
 PORT=8002
 
 echo
@@ -65,7 +65,7 @@ uv run vllm serve "$MODEL" \
   --port "$PORT" \
   --tensor-parallel-size 1 \
   --max-model-len 4096 \
-  --gpu-memory-utilization 0.35 \
+  --gpu-memory-utilization 0.25 \
   --enable-prefix-caching \
   --allowed-local-media-path /home/team-005 \
   --gdn-prefill-backend triton \

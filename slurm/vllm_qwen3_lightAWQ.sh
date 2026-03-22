@@ -54,7 +54,7 @@ mkdir -p "$UV_CACHE_DIR" "$HF_HOME"
 # 依存を揃える
 uv sync --frozen || uv sync
 
-MODEL="QuantTrio/Qwen3.5-4B-AWQ" # QuantTrio/Qwen3.5-4B-AWQ QuantTrio/Qwen3.5-27B-AWQ 16384
+MODEL="QuantTrio/Qwen3.5-9B-AWQ" # QuantTrio/Qwen3.5-4B-AWQ QuantTrio/Qwen3.5-27B-AWQ 16384
 PORT=8000
 
 echo
@@ -66,7 +66,7 @@ uv run vllm serve "$MODEL" \
   --tensor-parallel-size 1 \
   --max-model-len 16384 \
   --quantization awq \
-  --gpu-memory-utilization 0.4 \
+  --gpu-memory-utilization 0.50 \
   --speculative-config '{"method":"mtp","num_speculative_tokens":2}' \
   --default-chat-template-kwargs '{"enable_thinking": false}' \
   --enable-prefix-caching \
