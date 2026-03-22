@@ -1,174 +1,87 @@
-# チームメンバ向けドキュメント
+# Safety View Agent Docs
 
-Safety View Agent のチームメンバ向け完全ガイド
+この `docs/` は、現在の実装に合わせて整理したドキュメント集です。
+セットアップ、実行、UI デモ、InspecSafe 連携、拡張ポイントをここから辿れます。
 
-## 📚 ドキュメント一覧
+## 最初に読む順番
 
-### 1. **[クイックスタート](QUICK_START.md)** - 5分で始める
-新規メンバが最初に読むべきガイド
-- セットアップから実行まで
-- 基本的なコマンド
-- よくある質問（FAQ）
+1. [SETUP.md](./SETUP.md)
+   - 外部依存の clone、patch 適用、`uv sync`、ffmpeg などの前提を確認します
+2. [QUICK_START.md](./QUICK_START.md)
+   - `manual` / `inspesafe`、OpenAI / vLLM / フォールバック実行の最短手順を見ます
+3. [ARCHITECTURE.md](./ARCHITECTURE.md)
+   - LangGraph の fan-out/fan-in、BeliefState、SAM3、出力構造を理解します
 
-**所要時間:** 5-10分
+## ドキュメント一覧
 
-### 2. **[セットアップガイド](SETUP.md)** - 詳細なセットアップ
-環境構築の詳しい説明
-- 前提条件の確認
-- ステップバイステップ手順
-- トラブル対応
+- [SETUP.md](./SETUP.md)
+  - 実行環境の構築、外部依存、SAM3/Depth-Anything-3、環境変数
+- [QUICK_START.md](./QUICK_START.md)
+  - 最短実行手順と結果の見方
+- [ARCHITECTURE.md](./ARCHITECTURE.md)
+  - システム構成、主要ファイル、データフロー、出力構造
+- [DEMO_APP.md](./DEMO_APP.md)
+  - React + WebSocket デモ UI の起動方法と確認ポイント
+- [INSPESAFE_INTEGRATION.md](./INSPESAFE_INTEGRATION.md)
+  - `data.mode: inspesafe` の設定とデータセット構造
+- [EXTENDING.md](./EXTENDING.md)
+  - 新モダリティ追加、prompt/schema 拡張、UI 拡張の入口
+- [TROUBLESHOOTING.md](./TROUBLESHOOTING.md)
+  - `uv sync` 失敗、ffmpeg 不足、vLLM 接続失敗、SAM3 チェックポイント問題など
+- [UV_VENV.md](./UV_VENV.md)
+  - `uv run` と仮想環境の使い分け
+- [../CLAUDE.md](../CLAUDE.md)
+  - AI コーディングツール向けの高信号プロジェクトガイド
 
-**所要時間:** 15-20分
+## 現在の実装前提
 
-### 3. **[アーキテクチャ](ARCHITECTURE.md)** - システム設計
-プロジェクトの内部構造を理解したい場合
-- システム概要図
-- ファイル構成と責任分担
-- 実行フロー（フローチャート付き）
-- LLM 互換性設計
-- 拡張方法
+- `pyproject.toml` は以下の local editable dependency を前提にしています
+  - `external/Depth-Anything-3`
+  - `external/sam3`
+  - `external/vllm-omni`
+- 既定の `configs/default.yaml` は以下を前提にしています
+  - `data.mode: "inspesafe"`
+  - `llm.provider / vlm.provider / alm.provider: "vllm"`
+  - `agent.enable_sam3: true`
+- 初回セットアップなしでそのまま `uv sync` や `uv run python src/run.py` を実行すると、環境によっては失敗します
 
-**所要時間:** 30-45分
+## 代表的な作業パス
 
-### 4. **[デモアプリ](DEMO_APP.md)** - React UI で動画確認
-ブラウザで視覚的にデモを実行
-- セットアップ手順
-- 使い方（Sync/Latest モード）
-- WebSocket フロー
-- トラブルシューティング
+### 1. まずローカルでパイプラインだけ確認したい
 
-**所要時間:** 10-15分
+- [SETUP.md](./SETUP.md) で外部依存と `uv sync` を完了
+- [QUICK_START.md](./QUICK_START.md) の「最短スモークテスト」を実行
 
-### 5. **[トラブルシューティング](TROUBLESHOOTING.md)** - 問題解決
-エラーが出た場合に参照
-- セットアップエラー
-- 実行エラー
-- Vision API エラー
-- デバッグテクニック
+### 2. OpenAI か vLLM で実際に推論したい
 
-**参照時間:** 必要に応じて
+- [SETUP.md](./SETUP.md) の provider 設定を確認
+- [QUICK_START.md](./QUICK_START.md) の OpenAI / vLLM 手順へ
 
----
+### 3. ブラウザ UI で結果を見たい
 
-## 🚀 推奨読む順序
+- [DEMO_APP.md](./DEMO_APP.md) を参照
 
-### 初日（新規メンバ）
-1. **QUICK_START.md** を読む（5分）
-2. セットアップを実行（10分）
-3. テストで動作確認（2分）
-4. エージェントを実行（1分）
+### 4. InspecSafe-V1 を使いたい
 
-**合計:** 20分
+- [INSPESAFE_INTEGRATION.md](./INSPESAFE_INTEGRATION.md) を参照
 
-### 2日目以降（必要に応じて）
-- **ARCHITECTURE.md** で設計を理解
-- **TROUBLESHOOTING.md** で問題を解決
+### 5. 新しいノードや出力を追加したい
 
----
+- [ARCHITECTURE.md](./ARCHITECTURE.md) で流れを確認
+- [EXTENDING.md](./EXTENDING.md) のチェックリストを使う
 
-## 🎯 シーン別ガイド
+## セットアップ完了チェック
 
-### 「とりあえず動かしたい」
-→ **QUICK_START.md** の「TL;DR」セクション
+- [ ] `external/Depth-Anything-3`、`external/sam3`、`external/vllm-omni` を配置した
+- [ ] 必要な patch を適用した
+- [ ] `uv sync --extra dev` が通った
+- [ ] `ffmpeg -version` と `ffprobe -version` が通る
+- [ ] `uv run pytest tests/ -v` が通る
+- [ ] `configs/default.yaml` を自分の環境に合わせた
+- [ ] `uv run python src/run.py` で `data/perception_results/` が生成される
 
-### 「環境構築が失敗した」
-→ **SETUP.md** の「一般的な問題」セクション
-→ **TROUBLESHOOTING.md** の「セットアップ関連」
+## 補足
 
-### 「Vision API が空の応答を返す」
-→ **TROUBLESHOOTING.md** の「Vision API 関連」
-
-### 「実行が遅い」
-→ **TROUBLESHOOTING.md** の「パフォーマンス関連」
-
-### 「コード拡張方法を知りたい」
-→ **ARCHITECTURE.md** の「拡張可能性」セクション
-
-### 「LLM の仕組みを知りたい」
-→ **ARCHITECTURE.md** の「LLM 互換性設計」セクション
-
-### 「ブラウザ UI でデモを見たい」
-→ **DEMO_APP.md** 全体
-
----
-
-## 📋 チェックリスト
-
-セットアップが完了したか確認：
-
-- [ ] `uv sync --extra dev` を実行
-- [ ] `.env` ファイルを作成し API キーを設定
-- [ ] `pytest tests/ -v` で全テスト合格
-- [ ] `uv run python src/run.py` でエージェント実行成功
-- [ ] `output/` フォルダに 3 つのファイルが生成されている
-
-すべてチェック完了？ → **プロジェクトの使用準備完了！** 🎉
-
----
-
-## 💬 よくある質問
-
-**Q: どのファイルを編集すればいい？**
-A: `src/run.py` と `src/safety_agent/` フォルダのファイルです。設定は `configs/default.yaml`。
-
-**Q: エージェントの処理フローは？**
-A: ARCHITECTURE.md の「実行フロー」セクションを参照。
-
-**Q: 新しいハザード検出ロジックを追加するには？**
-A: ARCHITECTURE.md の「拡張可能性」セクション参照。
-
-**Q: Vision API を使わずにローカルで動かせる？**
-A: はい、LLM なしでもヒューリスティックフォールバックで動作。
-
-**Q: エージェントが遅い場合は？**
-A: `max_steps` を 3 から 1-2 に削減してください。
-
----
-
-## 🔧 よく使うコマンド
-
-```bash
-# 初回セットアップ
-uv sync --extra dev
-cp .env.example .env
-
-# テスト実行
-pytest tests/ -v
-
-# エージェント実行（.env から自動読み込み）
-python src/run.py
-
-# ダミー学習
-python finetuning/train_dummy.py
-
-# コードフォーマット
-ruff format src/
-```
-
----
-
-## 📚 参考資料
-
-### 公式ドキュメント
-- [LangGraph Documentation](https://langchain-ai.github.io/langgraph/)
-- [OpenAI API Reference](https://platform.openai.com/docs/api-reference)
-- [Pydantic Documentation](https://docs.pydantic.dev/)
-
-### プロジェクト内ドキュメント
-- [CLAUDE.md](../CLAUDE.md) - Claude Code（AI編集ツール）向け情報
-
----
-
-## 📞 サポート
-
-問題が解決しない場合：
-
-1. **TROUBLESHOOTING.md** で類似の問題を検索
-2. GitHub Issues で同じエラーを検索
-3. チームリーダーに報告（エラーログ含め）
-
----
-
-**最終更新:** 2026-03-19
-**対象バージョン:** Safety View Agent v1.0
-**ドキュメントメンテナー:** Development Team
+- 実行のたびに既存の `data/perception_results/` は `data/results_archive/<timestamp>/` に退避されます
+- Demo UI は `data/perception_results/manifest.json` を監視して新規フレームだけ読み込みます
+- `assessment.safety_status` は TTS 有効時に `data/voice/` の WAV に変換されます
