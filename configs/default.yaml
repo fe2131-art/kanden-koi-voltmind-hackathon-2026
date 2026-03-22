@@ -95,11 +95,6 @@ tokens:
   vision_max_completion_tokens: 4098  # Vision API: 16k コンテキスト対応
   chat_max_tokens: 4098               # テキスト生成用: 詳細な構造化出力対応
 
-# Thresholds
-thresholds:
-  risk_stop_threshold: 0.2      # Stop if max unobserved risk <= this
-  hazard_focus_threshold: 0.6   # Enforce high-risk unobserved coverage
-
 # TTS ナレーション設定（Kokoro TTS）
 # assessment.safety_status の内容をフレームごとに音声ファイルへ変換する
 sam3:

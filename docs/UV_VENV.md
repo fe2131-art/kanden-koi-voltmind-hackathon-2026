@@ -1,5 +1,8 @@
 # uv 仮想環境の使用方法
 
+このドキュメントは、[SETUP.md](./SETUP.md) の外部依存 clone / patch / `uv sync` が完了している前提です。
+まだそこまで終わっていない場合は、先に [SETUP.md](./SETUP.md) を参照してください。
+
 ## システム依存ツール（uv 管理外）
 
 ### ffmpeg / ffprobe（動画処理）
