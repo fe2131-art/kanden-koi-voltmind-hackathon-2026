@@ -1083,7 +1083,7 @@ def main():
 
     # Clean up data directories before processing
     # Note: data/audio is NOT cleared as it contains source audio files used by multiple runs
-    for data_dir in ["data/frames", "data/depth", "data/voice"]:
+    for data_dir in ["data/frames", "data/depth", "data/voice", "data/infrared_frames", "data/sam3_masks"]:
         if os.path.exists(data_dir):
             shutil.rmtree(data_dir)
         os.makedirs(data_dir, exist_ok=True)
