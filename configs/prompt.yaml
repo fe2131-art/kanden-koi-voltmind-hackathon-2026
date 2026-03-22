@@ -34,19 +34,19 @@
 vision_analysis:
   # Single-frame visible-light analysis
   # Role:
-  # - Extract locatable hazard points
+  # - Identify localized hazards
   # - Identify blind spots and hard-to-see areas
   # - Summarize overall risk
   system: |
-    You are an AI that analyzes visible-light images from a safety assessment perspective.
+    You are an AI that analyzes visible-light images for safety assessment.
 
     Priorities:
-    1. Describe and classify hazard locations (returning label_hint accurately is the top priority)
+    1. Identify and classify hazard locations (accurately assigning label_hint is the top priority)
     2. Blind spots and hard-to-see areas
     3. Overall risk level
 
     Rules:
-    - Write only what is confirmed in the image
+    - Describe only what is clearly confirmed in the image
     - Do not speculate. Use "unknown" when uncertain
     - critical_points must contain only hazards confirmed in the image
     - label_hint should be a short English phrase from the following candidates; if none closely match, feel free to use any relevant short English phrase:
@@ -54,7 +54,7 @@ vision_analysis:
     - normalized_bbox is optional. Include only when coordinates are clearly identifiable; use null otherwise
     - Prioritize label_hint accuracy over coordinate precision
     - Use temporary IDs such as critical_point_0 at this stage
-    - Use [] when no items apply
+    - Use an empty list ([]) when no items apply
     - Set confidence_score to 0.0 only when judgment is truly impossible. Use 0.2 or higher when there is valid evidence
     - Output JSON only
 
@@ -135,7 +135,7 @@ infrared_analysis:
   # - Locally extract high-temperature areas
   # - Provide supplementary evidence for overheat/fire risk
   system: |
-    You are an AI that integrates visible-light and infrared images to extract overheating risks.
+    You are an AI that analyzes visible-light and infrared images to identify overheating risks.
 
     Input:
     - Left: visible-light image
@@ -144,7 +144,7 @@ infrared_analysis:
     Rules:
     - Base analysis on both visible-light and infrared images
     - Do not assert absolute temperatures
-    - Use relative high-temperature distribution only
+    - Rely only on relative temperature patterns, not absolute values
     - If no anomalies, set hot_spots to []
     - Use "infrared_hotspot_<index>" for region_id
     - Set confidence_score to 0.0 only when judgment is truly impossible. Use 0.2 or higher when there is valid evidence
@@ -174,8 +174,8 @@ temporal_analysis:
     Compare the previous frame and the current frame and detect only real changes in the monitored scene.
 
     Rules:
-    - Write only real changes in people, objects, equipment, or the environment
-    - Write only changes that are clearly confirmed
+    - Report only real changes in people, objects, equipment, or the environment
+    - Report only clearly confirmed changes
     - Ignore changes in overlays, timestamps, subtitles, UI, and watermarks
     - If only such elements have changed, set change_detected=false and changes=[]
     - Use "temporal_change_<index>" for region_id
@@ -208,7 +208,7 @@ audio_analysis:
     Rules:
     - Use only what is supported by the audio clip
     - Do not infer from visual context
-    - If there is no relevant event, return {"events": [], "overall_risk": "low", "confidence_score": 0.0}
+    - If there is no relevant event, return {"events": [], "overall_risk": "low", "confidence_score": 0.8}
     - If unclear, use "unknown"
     - confidence_score should be 0.0 only if judgment is completely impossible; otherwise use 0.2 or higher
     - JSON only
@@ -247,16 +247,15 @@ belief_update:
     - critical_points: "critical_point_<index>"
     - blind_spots: "blind_spot_<index>"
     - hot_spots: "infrared_hotspot_<index>"
-    - temporal real changes: "temporal_change_<index>"
-    - Do not include overlay or timestamp-only changes in scene_change
+    - temporal changes: "temporal_change_<index>"
+    - Do not include overlay or timestamp-only changes in hazard_tracks
     - Set confidence_score to 0.0 only when judgment is truly impossible. Use 0.2 or higher when there is valid evidence
     - Write evidence as short English phrases
     - If a hazard present in the previous frame is not clearly confirmed in the current frame,
       do not immediately remove it from hazard_tracks
-    - Use status="resolved" only when it can be definitively concluded that the hazard has disappeared
-    - If poor visibility, blind spots, or temporary non-detection is possible,
+    - Use status="resolved" only when there is clear evidence the hazard has definitively disappeared;
+      if poor visibility, blind spots, or temporary non-detection is possible,
       keep status="persistent" or "unknown" with a low confidence_score
-    - Use "resolved" only when there is clear evidence that the hazard has clearly disappeared
     - recommended_focus_regions: list region_ids in priority order for verification (first = highest priority)
     - Order reflects severity, confidence, and urgency of confirmation
     - If no clear region_id exists, set recommended_focus_regions to []
@@ -271,7 +270,7 @@ belief_update:
           "region_id": "critical_point_0|blind_spot_0|infrared_hotspot_0|temporal_change_0|null",
           "status": "new|persistent|worsening|improving|resolved|unknown",
           "severity": "low|medium|high|critical|unknown",
-          "confidence_score": 0.0,
+          "confidence_score": 0.6,
           "supporting_modalities": ["vision", "audio", "depth", "infrared", "temporal"],
           "evidence": ["short evidence 1", "short evidence 2"]
         }
@@ -318,7 +317,7 @@ safety_assessment:
     - 局所確認が必要なら inspect_region
     - 危険はあるが即停止までは不要なら mitigate
     - 即停止・退避が必要なら emergency_stop
-    - emergency_stop の場合 risk_level は high
+    - emergency_stop の場合 risk_level は critical
     - temporal_status は主要 hazard_track の status を反映する
     - target_region は常にキーを出力する。inspect_region のときだけ region_id を入れ、それ以外は null
     - target_region に文字列 "null" は使わない。JSON の null を使う
@@ -339,7 +338,7 @@ safety_assessment:
     出力:
     {
       "assessment": {
-        "risk_level": "low|medium|high",
+        "risk_level": "low|medium|high|critical",
         "confidence_score": 0.6,
         "safety_status": "音声通知向けの短い安全状態要約",
         "action_type": "emergency_stop|inspect_region|mitigate|monitor",

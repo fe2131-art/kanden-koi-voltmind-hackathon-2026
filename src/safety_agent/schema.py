@@ -310,8 +310,14 @@ class BeliefState(BaseModel):
 class SafetyAssessment(BaseModel):
     """LLM による総合安全判断。AgentState.assessment に格納。
 
+    risk_level の意味（各モダリティの overall_risk と統一）:
+      - "low"      : 危険なし・継続監視
+      - "medium"   : 注意が必要
+      - "high"     : 危険あり（即停止は不要）
+      - "critical" : 即時停止・退避が必要（emergency_stop と対応）
+
     action_type の意味:
-      - "emergency_stop"  : 即時停止・退避が必要
+      - "emergency_stop"  : 即時停止・退避が必要（risk_level=critical と対応）
       - "inspect_region"  : 特定領域の重点確認が必要（target_region 必須）
       - "mitigate"        : 安全対策の実施・強化が必要
       - "monitor"         : 継続監視でよい
@@ -326,7 +332,7 @@ class SafetyAssessment(BaseModel):
     """
 
     # 現在の危険状態
-    risk_level: Literal["high", "medium", "low"]
+    risk_level: Literal["low", "medium", "high", "critical"]
     safety_status: str
     detected_hazards: List[str] = Field(default_factory=list)
 

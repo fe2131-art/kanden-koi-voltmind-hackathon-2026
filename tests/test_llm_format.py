@@ -29,8 +29,8 @@ def test_safety_assessment_from_llm_output():
 
 
 def test_safety_assessment_all_risk_levels():
-    """すべての risk_level 値をテスト。"""
-    for risk_level in ["low", "medium", "high"]:
+    """すべての risk_level 値をテスト（low/medium/high/critical の4段階）。"""
+    for risk_level in ["low", "medium", "high", "critical"]:
         llm_output = {
             "risk_level": risk_level,
             "safety_status": f"Risk level: {risk_level}",
@@ -46,7 +46,7 @@ def test_safety_assessment_all_risk_levels():
 def test_safety_assessment_invalid_risk_level():
     """無効な risk_level を拒否することを確認。"""
     llm_output = {
-        "risk_level": "critical",  # "low", "medium", "high" のみが有効
+        "risk_level": "extreme",  # 有効値は low|medium|high|critical のみ
         "safety_status": "テスト",
         "detected_hazards": [],
         "action_type": "monitor",
