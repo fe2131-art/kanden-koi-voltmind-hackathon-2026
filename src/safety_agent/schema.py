@@ -218,7 +218,7 @@ class TemporalAnalysisResult(BaseModel):
     change_detected: bool  # 明らかな変化があったか（VLM が true/false を返す）
     changes: List[TemporalChange] = Field(
         default_factory=list,
-        description="実際に確認できた変化の具体的説明リスト。変化がなければ空配列 []",
+        description="List of confirmed changes. Use empty array [] if no changes are detected.",
     )
     overall_risk: Literal["low", "medium", "high", "critical", "unknown"] = "unknown"
     confidence_score: float = Field(default=0.0, ge=0.0, le=1.0)
