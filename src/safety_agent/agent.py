@@ -158,6 +158,9 @@ def _try_loads(text: str) -> Optional[Dict[str, Any]]:
 
 def _robust_json_loads(text: str) -> Dict[str, Any]:
     """LLM 出力から JSON を抽出・パース。複数の形式に対応。"""
+    # 0) Qwen3 等の thinking モード: <think>...</think> ブロックを除去
+    text = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL).strip()
+
     # 1) 直接パース（+ trailing comma 除去）
     if (result := _try_loads(text)) is not None:
         return result
