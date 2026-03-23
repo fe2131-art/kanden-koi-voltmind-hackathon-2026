@@ -87,7 +87,8 @@ uv run python src/apps/server.py
 
 ```bash
 cd src/apps
-npm run dev
+npm run build
+npm run preview
 ```
 
 ## 主なファイル
