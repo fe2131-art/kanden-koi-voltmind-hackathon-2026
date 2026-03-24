@@ -17,7 +17,7 @@ DEFAULT_OUTPUT_DIR = Path(__file__).parent.parent.parent / "data"
 # 後方互換のためエイリアスを残す
 OUTPUT_DIR = DEFAULT_OUTPUT_DIR
 
-STATIC_PORT = 8002
+STATIC_PORT = 8011
 
 
 class _AbsolutePathHandler(BaseHTTPRequestHandler):
@@ -261,8 +261,8 @@ async def monitor_and_stream(websocket):
 async def main():
     threading.Thread(target=_start_static_server, daemon=True).start()
     logger.info(f"static server: http://127.0.0.1:{STATIC_PORT} (absolute path serving)")
-    async with websockets.serve(monitor_and_stream, "127.0.0.1", 8001):
-        logger.info("ws server: ws://localhost:8001")
+    async with websockets.serve(monitor_and_stream, "127.0.0.1", 8010):
+        logger.info("ws server: ws://localhost:8010")
         logger.info(f"default data dir: {DEFAULT_OUTPUT_DIR}")
         await asyncio.Future()  # run forever
 
