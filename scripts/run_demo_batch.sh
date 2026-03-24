@@ -72,7 +72,7 @@ PYEOF
 }
 
 # --- data/ 以下の全出力を指定ディレクトリへコピー ---
-# videos/（入力シンボリックリンク）と results_archive/（自動アーカイブ）は除外
+# results_archive/（自動アーカイブ）は除外
 copy_data_outputs() {
     local out_dir="$1"
     rm -rf "$out_dir"
@@ -82,7 +82,7 @@ copy_data_outputs() {
         local dirname
         dirname="$(basename "$src")"
         case "$dirname" in
-            videos|results_archive) continue ;;
+            results_archive) continue ;;
         esac
         if [[ -d "$src" ]]; then
             cp -r "$src" "$out_dir/$dirname"

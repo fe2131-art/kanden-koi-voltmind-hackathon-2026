@@ -29,6 +29,54 @@ const TEMPORAL_COLORS = {
   unknown:    { bg: '#222222', fg: '#888888' },
 }
 
+const MODALITY_COLORS = {
+  vision:   { bg: '#002255', fg: '#66aaff' },
+  depth:    { bg: '#220055', fg: '#cc88ff' },
+  audio:    { bg: '#003322', fg: '#44ddaa' },
+  infrared: { bg: '#441a00', fg: '#ff9944' },
+  temporal: { bg: '#3a3a00', fg: '#eeee44' },
+  sam3:     { bg: '#3a0055', fg: '#ee44ff' },
+}
+
+const DEPTH_ZONE_COLORS = {
+  near: { bg: '#4a0000', fg: '#ff8888' },
+  mid:  { bg: '#2a2a00', fg: '#ffee88' },
+  far:  { bg: '#002244', fg: '#88aaff' },
+}
+
+function ModalitySection({ title, defaultOpen = true, count, badge, children }) {
+  const [open, setOpen] = React.useState(defaultOpen)
+  return (
+    <div style={{ borderTop: '1px solid #2e2e2e', paddingTop: '8px' }}>
+      <div
+        style={{
+          display: 'flex', alignItems: 'center', gap: '6px', cursor: 'pointer',
+          fontSize: '12px', fontWeight: '600', color: '#aaa',
+          marginBottom: open ? '8px' : 0, userSelect: 'none',
+        }}
+        onClick={() => setOpen(o => !o)}
+      >
+        <span>{title} {open ? '▾' : '▸'}</span>
+        {count != null && count > 0 && (
+          <span style={{
+            fontSize: '10px', background: '#333', color: '#888',
+            padding: '1px 5px', borderRadius: '3px',
+          }}>{count}</span>
+        )}
+        {badge && (
+          <span style={{
+            display: 'inline-block', fontSize: '10px', fontWeight: '600',
+            padding: '2px 6px', borderRadius: '4px', marginLeft: 'auto',
+            background: RISK_COLORS[badge]?.bg ?? '#222',
+            color: RISK_COLORS[badge]?.fg ?? '#aaa',
+          }}>{badge}</span>
+        )}
+      </div>
+      {open && children}
+    </div>
+  )
+}
+
 const SEVERITY_COLORS = {
   critical: '#ff0000',
   high:     '#ff4444',
@@ -52,8 +100,8 @@ const styles = {
     minWidth: '320px',
   },
   right: {
-    width: '420px',
-    flex: '0 0 420px',
+    width: '460px',
+    flex: '0 0 460px',
     maxHeight: 'calc(100vh - 28px)',
     overflowY: 'auto',
     position: 'sticky',
@@ -121,7 +169,7 @@ const styles = {
     cursor: 'pointer',
   },
   log: {
-    height: '120px',
+    height: '160px',
     overflow: 'auto',
     font: '12px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace',
     whiteSpace: 'pre-wrap',
@@ -178,6 +226,10 @@ function App() {
 
   const params = new URLSearchParams(window.location.search)
   const [wsUrl, setWsUrl] = useState(params.get('ws') ?? 'ws://127.0.0.1:8001')
+  // URLSearchParams は + をスペースに変換する（unquote_plus 相当）ため
+  // data パラムはファイルパスの + を保持するため手動パース（decodeURIComponent）する
+  const rawDataParam = window.location.search.slice(1).split('&').find(p => p.startsWith('data='))
+  const [dataDir, setDataDir] = useState(rawDataParam ? decodeURIComponent(rawDataParam.slice(5)) : '')
   const [mode, setMode] = useState(params.get('mode') ?? 'sync')
   const [delay, setDelay] = useState(Number(params.get('delay') ?? 0))
   const [status, setStatus] = useState('initializing...')
@@ -192,8 +244,16 @@ function App() {
   const [curAudioCues, setCurAudioCues] = useState([])
   const [curInfraredImagePath, setCurInfraredImagePath] = useState(null)
   const [isVoicePlaying, setIsVoicePlaying] = useState(false)
+  const [curBeliefState, setCurBeliefState] = useState(null)
+  const [curBlindSpots, setCurBlindSpots] = useState([])
+  const [curInfraredAnalysis, setCurInfraredAnalysis] = useState(null)
+  const [curDepthAnalysis, setCurDepthAnalysis] = useState(null)
+  const [curTemporalAnalysis, setCurTemporalAnalysis] = useState(null)
+  const [curErrors, setCurErrors] = useState([])
+  const [modalityOpen, setModalityOpen] = useState(false)
 
   const wsRef = useRef(null)
+  const logRef = useRef(null)
   const resultsRef = useRef([])
   const recvCountRef = useRef(0)
   const tOffsetRef = useRef(null)
@@ -233,9 +293,11 @@ function App() {
 
     const appendLogLine = (msg) => {
       const lat = typeof msg.t_sent === 'number' ? (msg.t_sent - msg.t) : 0
-      // frame_id を表示（存在しない場合はタイムスタンプを表示）
       const timeDisplay = msg.frame_id ? `[${msg.frame_id}]` : `${msg.t.toFixed(2)}s`
-      const line = `${timeDisplay} (+${lat.toFixed(2)}s): ${msg.text ?? '(no text)'}\n`
+      const risk = msg.assessment?.risk_level ?? '-'
+      const action = msg.assessment?.action_type ?? '-'
+      const proc = msg.processing_time_sec != null ? ` proc=${msg.processing_time_sec}s` : ''
+      const line = `${timeDisplay} (+${lat.toFixed(2)}s) risk=${risk} action=${action}${proc}\n`
       setLog((prev) => {
         const combined = prev + line
         if (combined.length > 25000) {
@@ -316,11 +378,17 @@ function App() {
       setCurVoicePath(null)
       setCurAudioCues([])
       setCurInfraredImagePath(null)
+      setCurBeliefState(null)
+      setCurBlindSpots([])
+      setCurInfraredAnalysis(null)
+      setCurDepthAnalysis(null)
+      setCurTemporalAnalysis(null)
+      setCurErrors([])
       setSceneDescOpen(false)
       setStatusOpen(false)
       lastAssessmentFrameRef.current = null
 
-      const url = wsUrl.trim()
+      const url = wsUrl.trim() + (dataDir.trim() ? `?data=${encodeURIComponent(dataDir.trim())}` : '')
       setConnectionState('connecting')
       wsRef.current = new WebSocket(url)
 
@@ -332,12 +400,16 @@ function App() {
         wsRef.current.close()
       }
       wsRef.current.onclose = () => {
-        setConnectionState('reconnecting')
-        updateStatus('✗ disconnected — reconnecting in 3s...')
-        setTimeout(() => {
-          if (cancelled) return
-          connectWS()
-        }, 3000)
+        // error 状態（ディレクトリ不存在など）では再接続しない
+        setConnectionState((prev) => {
+          if (prev === 'error') return 'error'
+          updateStatus('✗ disconnected — reconnecting in 3s...')
+          setTimeout(() => {
+            if (cancelled) return
+            connectWS()
+          }, 3000)
+          return 'reconnecting'
+        })
       }
 
       wsRef.current.onmessage = (ev) => {
@@ -348,6 +420,15 @@ function App() {
           console.warn('[WS] invalid JSON received:', e)
           return
         }
+
+        // サーバーからのエラー通知（ディレクトリ不存在など）
+        if (msg.error) {
+          setConnectionState('error')
+          updateStatus(`⚠ ${msg.error}`)
+          wsRef.current?.close()
+          return
+        }
+
         recvCountRef.current++
 
         // 完全自動同期: video_timestamp がある場合は直接マッピング
@@ -415,6 +496,12 @@ function App() {
             setCurVoicePath(cur.voice_path ?? null)
             setCurAudioCues(cur.audio_cues ?? [])
             setCurInfraredImagePath(cur.infrared_image_path ?? null)
+            setCurBeliefState(cur.belief_state ?? null)
+            setCurBlindSpots(cur.blind_spots ?? [])
+            setCurInfraredAnalysis(cur.infrared_analysis ?? null)
+            setCurDepthAnalysis(cur.depth_analysis ?? null)
+            setCurTemporalAnalysis(cur.temporal_analysis ?? null)
+            setCurErrors(cur.errors ?? [])
 
             // 音声再生（voice_path がある場合）
             if (cur.voice_path && audioRef.current) {
@@ -436,6 +523,12 @@ function App() {
             setCurVoicePath(null)
             setCurAudioCues([])
             setCurInfraredImagePath(null)
+            setCurBeliefState(null)
+            setCurBlindSpots([])
+            setCurInfraredAnalysis(null)
+            setCurDepthAnalysis(null)
+            setCurTemporalAnalysis(null)
+            setCurErrors([])
           }
           ctx.clearRect(0, 0, w, h)
         }
@@ -466,7 +559,14 @@ function App() {
       videoEl?.removeEventListener('play', resizeCanvasToVideo)
       videoEl?.removeEventListener('play', onVideoPlayOnce)
     }
-  }, [mode, delay, wsUrl])
+  }, [mode, delay, wsUrl, dataDir])
+
+  // Log 自動スクロール: 新しいエントリが追加されるたびに最下部へ追随
+  useEffect(() => {
+    if (logRef.current) {
+      logRef.current.scrollTop = logRef.current.scrollHeight
+    }
+  }, [log])
 
   return (
     <div style={styles.body}>
@@ -487,7 +587,8 @@ function App() {
               { background: '#6f1a1a', color: '#ff7f7f' }),
         }}>
           {connectionState === 'connected' ? '● LIVE' :
-           connectionState === 'reconnecting' ? '⟳ RECONNECTING' : '● OFFLINE'}
+           connectionState === 'reconnecting' ? '⟳ RECONNECTING' :
+           connectionState === 'error' ? '⚠ ERROR' : '● OFFLINE'}
         </div>
       </div>
 
@@ -634,7 +735,7 @@ function App() {
                 )}
 
                 {/* reason */}
-                <div style={{ fontSize:'13px', color:'#fff', borderTop:'1px solid #333', paddingTop:'6px', lineHeight:'1.5' }}>
+                <div style={{ fontSize:'13px', color:'#fff', borderTop:'1px solid #333', paddingTop:'6px', lineHeight:'1.5', maxHeight:'120px', overflowY:'auto' }}>
                   {curAssessment.reason}
                 </div>
               </div>
@@ -644,6 +745,234 @@ function App() {
           </div>
 
 
+
+          {/* Belief State Panel */}
+          {curBeliefState?.hazard_tracks?.length > 0 && (
+            <div style={styles.panel}>
+              <h3 style={styles.panelH3}>
+                🧠 Belief State
+                {curBeliefState.overall_risk && (
+                  <span style={{
+                    marginLeft: '8px',
+                    fontSize: '11px', fontWeight: '600',
+                    padding: '2px 7px', borderRadius: '4px',
+                    background: RISK_COLORS[curBeliefState.overall_risk]?.bg ?? '#222',
+                    color: RISK_COLORS[curBeliefState.overall_risk]?.fg ?? '#aaa',
+                  }}>
+                    overall: {curBeliefState.overall_risk}
+                  </span>
+                )}
+              </h3>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                {curBeliefState.hazard_tracks.map((track, i) => (
+                  <div key={i} style={{
+                    background: '#1a1a1a',
+                    border: `1px solid ${SEVERITY_COLORS[track.severity] ?? '#333'}33`,
+                    borderLeft: `3px solid ${SEVERITY_COLORS[track.severity] ?? '#555'}`,
+                    borderRadius: '6px',
+                    padding: '8px 10px',
+                  }}>
+                    {/* Track header: type + status + confidence */}
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '6px', flexWrap: 'wrap' }}>
+                      <span style={{
+                        fontSize: '11px', fontWeight: '700', color: '#ddd',
+                        letterSpacing: '0.03em',
+                      }}>
+                        {track.hazard_type ?? track.hazard_id}
+                      </span>
+                      <span style={{
+                        ...styles.smallBadge,
+                        background: TEMPORAL_COLORS[track.status]?.bg ?? '#222',
+                        color: TEMPORAL_COLORS[track.status]?.fg ?? '#888',
+                      }}>
+                        {track.status ?? 'unknown'}
+                      </span>
+                      <span style={{
+                        ...styles.smallBadge,
+                        background: SEVERITY_COLORS[track.severity] ? `${SEVERITY_COLORS[track.severity]}22` : '#222',
+                        color: SEVERITY_COLORS[track.severity] ?? '#aaa',
+                        border: `1px solid ${SEVERITY_COLORS[track.severity] ?? '#444'}55`,
+                      }}>
+                        {track.severity}
+                      </span>
+                      <span style={{ marginLeft: 'auto', fontSize: '10px', color: '#666' }}>
+                        conf: {((track.confidence_score ?? 0) * 100).toFixed(0)}%
+                      </span>
+                    </div>
+
+                    {/* Supporting modalities */}
+                    {track.supporting_modalities?.length > 0 && (
+                      <div style={{ display: 'flex', gap: '4px', flexWrap: 'wrap', marginBottom: '6px' }}>
+                        {track.supporting_modalities.map((mod, j) => (
+                          <span key={j} style={{
+                            fontSize: '10px', fontWeight: '600',
+                            padding: '2px 6px', borderRadius: '3px',
+                            background: MODALITY_COLORS[mod]?.bg ?? '#1a1a2a',
+                            color: MODALITY_COLORS[mod]?.fg ?? '#aaaacc',
+                          }}>
+                            {mod}
+                          </span>
+                        ))}
+                      </div>
+                    )}
+
+                    {/* Evidence */}
+                    {track.evidence?.length > 0 && (
+                      <ul style={{
+                        margin: '0', paddingLeft: '14px',
+                        fontSize: '11px', color: '#999', lineHeight: '1.5',
+                        maxHeight: '60px', overflowY: 'auto',
+                      }}>
+                        {track.evidence.map((ev, j) => (
+                          <li key={j}>{ev}</li>
+                        ))}
+                      </ul>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Errors Banner */}
+          {curErrors.length > 0 && (
+            <div style={{
+              background: '#3a1a00', border: '1px solid #ff8800',
+              borderRadius: '8px', padding: '8px 12px', marginBottom: '12px',
+              fontSize: '11px', color: '#ffbb66', lineHeight: '1.6',
+            }}>
+              {curErrors.map((e, i) => <div key={i}>⚠️ {e}</div>)}
+            </div>
+          )}
+
+          {/* Modality Details Panel */}
+          <div style={styles.panel}>
+            <h3
+              style={{ ...styles.panelH3, cursor: 'pointer', userSelect: 'none' }}
+              onClick={() => setModalityOpen(o => !o)}
+            >
+              🔍 Modality Details {modalityOpen ? '▾' : '▸'}
+              {(curBlindSpots.length > 0 || curInfraredAnalysis?.hot_spots?.length > 0) && (
+                <span style={{ marginLeft: '6px', fontSize: '10px', color: '#ff8844' }}>●</span>
+              )}
+            </h3>
+
+            {modalityOpen && (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '0' }}>
+                {/* 🚫 Blind Spots */}
+                <ModalitySection title="🚫 Blind Spots" defaultOpen={false} count={curBlindSpots.length}>
+                  {curBlindSpots.length > 0 ? curBlindSpots.map((bs, i) => (
+                    <div key={i} style={{
+                      borderLeft: `3px solid ${SEVERITY_COLORS[bs.severity] ?? '#555'}`,
+                      paddingLeft: '8px',
+                      marginBottom: i < curBlindSpots.length - 1 ? '6px' : 0,
+                    }}>
+                      <div style={{ display: 'flex', gap: '6px', alignItems: 'center', marginBottom: '3px' }}>
+                        <span style={{
+                          ...styles.smallBadge,
+                          background: (SEVERITY_COLORS[bs.severity] ?? '#aaa') + '22',
+                          color: SEVERITY_COLORS[bs.severity] ?? '#aaa',
+                          border: `1px solid ${SEVERITY_COLORS[bs.severity] ?? '#444'}55`,
+                        }}>{bs.severity}</span>
+                        <span style={{ fontSize: '11px', color: '#ccc', fontWeight: '600' }}>{bs.region_id}</span>
+                      </div>
+                      {bs.position && (
+                        <div style={{ fontSize: '10px', color: '#666', marginBottom: '2px' }}>{bs.position}</div>
+                      )}
+                      <div style={{ fontSize: '11px', color: '#999', lineHeight: '1.4' }}>{bs.description}</div>
+                    </div>
+                  )) : <div style={{ fontSize: '11px', color: '#444' }}>(none)</div>}
+                </ModalitySection>
+
+                {/* 🔥 Infrared Hot Spots */}
+                <ModalitySection
+                  title="🔥 Infrared Hot Spots"
+                  defaultOpen={false}
+                  badge={curInfraredAnalysis?.overall_risk}
+                  count={curInfraredAnalysis?.hot_spots?.length ?? 0}
+                >
+                  {curInfraredAnalysis?.hot_spots?.length > 0
+                    ? curInfraredAnalysis.hot_spots.map((hs, i) => (
+                        <div key={i} style={{
+                          borderLeft: `3px solid ${SEVERITY_COLORS[hs.severity] ?? '#555'}`,
+                          paddingLeft: '8px',
+                          marginBottom: i < curInfraredAnalysis.hot_spots.length - 1 ? '6px' : 0,
+                        }}>
+                          <div style={{ display: 'flex', gap: '6px', alignItems: 'center', marginBottom: '3px' }}>
+                            <span style={{
+                              ...styles.smallBadge,
+                              background: (SEVERITY_COLORS[hs.severity] ?? '#aaa') + '22',
+                              color: SEVERITY_COLORS[hs.severity] ?? '#aaa',
+                              border: `1px solid ${SEVERITY_COLORS[hs.severity] ?? '#444'}55`,
+                            }}>{hs.severity}</span>
+                            <span style={{ fontSize: '11px', color: '#ccc', fontWeight: '600' }}>{hs.region_id}</span>
+                          </div>
+                          <div style={{ fontSize: '11px', color: '#999', lineHeight: '1.4' }}>{hs.description}</div>
+                        </div>
+                      ))
+                    : <div style={{ fontSize: '11px', color: '#444' }}>(none)</div>
+                  }
+                </ModalitySection>
+
+                {/* ⏱️ Temporal */}
+                <ModalitySection title="⏱️ Temporal" defaultOpen={false}>
+                  {curTemporalAnalysis ? (
+                    <div>
+                      <div style={{ display: 'flex', gap: '6px', alignItems: 'center', marginBottom: '4px' }}>
+                        <span style={{
+                          ...styles.smallBadge,
+                          background: curTemporalAnalysis.change_detected ? '#5c2200' : '#1a3300',
+                          color: curTemporalAnalysis.change_detected ? '#ff8844' : '#66ee66',
+                        }}>
+                          {curTemporalAnalysis.change_detected ? '⚠ CHANGE' : '✓ NO CHANGE'}
+                        </span>
+                        <span style={{
+                          ...styles.smallBadge,
+                          background: RISK_COLORS[curTemporalAnalysis.overall_risk]?.bg ?? '#222',
+                          color: RISK_COLORS[curTemporalAnalysis.overall_risk]?.fg ?? '#aaa',
+                        }}>{curTemporalAnalysis.overall_risk}</span>
+                        <span style={{ fontSize: '10px', color: '#666', marginLeft: 'auto' }}>
+                          conf: {((curTemporalAnalysis.confidence_score ?? 0) * 100).toFixed(0)}%
+                        </span>
+                      </div>
+                      {curTemporalAnalysis.changes?.length > 0 && (
+                        <ul style={{ margin: '4px 0 0', paddingLeft: '14px', fontSize: '11px', color: '#999', lineHeight: '1.5' }}>
+                          {curTemporalAnalysis.changes.map((c, i) => (
+                            <li key={i}>{c.region_id}: {c.description}</li>
+                          ))}
+                        </ul>
+                      )}
+                    </div>
+                  ) : <div style={{ fontSize: '11px', color: '#444' }}>(no data)</div>}
+                </ModalitySection>
+
+                {/* 📐 Depth Layers */}
+                <ModalitySection
+                  title="📐 Depth Layers"
+                  defaultOpen={false}
+                  badge={curDepthAnalysis?.overall_risk}
+                >
+                  {curDepthAnalysis?.depth_layers?.length > 0
+                    ? curDepthAnalysis.depth_layers.map((layer, i) => (
+                        <div key={i} style={{
+                          display: 'grid', gridTemplateColumns: '40px 1fr', gap: '6px',
+                          alignItems: 'start',
+                          marginBottom: i < curDepthAnalysis.depth_layers.length - 1 ? '5px' : 0,
+                        }}>
+                          <span style={{
+                            ...styles.smallBadge, textAlign: 'center',
+                            background: DEPTH_ZONE_COLORS[layer.zone]?.bg ?? '#222',
+                            color: DEPTH_ZONE_COLORS[layer.zone]?.fg ?? '#aaa',
+                          }}>{layer.zone}</span>
+                          <span style={{ fontSize: '11px', color: '#aaa', lineHeight: '1.4' }}>{layer.description}</span>
+                        </div>
+                      ))
+                    : <div style={{ fontSize: '11px', color: '#444' }}>(no data)</div>
+                  }
+                </ModalitySection>
+              </div>
+            )}
+          </div>
 
           {/* Audio Cues Panel */}
           {curAudioCues.length > 0 && (
@@ -683,7 +1012,7 @@ function App() {
               Scene {sceneDescOpen ? '▾' : '▸'}
             </h3>
             {sceneDescOpen && (
-              <div style={{ fontSize:'12px', color:'#bbb', lineHeight:'1.6', maxHeight:'120px', overflowY:'auto' }}>
+              <div style={{ fontSize:'12px', color:'#bbb', lineHeight:'1.6', maxHeight:'160px', overflowY:'auto' }}>
                 {curSceneDesc || '(no scene description)'}
               </div>
             )}
@@ -698,7 +1027,8 @@ function App() {
               Status {statusOpen ? '▾' : '▸'}
               <span style={{ fontSize: '11px', color: '#666', marginLeft: '8px' }}>
                 {connectionState === 'connected' ? '● LIVE' :
-                 connectionState === 'reconnecting' ? '⟳ RECONNECTING' : '● OFFLINE'}
+                 connectionState === 'reconnecting' ? '⟳ RECONNECTING' :
+           connectionState === 'error' ? '⚠ ERROR' : '● OFFLINE'}
               </span>
             </h3>
             {statusOpen && (
@@ -711,6 +1041,16 @@ function App() {
                       value={wsUrl}
                       onChange={(e) => setWsUrl(e.target.value)}
                       placeholder="ws://127.0.0.1:8001"
+                      style={{ ...styles.input, width: '100%', marginTop: '4px' }}
+                    />
+                  </label>
+                  <label style={styles.controlsLabel}>
+                    データディレクトリ（省略時は data/）
+                    <input
+                      type="text"
+                      value={dataDir}
+                      onChange={(e) => setDataDir(e.target.value)}
+                      placeholder="例: ~/data/result_1"
                       style={{ ...styles.input, width: '100%', marginTop: '4px' }}
                     />
                   </label>
@@ -761,7 +1101,7 @@ function App() {
           {/* Log Panel */}
           <div style={styles.panel}>
             <h3 style={styles.panelH3}>Log</h3>
-            <div style={styles.log}>{log}</div>
+            <div ref={logRef} style={styles.log}>{log}</div>
           </div>
         </div>
       </div>
