@@ -235,6 +235,12 @@ async def monitor_and_stream(websocket):
                                 "depth_image_path": depth_image_path,
                                 "infrared_image_path": infrared_image_path,
                                 "voice_path": voice_path,
+                                "belief_state": result.get("belief_state"),
+                                "blind_spots": vision_analysis.get("blind_spots", []),
+                                "infrared_analysis": result.get("infrared_analysis"),
+                                "depth_analysis": result.get("depth_analysis"),
+                                "temporal_analysis": result.get("temporal_analysis"),
+                                "errors": result.get("errors", []),
                             }
 
                             await websocket.send(json.dumps(msg, ensure_ascii=False))
