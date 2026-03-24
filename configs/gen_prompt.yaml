@@ -38,7 +38,7 @@ generation:
   # Number of frames - CRITICAL: must satisfy (num_frames - 1) % 8 == 0
   # Valid values: 9, 17, 25, 33, 49, 65, 81, 97, 121, 161, 201
   # Higher = longer video, more VRAM needed
-  num_frames: 121
+  num_frames: 241
 
   # Diffusion inference steps (quality vs speed tradeoff)
   # 20-30: fast, acceptable quality
@@ -120,7 +120,7 @@ prompts:
         interface elements, no text labels, no HUD.
       overrides:
         guidance_scale: 4.0
-        seed: 77
+        seed: 2026
 
     - id: "welding_sparks_hazard"
       # 日本語メモ:
