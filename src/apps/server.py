@@ -1,17 +1,53 @@
 import asyncio
 import json
 import logging
+import mimetypes
+import threading
 import time
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
+from urllib.parse import quote as url_quote
+from urllib.parse import unquote, urlparse
 
 import websockets
 
 logger = logging.getLogger(__name__)
 
-OUTPUT_DIR = Path(__file__).parent.parent.parent / "data"
-RESULTS_DIR = OUTPUT_DIR / "perception_results"
-MANIFEST_PATH = RESULTS_DIR / "manifest.json"
-FRAMES_DIR = RESULTS_DIR / "frames"
+DEFAULT_OUTPUT_DIR = Path(__file__).parent.parent.parent / "data"
+# 後方互換のためエイリアスを残す
+OUTPUT_DIR = DEFAULT_OUTPUT_DIR
+
+STATIC_PORT = 8002
+
+
+class _AbsolutePathHandler(BaseHTTPRequestHandler):
+    """URL パスをそのままファイルシステムの絶対パスとして解釈して配信する。
+
+    ローカル専用（127.0.0.1 バインド）のデモ用 HTTP サーバー。
+    例: GET /home/team-005/data/result_1/frames/frame_0.jpg
+    """
+
+    def do_GET(self):  # noqa: N802
+        path = Path(unquote(self.path))  # %20 → space, %2B → + などデコード
+        if not path.is_absolute() or not path.is_file():
+            self.send_error(404, "Not Found")
+            return
+        mime, _ = mimetypes.guess_type(str(path))
+        mime = mime or "application/octet-stream"
+        data = path.read_bytes()
+        self.send_response(200)
+        self.send_header("Content-Type", mime)
+        self.send_header("Content-Length", str(len(data)))
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.end_headers()
+        self.wfile.write(data)
+
+    def log_message(self, format: str, *args: object) -> None:  # suppress access logs
+        pass
+
+
+def _start_static_server():
+    HTTPServer(("127.0.0.1", STATIC_PORT), _AbsolutePathHandler).serve_forever()
 
 
 def normalize_critical_point(cp: dict) -> dict | None:
@@ -36,17 +72,46 @@ def normalize_critical_point(cp: dict) -> dict | None:
 
 async def monitor_and_stream(websocket):
     """Monitor data/perception_results/manifest.json and stream new frames to client."""
-    logger.info("client connected")
+    # --- WebSocket URL クエリパラムから data ディレクトリを取得 ---
+    # parse_qs は + をスペースに変換する（unquote_plus）ためパス中の + が消える。
+    # unquote（+ をそのまま保持）で手動パースする。
+    parsed_path = urlparse(websocket.request.path)
+    raw_data = ""
+    for part in parsed_path.query.split("&"):
+        if part.startswith("data="):
+            raw_data = unquote(part[5:])  # + → + のまま、%XX → 文字
+            break
+    if raw_data:
+        output_dir = Path(raw_data).expanduser().resolve()
+        logger.info(f"client connected (data={output_dir})")
+    else:
+        output_dir = DEFAULT_OUTPUT_DIR
+        logger.info("client connected")
+
+    # 指定ディレクトリの存在チェック
+    if not output_dir.exists():
+        err_msg = json.dumps({"error": f"data directory not found: {output_dir}"}, ensure_ascii=False)
+        await websocket.send(err_msg)
+        logger.warning(f"data directory not found: {output_dir}")
+        return
+
+    results_dir = output_dir / "perception_results"
+    manifest_path = results_dir / "manifest.json"
+    frames_dir = results_dir / "frames"
+    # カスタムディレクトリ時はメディア URL を絶対パス経由の HTTP サーバーで配信
+    use_static_server = raw_data != ""
+    static_base = f"http://127.0.0.1:{STATIC_PORT}"
+
     last_count = 0  # 前回送信した frames 数をトラッキング
 
     try:
         while True:
-            if MANIFEST_PATH.exists():
+            if manifest_path.exists():
                 # manifest.json からフレーム数を取得（リトライ最大3回）
                 manifest = None
                 for attempt in range(3):
                     try:
-                        with open(MANIFEST_PATH, "r", encoding="utf-8") as f:
+                        with open(manifest_path, "r", encoding="utf-8") as f:
                             manifest = json.load(f)
                         break
                     except (json.JSONDecodeError, IOError) as e:
@@ -59,9 +124,9 @@ async def monitor_and_stream(websocket):
                     current_count = manifest.get("frame_count", 0)
 
                     # 新しいフレームのみを送信
-                    if current_count > last_count and FRAMES_DIR.exists():
+                    if current_count > last_count and frames_dir.exists():
                         # フレームファイルを名前順でソート（000000_xxx.json 形式）
-                        json_files = sorted(FRAMES_DIR.glob("*.json"))
+                        json_files = sorted(frames_dir.glob("*.json"))
 
                         for frame_idx in range(last_count, current_count):
                             if frame_idx >= len(json_files):
@@ -108,14 +173,14 @@ async def monitor_and_stream(websocket):
                             if video_ts is not None:
                                 expected_frame_name = f"frame_{video_ts:.1f}s.jpg"
                                 potential_path = (
-                                    OUTPUT_DIR / "frames" / expected_frame_name
+                                    output_dir / "frames" / expected_frame_name
                                 )
                                 if potential_path.exists():
                                     rgb_frame_name = expected_frame_name
 
                             # fallback: フレームディレクトリからインデックスで検索
                             if not rgb_frame_name:
-                                rgb_frames_dir = OUTPUT_DIR / "frames"
+                                rgb_frames_dir = output_dir / "frames"
                                 if rgb_frames_dir.exists():
                                     rgb_files = sorted(
                                         rgb_frames_dir.glob("frame_*.jpg")
@@ -124,21 +189,31 @@ async def monitor_and_stream(websocket):
                                         rgb_frame_name = rgb_files[frame_idx].name
 
                             # 深度画像・赤外線画像・音声ファイルを検出
+                            # カスタムディレクトリ時は絶対パスを HTTP サーバー経由で配信
                             infrared_image_path = None
                             if rgb_frame_name:
-                                potential_depth = OUTPUT_DIR / "depth" / rgb_frame_name
+                                potential_depth = output_dir / "depth" / rgb_frame_name
                                 if potential_depth.exists():
-                                    depth_image_path = f"/depth/{rgb_frame_name}"
+                                    if use_static_server:
+                                        depth_image_path = f"{static_base}{url_quote(str(potential_depth))}"
+                                    else:
+                                        depth_image_path = f"/depth/{rgb_frame_name}"
 
-                                potential_infrared = OUTPUT_DIR / "infrared_frames" / rgb_frame_name
+                                potential_infrared = output_dir / "infrared_frames" / rgb_frame_name
                                 if potential_infrared.exists():
-                                    infrared_image_path = f"/infrared_frames/{rgb_frame_name}"
+                                    if use_static_server:
+                                        infrared_image_path = f"{static_base}{url_quote(str(potential_infrared))}"
+                                    else:
+                                        infrared_image_path = f"/infrared_frames/{rgb_frame_name}"
 
                                 stem = Path(rgb_frame_name).stem
                                 for ext in (".wav", ".mp3"):
-                                    candidate = OUTPUT_DIR / "voice" / (stem + ext)
+                                    candidate = output_dir / "voice" / (stem + ext)
                                     if candidate.exists():
-                                        voice_path = f"/voice/{stem}{ext}"
+                                        if use_static_server:
+                                            voice_path = f"{static_base}{url_quote(str(candidate))}"
+                                        else:
+                                            voice_path = f"/voice/{stem}{ext}"
                                         break
 
                             frame_id = result.get("frame_id", f"frame_{frame_idx}")
@@ -177,9 +252,11 @@ async def monitor_and_stream(websocket):
 
 
 async def main():
+    threading.Thread(target=_start_static_server, daemon=True).start()
+    logger.info(f"static server: http://127.0.0.1:{STATIC_PORT} (absolute path serving)")
     async with websockets.serve(monitor_and_stream, "127.0.0.1", 8001):
         logger.info("ws server: ws://localhost:8001")
-        logger.info(f"monitoring: {MANIFEST_PATH}")
+        logger.info(f"default data dir: {DEFAULT_OUTPUT_DIR}")
         await asyncio.Future()  # run forever
 
 

@@ -178,6 +178,10 @@ function App() {
 
   const params = new URLSearchParams(window.location.search)
   const [wsUrl, setWsUrl] = useState(params.get('ws') ?? 'ws://127.0.0.1:8001')
+  // URLSearchParams は + をスペースに変換する（unquote_plus 相当）ため
+  // data パラムはファイルパスの + を保持するため手動パース（decodeURIComponent）する
+  const rawDataParam = window.location.search.slice(1).split('&').find(p => p.startsWith('data='))
+  const [dataDir, setDataDir] = useState(rawDataParam ? decodeURIComponent(rawDataParam.slice(5)) : '')
   const [mode, setMode] = useState(params.get('mode') ?? 'sync')
   const [delay, setDelay] = useState(Number(params.get('delay') ?? 0))
   const [status, setStatus] = useState('initializing...')
@@ -320,7 +324,7 @@ function App() {
       setStatusOpen(false)
       lastAssessmentFrameRef.current = null
 
-      const url = wsUrl.trim()
+      const url = wsUrl.trim() + (dataDir.trim() ? `?data=${encodeURIComponent(dataDir.trim())}` : '')
       setConnectionState('connecting')
       wsRef.current = new WebSocket(url)
 
@@ -332,12 +336,16 @@ function App() {
         wsRef.current.close()
       }
       wsRef.current.onclose = () => {
-        setConnectionState('reconnecting')
-        updateStatus('✗ disconnected — reconnecting in 3s...')
-        setTimeout(() => {
-          if (cancelled) return
-          connectWS()
-        }, 3000)
+        // error 状態（ディレクトリ不存在など）では再接続しない
+        setConnectionState((prev) => {
+          if (prev === 'error') return 'error'
+          updateStatus('✗ disconnected — reconnecting in 3s...')
+          setTimeout(() => {
+            if (cancelled) return
+            connectWS()
+          }, 3000)
+          return 'reconnecting'
+        })
       }
 
       wsRef.current.onmessage = (ev) => {
@@ -348,6 +356,15 @@ function App() {
           console.warn('[WS] invalid JSON received:', e)
           return
         }
+
+        // サーバーからのエラー通知（ディレクトリ不存在など）
+        if (msg.error) {
+          setConnectionState('error')
+          updateStatus(`⚠ ${msg.error}`)
+          wsRef.current?.close()
+          return
+        }
+
         recvCountRef.current++
 
         // 完全自動同期: video_timestamp がある場合は直接マッピング
@@ -466,7 +483,7 @@ function App() {
       videoEl?.removeEventListener('play', resizeCanvasToVideo)
       videoEl?.removeEventListener('play', onVideoPlayOnce)
     }
-  }, [mode, delay, wsUrl])
+  }, [mode, delay, wsUrl, dataDir])
 
   return (
     <div style={styles.body}>
@@ -487,7 +504,8 @@ function App() {
               { background: '#6f1a1a', color: '#ff7f7f' }),
         }}>
           {connectionState === 'connected' ? '● LIVE' :
-           connectionState === 'reconnecting' ? '⟳ RECONNECTING' : '● OFFLINE'}
+           connectionState === 'reconnecting' ? '⟳ RECONNECTING' :
+           connectionState === 'error' ? '⚠ ERROR' : '● OFFLINE'}
         </div>
       </div>
 
@@ -698,7 +716,8 @@ function App() {
               Status {statusOpen ? '▾' : '▸'}
               <span style={{ fontSize: '11px', color: '#666', marginLeft: '8px' }}>
                 {connectionState === 'connected' ? '● LIVE' :
-                 connectionState === 'reconnecting' ? '⟳ RECONNECTING' : '● OFFLINE'}
+                 connectionState === 'reconnecting' ? '⟳ RECONNECTING' :
+           connectionState === 'error' ? '⚠ ERROR' : '● OFFLINE'}
               </span>
             </h3>
             {statusOpen && (
@@ -711,6 +730,16 @@ function App() {
                       value={wsUrl}
                       onChange={(e) => setWsUrl(e.target.value)}
                       placeholder="ws://127.0.0.1:8001"
+                      style={{ ...styles.input, width: '100%', marginTop: '4px' }}
+                    />
+                  </label>
+                  <label style={styles.controlsLabel}>
+                    データディレクトリ（省略時は data/）
+                    <input
+                      type="text"
+                      value={dataDir}
+                      onChange={(e) => setDataDir(e.target.value)}
+                      placeholder="例: ~/data/result_1"
                       style={{ ...styles.input, width: '100%', marginTop: '4px' }}
                     />
                   </label>
