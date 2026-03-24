@@ -8,6 +8,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url))
 export default defineConfig({
   plugins: [react()],
   server: {
+    host: '127.0.0.1',
     port: 5173,
     proxy: {
       '/ws': {
@@ -15,6 +16,10 @@ export default defineConfig({
         ws: true,
       }
     }
+  },
+  preview: {
+    host: '127.0.0.1',
+    port: 4173,
   },
   publicDir: resolve(__dirname, '../../data'),
 })

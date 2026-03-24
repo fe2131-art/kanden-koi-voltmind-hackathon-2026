@@ -9,11 +9,14 @@ from src.safety_agent.agent import AgentState, build_agent
 from src.safety_agent.modality_nodes import (
     AudioAnalyzer,
     InfraredImageAnalyzer,
+    Sam3Analyzer,
     TemporalImageAnalyzer,
 )
 from src.safety_agent.schema import (
+    CriticalPoint,
     Observation,
     ObservationProvider,
+    Sam3AnalysisResult,
 )
 
 
@@ -53,6 +56,7 @@ def test_e2e_agent_no_llm():
         "last_vision_summary": None,
         "assessment": None,
         "assessment_history": [],
+        "grounded_critical_points": [],
         "belief_state": None,
         "done": False,
         "errors": [],
@@ -67,6 +71,9 @@ def test_e2e_agent_no_llm():
         "depth_estimator": None,
         "infrared_analyzer": InfraredImageAnalyzer(),
         "temporal_analyzer": TemporalImageAnalyzer(),
+        "sam3_analyzer": None,
+        "sam3_prompts": [],
+        "sam3_config": {},
         "prompts": {
             "vision_analysis": {
                 "default_prompt": "テスト用プロンプト（LLM 未使用のため内容は問わない）"
@@ -224,6 +231,7 @@ def test_temporal_node_with_image_pair():
             "last_vision_summary": None,
             "assessment": None,
             "assessment_history": [],
+            "grounded_critical_points": [],
             "belief_state": None,
             "done": False,
             "errors": [],
@@ -238,6 +246,9 @@ def test_temporal_node_with_image_pair():
             "depth_estimator": None,
             "infrared_analyzer": InfraredImageAnalyzer(),
             "temporal_analyzer": TemporalImageAnalyzer(),
+            "sam3_analyzer": None,
+            "sam3_prompts": [],
+            "sam3_config": {},
             "prompts": {
                 "vision_analysis": {
                     "default_prompt": "テスト用プロンプト（LLM未使用）"
@@ -274,3 +285,120 @@ def test_temporal_node_with_image_pair():
         print("✅ Temporal node test with image pair passed")
         print(f"Frame ID: {out['latest_output']['frame_id']}")
         print(f"Temporal analysis: {out['latest_output']['temporal_analysis']}")
+
+
+def test_sam3_analyzer_unavailable():
+    """Sam3Analyzer が available=False の場合、analyze() が空結果を返すことを確認。"""
+    analyzer = Sam3Analyzer(model_cfg={"checkpoint": "facebook/sam3-hiera-large"})
+
+    # SAM3 ライブラリが存在しない環境では available=False になる
+    # available=False の場合は空結果を返すべき
+    result = analyzer.analyze(
+        image_path=None,
+        frame_id="t0",
+        prompts=["person", "worker"],
+        score_threshold=0.35,
+        max_regions_per_prompt=3,
+        save_masks=False,
+        output_dir="data/sam3_masks",
+    )
+
+    assert isinstance(result, Sam3AnalysisResult)
+    assert result.regions == []
+    assert result.confidence_score == 0.0
+    print("✅ Sam3Analyzer unavailable test passed")
+
+
+def test_e2e_agent_with_sam3_state():
+    """enable_sam3=false でも grounded_critical_points が AgentState に存在することを確認。"""
+    obs_list = [
+        Observation(
+            obs_id="t0",
+            image_path=None,
+            audio_text=None,
+            camera_pose=None,
+        ),
+    ]
+    provider = ObservationProvider(obs_list)
+    agent = build_agent()
+
+    initial_state: AgentState = {
+        "messages": [],
+        "step": 0,
+        "max_steps": 2,
+        "observation": None,
+        "ir": None,
+        "modality_results": {},
+        "received_modalities": [],
+        "barrier_obs_id": None,
+        "latest_output": None,
+        "last_vision_summary": None,
+        "assessment": None,
+        "assessment_history": [],
+        "grounded_critical_points": [],
+        "belief_state": None,
+        "done": False,
+        "errors": [],
+    }
+
+    context = {
+        "provider": provider,
+        "llm": None,
+        "vision_analyzer": None,
+        "audio_analyzer": AudioAnalyzer(),
+        "depth_estimator": None,
+        "infrared_analyzer": InfraredImageAnalyzer(),
+        "temporal_analyzer": TemporalImageAnalyzer(),
+        "sam3_analyzer": None,  # SAM3 無効
+        "sam3_prompts": [],
+        "sam3_config": {},
+        "prompts": {
+            "vision_analysis": {"default_prompt": "テスト用"},
+            "audio_analysis": {"default_prompt": "テスト用"},
+            "safety_assessment": {"system": "テスト用"},
+        },
+        "config": {"audio": {"window_seconds": 3.0}},
+        "chat_max_tokens": 2000,
+        "context_history_size": 0,
+        "expected_modalities": ["vlm", "audio", "temporal"],
+        "run_mode": "until_provider_ends",
+    }
+
+    out = agent.invoke(initial_state, context=context)
+
+    # grounded_critical_points が state に存在する（空リストでも可）
+    assert "grounded_critical_points" in out
+    assert isinstance(out["grounded_critical_points"], list)
+
+    # latest_output に grounded_critical_points フィールドが含まれる
+    assert "latest_output" in out
+    assert out["latest_output"] is not None
+    assert "grounded_critical_points" in out["latest_output"]
+    assert isinstance(out["latest_output"]["grounded_critical_points"], list)
+
+    print("✅ E2E with SAM3 state test passed")
+    print(f"grounded_critical_points: {out['grounded_critical_points']}")
+
+
+def test_critical_points_no_bbox():
+    """normalized_bbox=None の CriticalPoint + label_hint がバリデーションを通ることを確認。"""
+    cp = CriticalPoint(
+        region_id="critical_point_0",
+        description="床にケーブルが放置されており躓く危険がある",
+        severity="high",
+        label_hint="cable on floor",
+        normalized_bbox=None,
+    )
+
+    assert cp.region_id == "critical_point_0"
+    assert cp.severity == "high"
+    assert cp.label_hint == "cable on floor"
+    assert cp.normalized_bbox is None
+
+    # model_dump で exclude_none するとキーが省略される
+    dumped = cp.model_dump(exclude_none=True)
+    assert "normalized_bbox" not in dumped
+    assert "label_hint" in dumped
+
+    print("✅ CriticalPoint no-bbox test passed")
+    print(f"dumped: {dumped}")

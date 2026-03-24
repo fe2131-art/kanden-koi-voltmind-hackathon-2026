@@ -8,46 +8,37 @@ version = "0.1.0"
 description = "Safety View Agent: LangGraph-based agent for safety assessment"
 readme = "CLAUDE.md"
 requires-python = ">=3.12,<3.13"
+license = "Apache-2.0"
+license-files = ["LICENSE", "NOTICE"]
 authors = [
-    {name = "Safety Team"}
+    {name = "fe2131-art"},
+    {name = "Tanaka0912"},
+    {name = "HnToMo"}
 ]
 
 dependencies = [
     "pydantic>=2.12.3",
+    "pytest>=7.0",
+    "pytest-cov>=4.0",
+    "ruff>=0.1.0",
+    "pyright>=1.1.0",
+    "python-dotenv>=1.0",
     "langgraph>=1.0.10",
     "langchain-core>=1.2.16",
     "httpx>=0.24.0",
     "typer>=0.9.0",
     "pyyaml>=6.0",
-    "opencv-python",
     "huggingface_hub>=0.34.0,<1.0",
-    "torch==2.10.0",
-    "torchaudio==2.10.0",
-    # "vllm[audio]>=0.17.1",
-    # "qwen-vl-utils>=0.0.14",
-    # "xformers",
-    # "depth-anything-3",
-    # "vllm-omni",
-    "librosa",
-    "soundfile",
-    # "autoawq",
-    "transformers>=4.51.0",
-    "diffusers>=0.33.0",
-    "accelerate>=1.6.0",
-    "imageio>=2.36.0",
-    "imageio-ffmpeg>=0.6.0",
-    "sentencepiece>=0.2.0",
-    # "flash-attn>=2.8.3",
-    # "ninja"
 ]
 
 [tool.uv.sources]
 torch = [{ index = "torch-cu128" }]
 torchaudio = [{ index = "torch-cu128" }]
-# vllm  = [{ index = "vllm-nightly" }]
-# xformers  = [{ index = "xformers-cu128" }]
-# depth-anything-3 = { path = "./external/Depth-Anything-3", editable = true }
-# vllm-omni = { path = "./external/vllm-omni", editable = true }
+vllm  = [{ index = "vllm-nightly" }]
+xformers  = [{ index = "xformers-cu128" }]
+sam3 = [{ path = "./external/sam3", editable = true }]
+depth-anything-3 = { path = "./external/Depth-Anything-3", editable = true }
+vllm-omni = { path = "./external/vllm-omni", editable = true }
 
 [tool.uv]
 no-build-isolation-package = ["flash-attn"]
@@ -71,20 +62,48 @@ url = "https://download.pytorch.org/whl/cu128"
 explicit = true
 
 [project.optional-dependencies]
+dev = [
+    "opencv-python",
+    "torch==2.10.0",
+    "torchaudio==2.10.0",
+    "vllm[audio]>=0.17.1",
+    "qwen-vl-utils>=0.0.14",
+    "xformers",
+    "depth-anything-3",
+    "sam3",
+    "vllm-omni",
+    "librosa",
+    "kokoro>=0.9.4",
+    "pyopenjtalk>=0.4.1",
+    "fugashi>=1.5.2",
+    "unidic-lite",
+    "jaconv>=0.5.0",
+    "mojimoji",
+    "soundfile",
+    "autoawq",
+    "pycocotools",
+    # "ninja"
+    # "flash-attn>=2.8.3",
+]
+demo = [
+    "websockets>=11.0",
+]
 finetune = [
     "peft>=0.4",
     "datasets>=2.0",
     "safetensors>=0.3",
 ]
-demo = [
-    "websockets>=11.0",
-]
-dev = [
-    "pytest>=7.0",
-    "pytest-cov>=4.0",
-    "ruff>=0.1.0",
-    "pyright>=1.1.0",
-    "python-dotenv>=1.0",
+video_generation = [
+    "torch==2.10.0",
+    "torchaudio==2.10.0",
+    "librosa",
+    "soundfile",
+    "transformers>=4.51.0",
+    "diffusers>=0.33.0",
+    "accelerate>=1.6.0",
+    "imageio>=2.36.0",
+    "imageio-ffmpeg>=0.6.0",
+    "sentencepiece>=0.2.0",
 ]
 
 [tool.hatch.build.targets.wheel]

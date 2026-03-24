@@ -19,6 +19,7 @@ from safety_agent.modality_nodes import (
     AudioAnalyzer,
     DepthEstimator,
     InfraredImageAnalyzer,
+    Sam3Analyzer,
     TemporalImageAnalyzer,
     VisionAnalyzer,
 )
@@ -28,6 +29,7 @@ from safety_agent.schema import (
     Observation,
     ObservationProvider,
 )
+from safety_agent.tts_narrator import TTSNarrator
 from util.logger import setup_logger
 
 # .env ファイルから環境変数を読み込む
@@ -661,7 +663,9 @@ def iter_observations_from_video(
             obs = Observation(
                 obs_id=f"img_{frame_count}",
                 image_path=str(frame_path.absolute()),
-                prev_image_path=str(prev_frame_path.absolute()) if prev_frame_path else None,
+                prev_image_path=str(prev_frame_path.absolute())
+                if prev_frame_path
+                else None,
                 audio_path=audio_path,
                 infrared_image_path=infrared_path_map.get(frame_path.stem),
                 camera_pose=CameraPose(pan_deg=0, tilt_deg=0, zoom=1),
@@ -675,7 +679,9 @@ def iter_observations_from_video(
         idx += 1
 
     cap.release()
-    logger.info(f"Lazy extraction complete: {frame_count} frames from {video_path.name}")
+    logger.info(
+        f"Lazy extraction complete: {frame_count} frames from {video_path.name}"
+    )
 
 
 def append_frame_result(
@@ -824,6 +830,34 @@ def prepare_observations_inspesafe(
         logger.info(f"[inspesafe] 音声コピー: {audio_files[0]} → {audio_dest}")
     else:
         logger.warning(f"[inspesafe] 音声ファイルなし: {session_dir}")
+
+    # フロントエンド用に音声付き動画を data/videos/video.mp4 へ出力
+    videos_out_dir = Path("data/videos")
+    videos_out_dir.mkdir(parents=True, exist_ok=True)
+    demo_video_path = videos_out_dir / "video.mp4"
+    try:
+        if audio_files:
+            # 映像 + 音声をmux（映像はコピー、音声はAAC変換）
+            subprocess.run(
+                [
+                    "ffmpeg", "-y",
+                    "-i", str(video_path),
+                    "-i", str(audio_files[0]),
+                    "-c:v", "copy",
+                    "-c:a", "aac",
+                    "-shortest",
+                    str(demo_video_path),
+                ],
+                check=True,
+                capture_output=True,
+            )
+            logger.info(f"[inspesafe] デモ用動画 (映像+音声): {demo_video_path}")
+        else:
+            shutil.copy2(str(video_path), str(demo_video_path))
+            logger.info(f"[inspesafe] デモ用動画 (映像のみ): {demo_video_path}")
+    except (subprocess.CalledProcessError, FileNotFoundError) as e:
+        logger.warning(f"[inspesafe] デモ用動画の生成失敗、直接コピー: {e}")
+        shutil.copy2(str(video_path), str(demo_video_path))
 
     # フレーム展開（既存の split_video_to_frames を再利用）
     frames, video_timestamps = split_video_to_frames(
@@ -1077,8 +1111,7 @@ def main():
 
     # Clean up data directories before processing
     # Note: data/audio is NOT cleared as it contains source audio files used by multiple runs
-    # TODO: data/voice への書き込みは未実装。将来フレーム単位の音声クリップ出力に使用予定。
-    for data_dir in ["data/frames", "data/depth", "data/voice"]:
+    for data_dir in ["data/frames", "data/depth", "data/voice", "data/infrared_frames", "data/sam3_masks"]:
         if os.path.exists(data_dir):
             shutil.rmtree(data_dir)
         os.makedirs(data_dir, exist_ok=True)
@@ -1125,7 +1158,9 @@ def main():
         )
         provider = LazyObservationProvider(lazy_gen)  # type: ignore[assignment]
         actual_max_steps = lazy_max if lazy_max > 0 else video_cfg.get("max_frames", 0)
-        logger.info(f"Pipeline mode: lazy frame extraction from {video_path_for_lazy.name}")
+        logger.info(
+            f"Pipeline mode: lazy frame extraction from {video_path_for_lazy.name}"
+        )
     else:
         # フレーム既存 or inspesafe モード: 従来通り全フレームを先に準備
         try:
@@ -1188,6 +1223,36 @@ def main():
             )
             agent_cfg["enable_temporal"] = False
 
+    sam3_analyzer = None
+    sam3_prompts: list[str] = []
+    sam3_config: dict = {}
+    if agent_cfg.get("enable_sam3", False):
+        try:
+            sam3_cfg = config.get("sam3", {})
+            sam3_prompts = sam3_cfg.get("prompts", ["person", "worker", "tool"])
+            sam3_config = {
+                "score_threshold": sam3_cfg.get("score_threshold", 0.35),
+                "max_regions_per_prompt": sam3_cfg.get("max_regions_per_prompt", 2),
+                "max_regions_total": sam3_cfg.get("max_regions_total", 8),
+                "save_masks": sam3_cfg.get("save_masks", True),
+                "output_dir": sam3_cfg.get("output_dir", "data/sam3_masks"),
+            }
+            sam3_analyzer = Sam3Analyzer(
+                model_cfg={
+                    "checkpoint_path": sam3_cfg.get("checkpoint_path", None),
+                }
+            )
+            if not sam3_analyzer.available:
+                logger.warning("Sam3Analyzer: model not available, SAM3 disabled")
+                agent_cfg["enable_sam3"] = False
+            else:
+                os.makedirs(sam3_config["output_dir"], exist_ok=True)
+        except Exception as e:
+            logger.warning(
+                f"Failed to initialize Sam3Analyzer: {e}, SAM3 analysis will not be available"
+            )
+            agent_cfg["enable_sam3"] = False
+
     # Initial state (with modality_results for fan-in)
     initial_state: AgentState = {
         "messages": [],
@@ -1202,6 +1267,7 @@ def main():
         "last_vision_summary": None,
         "assessment": None,
         "assessment_history": [],
+        "grounded_critical_points": [],
         "belief_state": None,
         "done": False,
         "errors": [],
@@ -1217,6 +1283,8 @@ def main():
         expected_modalities.append("infrared")
     if agent_cfg.get("enable_temporal", False):
         expected_modalities.append("temporal")
+    if agent_cfg.get("enable_sam3", False):
+        expected_modalities.append("sam3")
 
     # Context (with modality analyzers for fan-out nodes)
     context = {
@@ -1227,6 +1295,9 @@ def main():
         "depth_estimator": depth_estimator,
         "infrared_analyzer": infrared_analyzer,
         "temporal_analyzer": temporal_analyzer,
+        "sam3_analyzer": sam3_analyzer,
+        "sam3_prompts": sam3_prompts,
+        "sam3_config": sam3_config,
         "prompts": prompts,
         "config": config,  # depth_node で config.get("tokens", ...) 使用
         "chat_max_tokens": tokens_cfg.get("chat_max_tokens", 2000),
@@ -1253,16 +1324,31 @@ def main():
     else:
         logger.info("Frame skip settings: all modalities run every frame (default)")
 
+    # TTS ナレーター初期化（assessment.safety_status → data/voice/{frame_id}.wav）
+    tts_narrator = TTSNarrator(config)
+
     # フレーム処理時のコールバック関数定義
     # video_timestamp は emit_output が obs.video_timestamp から直接設定するため、
     # 外部マップは不要（None を渡すと emit_output の値がそのまま保存される）
     def _on_frame(frame_output: dict) -> None:
-        """フレーム処理完了時に perception_results/ へ即時保存"""
+        """フレーム処理完了時に perception_results/ へ即時保存し TTS 音声を生成"""
         append_frame_result(
             "data/perception_results",
             frame_output,
             None,
         )
+        # safety_status テキストを WAV ファイルへ変換
+        # ファイル名は他モダリティ（frames/, depth/）と同じ frame_{timestamp:.1f}s 形式
+        assessment = frame_output.get("assessment") or {}
+        safety_status = assessment.get("safety_status", "")
+        if safety_status:
+            ts = frame_output.get("video_timestamp")
+            tts_name = (
+                f"frame_{ts:.1f}s"
+                if ts is not None
+                else frame_output.get("frame_id", "frame")
+            )
+            tts_narrator.generate(tts_name, safety_status)
 
     # Run and log agent with per-frame callback
     run_and_log_agent(agent, initial_state, context, on_frame_callback=_on_frame)

@@ -25,15 +25,17 @@
 ### 1. 依存関係をインストール
 
 ```bash
-uv sync
+uv sync --extra video_generation
 ```
 
-新しく追加された依存パッケージ:
+`video_generation` extra に含まれるパッケージ:
 - `diffusers>=0.33.0` - LTX2Pipeline
 - `transformers>=4.51.0` - テキスト処理
 - `accelerate>=1.6.0` - GPU メモリ管理
 - `imageio>=2.36.0`, `imageio-ffmpeg>=0.6.0` - MP4 書き出し
 - `sentencepiece>=0.2.0` - トークナイザー
+- `librosa`, `soundfile` - 音声処理
+- `torch==2.10.0`, `torchaudio==2.10.0` - PyTorch（CUDA 12.8 対応）
 
 ### 2. HuggingFace モデルのダウンロード（初回のみ）
 

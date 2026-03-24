@@ -72,12 +72,17 @@ class NormalizedBBox(BaseModel):
 
 
 class CriticalPoint(BaseModel):
-    """画像中の危険箇所。位置を特定できる重要な危険。"""
+    """画像中の危険箇所。位置を特定できる重要な危険。
+
+    Phase 1 以降: normalized_bbox は後方互換のため残すが主経路では使わない。
+    label_hint は SAM3 プロンプト候補に近い短い英語語句（例: "person", "cable on floor"）。
+    """
 
     region_id: str
     description: str
     normalized_bbox: Optional[NormalizedBBox] = None
     severity: Literal["low", "medium", "high", "critical", "unknown"] = "unknown"
+    label_hint: Optional[str] = None
 
 
 class VisionBlindSpot(BaseModel):
@@ -163,13 +168,57 @@ class TemporalChange(BaseModel):
     severity: Literal["low", "medium", "high", "critical", "unknown"] = "unknown"
 
 
+# ─── SAM3 セグメンテーション結果 ───────────────────────────────────────────────
+# Sam3Analyzer.analyze() の出力。PerceptionIR.sam3_analysis に格納。
+
+
+class Sam3Region(BaseModel):
+    """SAM3 image mode が検出した 1 つのセグメント領域。
+
+    label は SAM3 生出力の labels フィールドに依存しない。
+    投げた prompt 文字列をそのまま label として使用する。
+    """
+
+    region_id: str  # 例: "sam3_t0_000"（frame 内で一意）
+    prompt: str  # 検出に使ったプロンプト文字列
+    label: str  # label = prompt
+    score: float = Field(ge=0.0, le=1.0)
+    normalized_bbox: Optional[NormalizedBBox] = None
+    mask_path: Optional[str] = None
+
+
+class Sam3AnalysisResult(BaseModel):
+    """SAM3 セグメンテーション結果。PerceptionIR.sam3_analysis に格納。"""
+
+    regions: List[Sam3Region] = Field(default_factory=list)
+    confidence_score: float = Field(default=0.0, ge=0.0, le=1.0)
+
+
+# ─── SAM3 grounded 危険点（LLM 最終判断出力） ────────────────────────────────
+# determine_next_action_llm() が SAM3 region_id を参照して生成する最終的な危険点。
+# AgentState.grounded_critical_points に格納される。
+
+
+class GroundedCriticalPoint(BaseModel):
+    """SAM3 region を参照した最終 region-grounded 危険点。
+
+    region_id は Sam3Region.region_id を参照する。
+    SAM3 無効時は "unknown_0" 等の仮 ID を使う。
+    """
+
+    region_id: str
+    description: str
+    severity: Literal["low", "medium", "high", "critical", "unknown"] = "unknown"
+    label_hint: Optional[str] = None
+
+
 class TemporalAnalysisResult(BaseModel):
     """時系列（前後フレーム比較）変化検出結果。PerceptionIR.temporal_analysis に格納。"""
 
     change_detected: bool  # 明らかな変化があったか（VLM が true/false を返す）
     changes: List[TemporalChange] = Field(
         default_factory=list,
-        description="実際に確認できた変化の具体的説明リスト。変化がなければ空配列 []",
+        description="List of confirmed changes. Use empty array [] if no changes are detected.",
     )
     overall_risk: Literal["low", "medium", "high", "critical", "unknown"] = "unknown"
     confidence_score: float = Field(default=0.0, ge=0.0, le=1.0)
@@ -193,7 +242,7 @@ class CameraPose(BaseModel):
 
 
 class PerceptionIR(BaseModel):
-    """1フレーム分の知覚統合結果（VLM + 音声 + 深度 + 赤外線 + 時系列変化）。AgentState.ir に格納。"""
+    """1フレーム分の知覚統合結果（VLM + 音声 + 深度 + 赤外線 + 時系列変化 + SAM3）。AgentState.ir に格納。"""
 
     obs_id: str
     camera_pose: Optional[CameraPose] = None
@@ -202,6 +251,10 @@ class PerceptionIR(BaseModel):
     depth_analysis: Optional[DepthAnalysisResult] = None  # 深度解析出力
     infrared_analysis: Optional[InfraredAnalysisResult] = None  # 赤外線画像解析出力
     temporal_analysis: Optional[TemporalAnalysisResult] = None  # 時系列変化検出出力
+    sam3_analysis: Optional[Sam3AnalysisResult] = None  # SAM3 セグメンテーション出力
+    provisional_points: List[CriticalPoint] = Field(
+        default_factory=list
+    )  # VLM の provisional 危険ヒント（fuse で vision_analysis.critical_points からコピー）
     modality_errors: List[str] = Field(default_factory=list)  # 各モダリティのエラー
 
 
@@ -231,7 +284,7 @@ class HazardTrack(BaseModel):
     severity: Literal["low", "medium", "high", "critical", "unknown"]
     confidence_score: float = Field(ge=0.0, le=1.0)
     supporting_modalities: List[
-        Literal["vision", "audio", "depth", "infrared", "temporal"]
+        Literal["vision", "audio", "depth", "infrared", "temporal", "sam3"]
     ] = Field(default_factory=list)
     evidence: List[str] = Field(default_factory=list)
 
@@ -257,8 +310,14 @@ class BeliefState(BaseModel):
 class SafetyAssessment(BaseModel):
     """LLM による総合安全判断。AgentState.assessment に格納。
 
+    risk_level の意味（各モダリティの overall_risk と統一）:
+      - "low"      : 危険なし・継続監視
+      - "medium"   : 注意が必要
+      - "high"     : 危険あり（即停止は不要）
+      - "critical" : 即時停止・退避が必要（emergency_stop と対応）
+
     action_type の意味:
-      - "emergency_stop"  : 即時停止・退避が必要
+      - "emergency_stop"  : 即時停止・退避が必要（risk_level=critical と対応）
       - "inspect_region"  : 特定領域の重点確認が必要（target_region 必須）
       - "mitigate"        : 安全対策の実施・強化が必要
       - "monitor"         : 継続監視でよい
@@ -273,7 +332,7 @@ class SafetyAssessment(BaseModel):
     """
 
     # 現在の危険状態
-    risk_level: Literal["high", "medium", "low"]
+    risk_level: Literal["low", "medium", "high", "critical"]
     safety_status: str
     detected_hazards: List[str] = Field(default_factory=list)
 
@@ -290,6 +349,17 @@ class SafetyAssessment(BaseModel):
         "new", "persistent", "worsening", "improving", "resolved", "unknown"
     ] = "unknown"
     confidence_score: float = Field(default=0.0, ge=0.0, le=1.0)
+
+
+class ActionWithGrounding(BaseModel):
+    """determine_next_action_llm() の structured output スキーマ。
+
+    SafetyAssessment と grounded_critical_points を1回の LLM 呼び出しで同時生成する。
+    SAM3 無効時は grounded_critical_points が空配列になり、従来の assessment のみを使う。
+    """
+
+    assessment: SafetyAssessment
+    grounded_critical_points: List[GroundedCriticalPoint] = Field(default_factory=list)
 
 
 # =============================================================================
@@ -311,7 +381,9 @@ class Observation:
     infrared_image_path: Optional[str] = None  # 赤外線フレームパス
     camera_pose: Optional[CameraPose] = None
     video_timestamp: Optional[float] = None  # 動画内の秒数
-    image_bytes: Optional[bytes] = None  # ingest_observation で1回だけ読み込みキャッシュ（改善B）
+    image_bytes: Optional[bytes] = (
+        None  # ingest_observation で1回だけ読み込みキャッシュ（改善B）
+    )
 
 
 class ObservationProvider:
@@ -367,6 +439,7 @@ _SCHEMA_MAP: Dict[str, type] = {
     "audio_analysis": AudioAnalysisResult,
     "belief_state": BeliefState,
     "safety_assessment": SafetyAssessment,
+    "action_with_grounding": ActionWithGrounding,
 }
 
 SchemaType = Literal[
@@ -377,6 +450,7 @@ SchemaType = Literal[
     "audio_analysis",
     "belief_state",
     "safety_assessment",
+    "action_with_grounding",
 ]
 
 # _SCHEMA_MAP と SchemaType の Literal 値が一致しているかをモジュール読み込み時に検証。

@@ -54,10 +54,14 @@ const styles = {
   right: {
     width: '420px',
     flex: '0 0 420px',
+    maxHeight: 'calc(100vh - 28px)',
+    overflowY: 'auto',
+    position: 'sticky',
+    top: '14px',
   },
   videoWrap: {
     position: 'relative',
-    width: '960px',
+    width: '720px',
     maxWidth: '100%',
   },
   video: {
@@ -117,7 +121,7 @@ const styles = {
     cursor: 'pointer',
   },
   log: {
-    height: '200px',
+    height: '120px',
     overflow: 'auto',
     font: '12px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace',
     whiteSpace: 'pre-wrap',
@@ -172,9 +176,10 @@ function App() {
   const canvasRef = useRef(null)
   const audioRef = useRef(null)
 
-  const [wsUrl, setWsUrl] = useState('ws://127.0.0.1:8001')
-  const [mode, setMode] = useState('sync')
-  const [delay, setDelay] = useState(0.7)
+  const params = new URLSearchParams(window.location.search)
+  const [wsUrl, setWsUrl] = useState(params.get('ws') ?? 'ws://127.0.0.1:8001')
+  const [mode, setMode] = useState(params.get('mode') ?? 'sync')
+  const [delay, setDelay] = useState(Number(params.get('delay') ?? 0))
   const [status, setStatus] = useState('initializing...')
   const [connectionState, setConnectionState] = useState('initializing')
   const [log, setLog] = useState('')
@@ -184,6 +189,9 @@ function App() {
   const [curDepthImagePath, setCurDepthImagePath] = useState(null)
   const [statusOpen, setStatusOpen] = useState(false)
   const [curVoicePath, setCurVoicePath] = useState(null)
+  const [curAudioCues, setCurAudioCues] = useState([])
+  const [curInfraredImagePath, setCurInfraredImagePath] = useState(null)
+  const [isVoicePlaying, setIsVoicePlaying] = useState(false)
 
   const wsRef = useRef(null)
   const resultsRef = useRef([])
@@ -193,6 +201,7 @@ function App() {
   const animIdRef = useRef(null)
   const lastVideoTimeRef = useRef(0)
   const lastAssessmentFrameRef = useRef(null)
+  const lastDepthImagePathRef = useRef(null)
 
   useEffect(() => {
     let cancelled = false
@@ -305,6 +314,8 @@ function App() {
       setCurSceneDesc('')
       setCurDepthImagePath(null)
       setCurVoicePath(null)
+      setCurAudioCues([])
+      setCurInfraredImagePath(null)
       setSceneDescOpen(false)
       setStatusOpen(false)
       lastAssessmentFrameRef.current = null
@@ -396,13 +407,20 @@ function App() {
             lastAssessmentFrameRef.current = cur.frame_id
             setCurAssessment(cur.assessment ?? null)
             setCurSceneDesc(cur.scene_description ?? '')
-            setCurDepthImagePath(cur.depth_image_path ?? null)
+            // depth は null のフレームでも前回画像を維持する
+            if (cur.depth_image_path) {
+              lastDepthImagePathRef.current = cur.depth_image_path
+            }
+            setCurDepthImagePath(lastDepthImagePathRef.current)
             setCurVoicePath(cur.voice_path ?? null)
+            setCurAudioCues(cur.audio_cues ?? [])
+            setCurInfraredImagePath(cur.infrared_image_path ?? null)
 
             // 音声再生（voice_path がある場合）
             if (cur.voice_path && audioRef.current) {
               audioRef.current.src = cur.voice_path
               audioRef.current.play().catch(() => {})
+              setIsVoicePlaying(true)
             }
           }
           drawOverlay(cur.critical_points, w, h, cur.assessment?.target_region)
@@ -416,6 +434,8 @@ function App() {
             setCurSceneDesc('')
             setCurDepthImagePath(null)
             setCurVoicePath(null)
+            setCurAudioCues([])
+            setCurInfraredImagePath(null)
           }
           ctx.clearRect(0, 0, w, h)
         }
@@ -482,7 +502,61 @@ function App() {
             ></video>
             <canvas ref={canvasRef} style={styles.canvas}></canvas>
           </div>
-          <audio ref={audioRef} style={{ display: 'none' }} />
+          <audio
+            ref={audioRef}
+            style={{ display: 'none' }}
+            onEnded={() => setIsVoicePlaying(false)}
+          />
+          {isVoicePlaying && (
+            <button
+              onClick={() => {
+                audioRef.current?.pause()
+                audioRef.current && (audioRef.current.currentTime = 0)
+                setIsVoicePlaying(false)
+              }}
+              style={{
+                ...styles.button,
+                marginTop: '6px',
+                background: '#5c0000',
+                color: '#ff6b6b',
+                border: '1px solid #ff4444',
+              }}
+            >
+              ⏹ 音声停止
+            </button>
+          )}
+
+          {/* Depth Map + Infrared 横並び（動画直下） */}
+          {(curDepthImagePath || curInfraredImagePath) && (
+            <div style={{ display: 'flex', gap: '8px', marginTop: '8px' }}>
+              {curDepthImagePath && (
+                <div style={{ flex: 1, background: '#111', borderRadius: '8px', overflow: 'hidden' }}>
+                  <div style={{ fontSize: '11px', color: '#888', padding: '4px 8px' }}>Depth Map</div>
+                  <div style={{ aspectRatio: '16/9', overflow: 'hidden' }}>
+                    <img
+                      src={curDepthImagePath}
+                      alt="depth map"
+                      style={{ width: '100%', height: '100%', objectFit: 'cover', objectPosition: 'right center', display: 'block' }}
+                    />
+                  </div>
+                </div>
+              )}
+              {!curDepthImagePath && <div style={{ flex: 1 }} />}
+              {curInfraredImagePath && (
+                <div style={{ flex: 1, background: '#111', borderRadius: '8px', overflow: 'hidden' }}>
+                  <div style={{ fontSize: '11px', color: '#888', padding: '4px 8px' }}>Infrared</div>
+                  <div style={{ aspectRatio: '16/9', overflow: 'hidden' }}>
+                    <img
+                      src={curInfraredImagePath}
+                      alt="infrared"
+                      style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }}
+                    />
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+
           <div style={styles.hint}>
             ※ data/perception_results/frames/ から推論結果を読み込みます。
           </div>
@@ -560,7 +634,7 @@ function App() {
                 )}
 
                 {/* reason */}
-                <div style={{ fontSize:'11px', color:'#777', borderTop:'1px solid #333', paddingTop:'6px', lineHeight:'1.5' }}>
+                <div style={{ fontSize:'13px', color:'#fff', borderTop:'1px solid #333', paddingTop:'6px', lineHeight:'1.5' }}>
                   {curAssessment.reason}
                 </div>
               </div>
@@ -569,28 +643,34 @@ function App() {
             )}
           </div>
 
-          {/* Depth Image Panel (右側だけ表示) */}
-          {curDepthImagePath && (
+
+
+          {/* Audio Cues Panel */}
+          {curAudioCues.length > 0 && (
             <div style={styles.panel}>
-              <h3 style={styles.panelH3}>Depth Map</h3>
-              <div style={{
-                width: '100%',
-                height: '150px',
-                overflow: 'hidden',
-                borderRadius: '4px',
-                background: '#000',
-              }}>
-                <img
-                  src={curDepthImagePath}
-                  alt="depth map"
-                  style={{
-                    width: '200%',           /* side-by-side は 2倍の幅 */
-                    height: '100%',
-                    marginLeft: '-100%',     /* 右側だけを見えるようにシフト */
-                    objectFit: 'cover',
-                  }}
-                />
-              </div>
+              <h3 style={styles.panelH3}>🔊 Audio Cues</h3>
+              {curAudioCues.map((cue, i) => (
+                <div key={i} style={{
+                  display: 'flex', alignItems: 'flex-start', gap: '8px',
+                  marginBottom: i < curAudioCues.length - 1 ? '6px' : 0,
+                }}>
+                  <span style={{
+                    ...styles.smallBadge,
+                    flexShrink: 0,
+                    background: SEVERITY_COLORS[cue.severity] ? `${SEVERITY_COLORS[cue.severity]}22` : '#222',
+                    color: SEVERITY_COLORS[cue.severity] ?? '#aaa',
+                    border: `1px solid ${SEVERITY_COLORS[cue.severity] ?? '#444'}`,
+                  }}>
+                    {cue.severity ?? 'unknown'}
+                  </span>
+                  <div>
+                    <div style={{ fontSize: '12px', color: '#eee', fontWeight: '600' }}>{cue.cue}</div>
+                    {cue.evidence && (
+                      <div style={{ fontSize: '11px', color: '#777', marginTop: '2px' }}>{cue.evidence}</div>
+                    )}
+                  </div>
+                </div>
+              ))}
             </div>
           )}
 

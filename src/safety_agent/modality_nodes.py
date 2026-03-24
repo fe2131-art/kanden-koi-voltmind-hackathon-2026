@@ -36,6 +36,9 @@ except AttributeError:
 
 from .schema import (
     AudioCue,
+    NormalizedBBox,
+    Sam3AnalysisResult,
+    Sam3Region,
     VisionAnalysisResult,
 )
 
@@ -962,3 +965,269 @@ class TemporalImageAnalyzer:
         buf = BytesIO()
         Image.fromarray(merged).save(buf, format="PNG")
         return buf.getvalue()
+
+
+# ─── SAM3 セグメンテーション ────────────────────────────────────────────────────
+
+
+class Sam3Analyzer:
+    """SAM3 image mode によるテキストプロンプトベースセグメンテーション。
+
+    SAM3 のインポートまたはモデルロードに失敗した場合は available=False で動作継続（fail-open）。
+    GPU メモリ競合を防ぐため threading.Lock() を保持する。
+    """
+
+    def __init__(self, model_cfg: dict, device: Optional[str] = None) -> None:
+        self.available = False
+        self._model = None
+        self._processor = None
+        self._lock = threading.Lock()
+        self._device = device or ("cuda" if torch.cuda.is_available() else "cpu")
+
+        try:
+            from sam3 import build_sam3_image_model  # noqa: PLC0415
+            from sam3.model.sam3_image_processor import Sam3Processor  # noqa: PLC0415
+
+            # checkpoint_path が指定されていれば local ファイルを使用。
+            # 未指定 (None) の場合は load_from_HF=True で HF Hub から自動ダウンロード。
+            checkpoint_path = model_cfg.get("checkpoint_path", None)
+            self._model = build_sam3_image_model(
+                device=self._device,
+                checkpoint_path=checkpoint_path,
+                load_from_HF=(checkpoint_path is None),
+            )
+            self._processor = Sam3Processor(model=self._model, device=self._device)
+            self.available = True
+            logger.info(
+                f"Sam3Analyzer initialized on {self._device} "
+                f"(checkpoint_path={checkpoint_path or 'HF Hub'})"
+            )
+        except Exception as e:
+            logger.warning(f"Sam3Analyzer: model load failed, SAM3 disabled: {e}")
+
+    def analyze(
+        self,
+        image_path: str,
+        frame_id: str,
+        prompts: list[str],
+        score_threshold: float = 0.35,
+        max_regions_per_prompt: int = 2,
+        max_regions_total: int = 8,
+        save_masks: bool = True,
+        output_dir: str = "data/sam3_masks",
+    ) -> Sam3AnalysisResult:
+        """テキストプロンプトごとにセグメンテーションを実行し Sam3AnalysisResult を返す。
+
+        Args:
+            image_path: 入力画像のパス
+            frame_id: フレーム識別子（region_id と mask ファイル名に使用）
+            prompts: テキストプロンプトリスト（例: ["person", "cable on floor"]）
+            score_threshold: スコアフィルタ閾値
+            max_regions_per_prompt: prompt ごとの最大 region 数
+            save_masks: True の場合 mask PNG を output_dir に保存
+            output_dir: mask 保存先ディレクトリ
+
+        Returns:
+            Sam3AnalysisResult（失敗時は空の結果）
+        """
+        if not self.available or not self._model or not self._processor:
+            return Sam3AnalysisResult()
+
+        regions: list[Sam3Region] = []
+        # 可視化用データ: (mask_arr_hw, label, score, box_xyxy_abs)
+        viz_items: list[tuple[np.ndarray, str, float, Optional[np.ndarray]]] = []
+        global_idx = 0
+
+        try:
+            image = Image.open(image_path).convert("RGB")
+            width, height = image.size
+            output_path = Path(output_dir)
+            if save_masks:
+                output_path.mkdir(parents=True, exist_ok=True)
+
+            with self._lock:
+                state = self._processor.set_image(image)
+                for prompt in prompts:
+                    try:
+                        # プロンプト切り替え前に前回の言語特徴・geometric_prompt をリセット
+                        self._processor.reset_all_prompts(state)
+                        # SAM3 内部 threshold は 0.0（全検出を返させる）→ 外部フィルタで制御
+                        self._processor.confidence_threshold = 0.0
+                        state = self._processor.set_text_prompt(
+                            state=state, prompt=prompt
+                        )
+                        masks = state["masks"]  # [N, 1, H, W] bool
+                        boxes = state["boxes"]  # [N, 4] xyxy 絶対座標
+                        scores = state["scores"]  # [N]
+                    except Exception as e:
+                        logger.warning(f"Sam3Analyzer: prompt '{prompt}' failed: {e}")
+                        continue
+
+                    # Tensor → numpy に変換
+                    if hasattr(scores, "cpu"):
+                        scores_np = scores.cpu().numpy()
+                    else:
+                        scores_np = np.array(scores)
+                    if hasattr(boxes, "cpu"):
+                        boxes_np = boxes.cpu().numpy()
+                    else:
+                        boxes_np = np.array(boxes)
+                    if hasattr(masks, "cpu"):
+                        masks_np = masks.cpu().numpy()
+                    else:
+                        masks_np = np.array(masks)
+
+                    # スコアフィルタ → 降順ソート → 上位 N 件に絞る
+                    valid_indices = np.where(scores_np >= score_threshold)[0]
+                    if len(valid_indices) == 0:
+                        continue
+                    sorted_indices = valid_indices[
+                        np.argsort(scores_np[valid_indices])[::-1]
+                    ][:max_regions_per_prompt]
+
+                    # prompt 文字列を安全なファイル名形式に変換
+                    prompt_safe = re.sub(r"[^a-zA-Z0-9_-]", "_", prompt)
+
+                    for idx in sorted_indices:
+                        if global_idx >= max_regions_total:
+                            break
+                        region_id = f"sam3_{frame_id}_{global_idx:03d}"
+                        score = float(scores_np[idx])
+
+                        # bbox 正規化 (xyxy → 0-1)
+                        bbox: Optional[NormalizedBBox] = None
+                        box_abs: Optional[np.ndarray] = None
+                        if len(boxes_np) > idx:
+                            box = boxes_np[idx]
+                            if len(box) >= 4:
+                                bbox = NormalizedBBox(
+                                    x_min=max(0.0, min(1.0, float(box[0]) / width)),
+                                    y_min=max(0.0, min(1.0, float(box[1]) / height)),
+                                    x_max=max(0.0, min(1.0, float(box[2]) / width)),
+                                    y_max=max(0.0, min(1.0, float(box[3]) / height)),
+                                )
+                                box_abs = box[:4].copy()
+
+                        # mask 取り出し・正規化
+                        mask_path: Optional[str] = None
+                        if len(masks_np) > idx:
+                            mask_arr = masks_np[idx]
+                            if mask_arr.ndim == 3 and mask_arr.shape[0] == 1:
+                                mask_arr = mask_arr[0]
+                            mask_hw = (mask_arr > 0.5)
+
+                            # 個別 PNG 保存
+                            if save_masks:
+                                try:
+                                    mask_filename = (
+                                        f"{frame_id}_region_{global_idx:03d}.png"
+                                    )
+                                    mask_file = output_path / mask_filename
+                                    Image.fromarray(
+                                        mask_hw.astype(np.uint8) * 255
+                                    ).save(str(mask_file))
+                                    mask_path = str(mask_file)
+                                except Exception:
+                                    logger.exception(
+                                        f"Sam3Analyzer: mask save failed for "
+                                        f"{frame_id}/{prompt_safe}/{idx}"
+                                    )
+
+                            viz_items.append((mask_hw, prompt, score, box_abs))
+
+                        regions.append(
+                            Sam3Region(
+                                region_id=region_id,
+                                prompt=prompt,
+                                label=prompt,
+                                score=score,
+                                normalized_bbox=bbox,
+                                mask_path=mask_path,
+                            )
+                        )
+                        global_idx += 1
+
+            # カラーオーバーレイ可視化画像を生成
+            if save_masks and regions:
+                self._save_visualization(
+                    image, viz_items, output_path, frame_id
+                )
+
+        except Exception as e:
+            logger.warning(f"Sam3Analyzer.analyze() failed for {frame_id}: {e}")
+            return Sam3AnalysisResult()
+
+        confidence_score = (
+            float(np.mean([r.score for r in regions])) if regions else 0.0
+        )
+        return Sam3AnalysisResult(regions=regions, confidence_score=confidence_score)
+
+    def _save_visualization(
+        self,
+        image: Image.Image,
+        viz_items: list[tuple[np.ndarray, str, float, Optional[np.ndarray]]],
+        output_path: Path,
+        frame_id: str,
+    ) -> None:
+        """全 region のカラーオーバーレイ可視化画像を保存する。
+
+        matplotlib Agg バックエンドを使いヘッドレスで描画。
+        各 region を異なる色で半透明オーバーレイし、bbox・ラベル・スコアを描画。
+        """
+        try:
+            import matplotlib
+            matplotlib.use("Agg")
+            import matplotlib.patches as mpatches
+            import matplotlib.pyplot as plt
+
+            width, height = image.size
+            fig, ax = plt.subplots(1, 1, figsize=(width / 100, height / 100), dpi=100)
+            fig.patch.set_facecolor("black")
+            fig.subplots_adjust(left=0, right=1, top=1, bottom=0)
+            ax.set_position((0, 0, 1, 1))
+            ax.imshow(np.array(image))
+            ax.axis("off")
+
+            cmap = plt.get_cmap("tab20")
+
+            for i, (mask_hw, label, score, box_abs) in enumerate(viz_items):
+                color = cmap(i % 20)[:3]  # RGB tuple
+
+                # 半透明カラーマスクオーバーレイ
+                overlay = np.zeros((height, width, 4), dtype=np.float32)
+                overlay[mask_hw, :3] = color
+                overlay[mask_hw, 3] = 0.45
+                ax.imshow(overlay)
+
+                # bbox 描画
+                if box_abs is not None:
+                    x1, y1, x2, y2 = box_abs
+                    rect = mpatches.Rectangle(
+                        (x1, y1), x2 - x1, y2 - y1,
+                        linewidth=2,
+                        edgecolor=color,
+                        facecolor="none",
+                    )
+                    ax.add_patch(rect)
+                    # ラベル + スコア
+                    ax.text(
+                        x1, max(y1 - 4, 0),
+                        f"{label} {score:.2f}",
+                        color="white",
+                        fontsize=9,
+                        fontweight="bold",
+                        bbox=dict(facecolor=color, alpha=0.75, pad=2, edgecolor="none"),
+                    )
+
+            viz_file = output_path / f"{frame_id}_viz.jpg"
+            fig.savefig(
+                str(viz_file),
+                dpi=100,
+                bbox_inches=None,
+                pad_inches=0,
+                pil_kwargs={"quality": 90},
+            )
+            plt.close(fig)
+            logger.info(f"Sam3Analyzer: visualization saved → {viz_file}")
+        except Exception:
+            logger.exception(f"Sam3Analyzer: visualization failed for {frame_id}")

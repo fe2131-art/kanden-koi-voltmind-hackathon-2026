@@ -16,6 +16,8 @@ agent:
   infrared_every_n_frames: 2
   temporal_every_n_frames: 1
   belief_every_n_frames: 2   # update_belief_state_llm の実行間隔
+  enable_sam3: true
+  sam3_every_n_frames: 1
 
 # LLM configuration
 llm:
@@ -25,7 +27,7 @@ llm:
   # vLLM settings (local server)
   vllm:
     base_url: "http://localhost:8000/v1"
-    model: "QuantTrio/Qwen3.5-4B-AWQ"
+    model: "QuantTrio/Qwen3.5-9B-AWQ"
     api_key: "EMPTY"
     timeout_s: 60.0
 
@@ -46,7 +48,7 @@ vlm:
     timeout_s: 60.0
   vllm:
     base_url: "http://localhost:8000/v1"
-    model: "QuantTrio/Qwen3.5-4B-AWQ"
+    model: "QuantTrio/Qwen3.5-9B-AWQ"
     timeout_s: 60.0
 
 # ALM (Audio-Language Model) 設定
@@ -93,7 +95,40 @@ tokens:
   vision_max_completion_tokens: 4098  # Vision API: 16k コンテキスト対応
   chat_max_tokens: 4098               # テキスト生成用: 詳細な構造化出力対応
 
-# Thresholds
-thresholds:
-  risk_stop_threshold: 0.2      # Stop if max unobserved risk <= this
-  hazard_focus_threshold: 0.6   # Enforce high-risk unobserved coverage
+# TTS ナレーション設定（Kokoro TTS）
+# assessment.safety_status の内容をフレームごとに音声ファイルへ変換する
+sam3:
+  enabled: true
+  mode: image
+  checkpoint_path: /home/team-005/.cache/huggingface/hub/models--1038lab--sam3/snapshots/f055b060a4de0a040891ba2ebac9c5cb3c1c0132/sam3.pt   # null = HF Hub (facebook/sam3) から自動DL。ローカルパスも可
+  prompts:
+    - person
+    - worker
+    - steam
+    - smoke
+    - leak
+    - rotating machinery
+    - turbine
+  score_threshold: 0.35
+  max_regions_per_prompt: 2
+  max_regions_total: 8
+  save_masks: true
+  output_dir: data/sam3_masks
+
+tts:
+  enabled: true
+  # 日本語女性ナレーターボイス
+  #   jf_alpha      : クリアで汎用的な女性声（推奨）
+  #   jf_gongitsune : やや柔らかい女性声
+  #   jf_nezumi     : 落ち着いた女性声
+  #   jf_tebukuro   : 明るい女性声
+  voice: "jf_alpha"
+  # 読み上げ速度倍率（0.5=2倍遅い / 1.0=標準 / 1.5=1.5倍速い）
+  speed: 1.0
+  # 言語コード（j=日本語, a=英語US, b=英語UK, z=中国語, など）
+  lang_code: "j"
+  # 出力先ディレクトリ（フレームIDをベース名にした WAV を保存）
+  output_dir: "data/voice"
+  # 推論デバイス（null=自動判定/CUDA優先, "cuda", "cpu"）
+  # "cuda" 固定は CUDA 非搭載環境でクラッシュするため null 推奨
+  device: null
