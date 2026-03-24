@@ -241,6 +241,7 @@ async def monitor_and_stream(websocket):
                                 "depth_analysis": result.get("depth_analysis"),
                                 "temporal_analysis": result.get("temporal_analysis"),
                                 "errors": result.get("errors", []),
+                                "processing_time_sec": result.get("processing_time_sec"),
                             }
 
                             await websocket.send(json.dumps(msg, ensure_ascii=False))

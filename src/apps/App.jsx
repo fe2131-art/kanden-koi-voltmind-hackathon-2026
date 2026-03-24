@@ -296,7 +296,8 @@ function App() {
       const timeDisplay = msg.frame_id ? `[${msg.frame_id}]` : `${msg.t.toFixed(2)}s`
       const risk = msg.assessment?.risk_level ?? '-'
       const action = msg.assessment?.action_type ?? '-'
-      const line = `${timeDisplay} (+${lat.toFixed(2)}s) risk=${risk} action=${action}\n`
+      const proc = msg.processing_time_sec != null ? ` proc=${msg.processing_time_sec}s` : ''
+      const line = `${timeDisplay} (+${lat.toFixed(2)}s) risk=${risk} action=${action}${proc}\n`
       setLog((prev) => {
         const combined = prev + line
         if (combined.length > 25000) {

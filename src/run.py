@@ -1050,6 +1050,7 @@ def run_and_log_agent(
     # 改善C: stream_mode="updates" で差分のみ受け取り、全 state シリアライズを回避
     accumulated: dict = {}
     prev_latest_obs_id: str | None = None
+    current_frame_start: float | None = None
 
     try:
         for update_item in agent.stream(  # type: ignore[attr-defined]
@@ -1059,12 +1060,18 @@ def run_and_log_agent(
             node_name, node_updates = next(iter(update_item.items()))
             accumulated.update(node_updates)
 
+            # フレーム処理開始時刻を記録
+            if node_name == "ingest_observation":
+                current_frame_start = time.time()
+
             # emit_output ノードの出力から latest_output を検出
             if node_name == "emit_output":
                 latest = node_updates.get("latest_output")
                 if latest:
                     frame_id = latest.get("frame_id")
                     if frame_id != prev_latest_obs_id:
+                        if current_frame_start is not None:
+                            latest["processing_time_sec"] = round(time.time() - current_frame_start, 2)
                         all_frame_outputs.append(latest)
                         prev_latest_obs_id = frame_id
                         if on_frame_callback:
