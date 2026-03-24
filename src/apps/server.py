@@ -17,7 +17,7 @@ DEFAULT_OUTPUT_DIR = Path(__file__).parent.parent.parent / "data"
 # 後方互換のためエイリアスを残す
 OUTPUT_DIR = DEFAULT_OUTPUT_DIR
 
-STATIC_PORT = 8002
+STATIC_PORT = 8011
 
 
 class _AbsolutePathHandler(BaseHTTPRequestHandler):
@@ -68,6 +68,86 @@ def normalize_critical_point(cp: dict) -> dict | None:
         "severity": cp.get("severity", "unknown"),
         "bbox": [nb["x_min"], nb["y_min"], nb["x_max"], nb["y_max"]],
     }
+
+
+def resolve_target_info(
+    target_region: str | None,
+    result: dict,
+) -> dict | None:
+    """Resolve display metadata for target_region from available analysis data.
+
+    Returns a dict for UI fallback display when bbox overlay is unavailable.
+    Returns None if target_region is falsy.
+    """
+    if not target_region:
+        return None
+
+    if target_region.startswith("critical_point_"):
+        region_type = "critical_point"
+    elif target_region.startswith("blind_spot_"):
+        region_type = "blind_spot"
+    elif target_region.startswith("infrared_hotspot_"):
+        region_type = "infrared_hotspot"
+    elif target_region.startswith("temporal_change_"):
+        region_type = "temporal_change"
+    elif target_region.startswith("sam3_"):
+        region_type = "sam3"
+    else:
+        region_type = "unknown"
+
+    info: dict = {
+        "region_id": target_region,
+        "region_type": region_type,
+        "description": None,
+        "severity": None,
+        "position": None,
+        "has_bbox": False,
+    }
+
+    vision_analysis = result.get("vision_analysis") or {}
+
+    if region_type == "critical_point":
+        for cp in vision_analysis.get("critical_points", []):
+            if cp.get("region_id") == target_region:
+                info["description"] = cp.get("description")
+                info["severity"] = cp.get("severity")
+                nb = cp.get("normalized_bbox") or {}
+                if nb and all(k in nb for k in ("x_min", "y_min", "x_max", "y_max")):
+                    info["has_bbox"] = True
+                break
+
+    elif region_type == "blind_spot":
+        for bs in vision_analysis.get("blind_spots", []):
+            if bs.get("region_id") == target_region:
+                info["description"] = bs.get("description")
+                info["severity"] = bs.get("severity")
+                info["position"] = bs.get("position")
+                break
+
+    elif region_type == "infrared_hotspot":
+        infrared = result.get("infrared_analysis") or {}
+        for hs in infrared.get("hot_spots", []):
+            if hs.get("region_id") == target_region:
+                info["description"] = hs.get("description")
+                info["severity"] = hs.get("severity")
+                break
+
+    elif region_type == "temporal_change":
+        temporal = result.get("temporal_analysis") or {}
+        for tc in temporal.get("changes", []):
+            if tc.get("region_id") == target_region:
+                info["description"] = tc.get("description")
+                info["severity"] = tc.get("severity")
+                break
+
+    elif region_type in ("sam3", "unknown"):
+        for gcp in result.get("grounded_critical_points", []):
+            if gcp.get("region_id") == target_region:
+                info["description"] = gcp.get("description")
+                info["severity"] = gcp.get("severity")
+                break
+
+    return info
 
 
 async def monitor_and_stream(websocket):
@@ -242,6 +322,10 @@ async def monitor_and_stream(websocket):
                                 "temporal_analysis": result.get("temporal_analysis"),
                                 "errors": result.get("errors", []),
                                 "processing_time_sec": result.get("processing_time_sec"),
+                                "target_info": resolve_target_info(
+                                    (result.get("assessment") or {}).get("target_region"),
+                                    result,
+                                ),
                             }
 
                             await websocket.send(json.dumps(msg, ensure_ascii=False))
@@ -261,8 +345,8 @@ async def monitor_and_stream(websocket):
 async def main():
     threading.Thread(target=_start_static_server, daemon=True).start()
     logger.info(f"static server: http://127.0.0.1:{STATIC_PORT} (absolute path serving)")
-    async with websockets.serve(monitor_and_stream, "127.0.0.1", 8001):
-        logger.info("ws server: ws://localhost:8001")
+    async with websockets.serve(monitor_and_stream, "127.0.0.1", 8010):
+        logger.info("ws server: ws://localhost:8010")
         logger.info(f"default data dir: {DEFAULT_OUTPUT_DIR}")
         await asyncio.Future()  # run forever
 

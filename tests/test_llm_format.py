@@ -2,7 +2,7 @@
 
 import json
 
-from src.safety_agent.schema import SafetyAssessment
+from src.safety_agent.schema import SafetyAssessment, get_json_schema
 
 
 def test_safety_assessment_from_llm_output():
@@ -75,6 +75,37 @@ def test_safety_assessment_minimal():
     assert assessment.temporal_status == "unknown"
 
 
+def test_safety_assessment_inspect_region_requires_target_region():
+    """inspect_region では target_region が必須。"""
+    llm_output = {
+        "risk_level": "high",
+        "safety_status": "要確認",
+        "action_type": "inspect_region",
+        "target_region": None,
+        "reason": "対象領域の確認が必要",
+        "priority": 0.8,
+    }
+    try:
+        SafetyAssessment.model_validate(llm_output)
+        assert False, "Should have raised validation error"
+    except Exception as e:
+        assert "target_region" in str(e)
+
+
+def test_safety_assessment_allows_non_critical_target_region():
+    """target_region は blind_spot_* などの region_id も許容する。"""
+    llm_output = {
+        "risk_level": "medium",
+        "safety_status": "死角の確認が必要",
+        "action_type": "inspect_region",
+        "target_region": "blind_spot_0",
+        "reason": "見えにくい領域がある",
+        "priority": 0.6,
+    }
+    assessment = SafetyAssessment.model_validate(llm_output)
+    assert assessment.target_region == "blind_spot_0"
+
+
 def test_llm_json_output_as_string():
     """LLM が返す JSON 文字列をパースしてからバリデート。"""
     llm_json_str = json.dumps(
@@ -93,3 +124,30 @@ def test_llm_json_output_as_string():
     assessment = SafetyAssessment.model_validate(llm_dict)
     assert assessment.risk_level == "medium"
     assert assessment.action_type == "mitigate"
+
+
+def test_safety_assessment_schema_requires_target_region():
+    """guided decoding 用 schema で target_region が required であることを確認。"""
+    schema = get_json_schema("safety_assessment")
+    assert "target_region" in schema.get("required", [])
+
+
+def test_action_with_grounding_schema_requires_nested_target_region():
+    """ActionWithGrounding 内の assessment.target_region も required であることを確認。"""
+    schema = get_json_schema("action_with_grounding")
+
+    def find_required_target_region(node):
+        if isinstance(node, dict):
+            properties = node.get("properties")
+            if isinstance(properties, dict) and {
+                "risk_level",
+                "action_type",
+                "target_region",
+            }.issubset(properties.keys()):
+                return "target_region" in node.get("required", [])
+            return any(find_required_target_region(value) for value in node.values())
+        if isinstance(node, list):
+            return any(find_required_target_region(item) for item in node)
+        return False
+
+    assert find_required_target_region(schema)

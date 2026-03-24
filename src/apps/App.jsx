@@ -225,11 +225,15 @@ function App() {
   const audioRef = useRef(null)
 
   const params = new URLSearchParams(window.location.search)
-  const [wsUrl, setWsUrl] = useState(params.get('ws') ?? 'ws://127.0.0.1:8001')
+  const [wsUrl, setWsUrl] = useState(params.get('ws') ?? 'ws://127.0.0.1:8010')
   // URLSearchParams は + をスペースに変換する（unquote_plus 相当）ため
   // data パラムはファイルパスの + を保持するため手動パース（decodeURIComponent）する
   const rawDataParam = window.location.search.slice(1).split('&').find(p => p.startsWith('data='))
   const [dataDir, setDataDir] = useState(rawDataParam ? decodeURIComponent(rawDataParam.slice(5)) : '')
+  // dataDir が指定されている場合は静的サーバー (port 8011) 経由でセッション動画を配信
+  const videoSrc = dataDir
+    ? `http://127.0.0.1:8011${dataDir.split('/').map(s => encodeURIComponent(s)).join('/')}/videos/video.mp4`
+    : '/videos/video.mp4'
   const [mode, setMode] = useState(params.get('mode') ?? 'sync')
   const [delay, setDelay] = useState(Number(params.get('delay') ?? 0))
   const [status, setStatus] = useState('initializing...')
@@ -250,6 +254,7 @@ function App() {
   const [curDepthAnalysis, setCurDepthAnalysis] = useState(null)
   const [curTemporalAnalysis, setCurTemporalAnalysis] = useState(null)
   const [curErrors, setCurErrors] = useState([])
+  const [curTargetInfo, setCurTargetInfo] = useState(null)
   const [modalityOpen, setModalityOpen] = useState(false)
 
   const wsRef = useRef(null)
@@ -384,6 +389,7 @@ function App() {
       setCurDepthAnalysis(null)
       setCurTemporalAnalysis(null)
       setCurErrors([])
+      setCurTargetInfo(null)
       setSceneDescOpen(false)
       setStatusOpen(false)
       lastAssessmentFrameRef.current = null
@@ -502,6 +508,7 @@ function App() {
             setCurDepthAnalysis(cur.depth_analysis ?? null)
             setCurTemporalAnalysis(cur.temporal_analysis ?? null)
             setCurErrors(cur.errors ?? [])
+            setCurTargetInfo(cur.target_info ?? null)
 
             // 音声再生（voice_path がある場合）
             if (cur.voice_path && audioRef.current) {
@@ -529,6 +536,7 @@ function App() {
             setCurDepthAnalysis(null)
             setCurTemporalAnalysis(null)
             setCurErrors([])
+            setCurTargetInfo(null)
           }
           ctx.clearRect(0, 0, w, h)
         }
@@ -598,7 +606,7 @@ function App() {
             <video
               ref={videoRef}
               controls
-              src="/videos/video.mp4"
+              src={videoSrc}
               style={styles.video}
             ></video>
             <canvas ref={canvasRef} style={styles.canvas}></canvas>
@@ -727,10 +735,48 @@ function App() {
                   </div>
                 )}
 
-                {/* target_region */}
+                {/* target_region: bbox あり → canvas overlay + ここでも表示、bbox なし → fallback UI */}
                 {curAssessment.target_region && (
-                  <div style={{ fontSize:'11px', color:'#6699ff', marginBottom:'6px' }}>
-                    Target: {curAssessment.target_region}
+                  <div style={{ marginBottom:'6px' }}>
+                    <div style={{ display:'flex', alignItems:'center', gap:'6px', marginBottom:'3px' }}>
+                      <span style={{ fontSize:'10px', color:'#6699ff', fontWeight:'600' }}>TARGET</span>
+                      <span style={{ fontSize:'10px', color:'#888' }}>
+                        { {critical_point:'📍 critical_point', blind_spot:'🚫 blind_spot',
+                           infrared_hotspot:'🔥 infrared', temporal_change:'⏱ temporal',
+                           sam3:'🎯 sam3', unknown:'❓ unknown'}[curTargetInfo?.region_type]
+                          ?? (curTargetInfo?.region_type ?? '') }
+                      </span>
+                      {curTargetInfo?.severity && curTargetInfo.severity !== 'unknown' && (
+                        <span style={{
+                          fontSize:'10px', fontWeight:'600', padding:'1px 5px', borderRadius:'3px',
+                          background:(SEVERITY_COLORS[curTargetInfo.severity] ?? '#aaa')+'22',
+                          color: SEVERITY_COLORS[curTargetInfo.severity] ?? '#aaa',
+                          border:`1px solid ${SEVERITY_COLORS[curTargetInfo.severity] ?? '#444'}55`,
+                        }}>{curTargetInfo.severity}</span>
+                      )}
+                      {curTargetInfo && !curTargetInfo.has_bbox && (
+                        <span style={{ fontSize:'10px', color:'#666', padding:'1px 5px',
+                                       borderRadius:'3px', background:'#1e1e1e' }}>no bbox</span>
+                      )}
+                    </div>
+                    <div style={{ fontSize:'11px', color:'#6699ff', fontFamily:'ui-monospace,monospace' }}>
+                      {curAssessment.target_region}
+                    </div>
+                    {curTargetInfo?.description && (
+                      <div style={{ fontSize:'11px', color:'#999', marginTop:'2px', lineHeight:'1.4' }}>
+                        {curTargetInfo.description}
+                      </div>
+                    )}
+                    {curTargetInfo?.position && (
+                      <div style={{ fontSize:'10px', color:'#777', marginTop:'2px' }}>
+                        位置: {curTargetInfo.position}
+                      </div>
+                    )}
+                    {curTargetInfo && !curTargetInfo.has_bbox && (
+                      <div style={{ fontSize:'10px', color:'#555', marginTop:'3px', fontStyle:'italic' }}>
+                        canvas highlight unavailable — no bbox
+                      </div>
+                    )}
                   </div>
                 )}
 
