@@ -6,9 +6,10 @@ import librosa
 import soundfile as sf
 from pathlib import Path
 
-def main(config_path: str = "configs/audio_processing.yaml") -> None:
+
+def main(config_path: str = "audio_processing/audio_processing.yaml") -> None:
     """
-    Copy original video and preprocess auido file with backgournd and annomaly noise.
+    Copy original session directory and preprocess audio file with background and anomaly noise.
     """
     path = Path(config_path)
     if not path.exists():
@@ -20,44 +21,57 @@ def main(config_path: str = "configs/audio_processing.yaml") -> None:
     if config is None:
         raise ValueError(f"Config file is empty: {config_path}")
 
-    # copy original video directory
+    # copy original session directory
     original_config = config.get("original")
     original_dir = original_config.get("dir")
-    video_names = original_config.get("video_names")
-    print("Preprocessing fllowing videos.")
-    print(video_names)
+    session_names = original_config.get("session_names")
+    print("Preprocessing following sessions.")
+    print(session_names)
     print()
 
-    for video_name in video_names:
-        copy_video_name = video_name + "_audio"
-        print(f"{copy_video_name}...")
+    for session_name in session_names:
+        copy_session_name = session_name + "_audio"
+        print(f"{copy_session_name}...")
         print()
 
-        shutil.copytree(f"{original_dir}/{video_name}", f"{original_dir}/{copy_video_name}", dirs_exist_ok=True)
-        del video_name
+        shutil.copytree(
+            f"{original_dir}/{session_name}",
+            f"{original_dir}/{copy_session_name}",
+            dirs_exist_ok=True,
+        )
 
         # load original audio file
-        wave_file = [f for f in os.listdir(f"{original_dir}/{copy_video_name}") if f.endswith(".wav")][0]
-        wave, sr = librosa.load(f"{original_dir}/{copy_video_name}/{wave_file}")
+        wave_file = [
+            f for f in os.listdir(f"{original_dir}/{copy_session_name}") if f.endswith(".wav")
+        ][0]
+        wave, sr = librosa.load(f"{original_dir}/{copy_session_name}/{wave_file}", sr=None)
 
-        # load background and annormaly audio file
+        # load background and anomaly audio files (resample to match original sr)
         material = config.get("material")
         material_dir = material.get("dir")
         background_config = material.get("background")
-        annormaly_config = material.get("annormaly")
-        wave_background, sr_background = librosa.load(f"{material_dir}/{background_config.get('file_name')}")
-        wave_annormaly, sr_annormaly = librosa.load(f"{material_dir}/{annormaly_config.get('file_name')}")
-        wave_annormaly = wave_annormaly[-sr_annormaly*6:]
-        padding = len(wave) - len(wave_annormaly)
-        wave_annormaly = np.concatenate([np.zeros(padding//2), wave_annormaly, np.zeros(padding//2)], axis=0)
+        anomaly_config = material.get("anomaly")
+        wave_background, _ = librosa.load(
+            f"{material_dir}/{background_config.get('file_name')}", sr=sr
+        )
+        wave_anomaly, _ = librosa.load(
+            f"{material_dir}/{anomaly_config.get('file_name')}", sr=sr
+        )
+        wave_anomaly = wave_anomaly[-sr * 6:]
+        padding = len(wave) - len(wave_anomaly)
+        wave_anomaly = np.concatenate(
+            [np.zeros(padding // 2), wave_anomaly, np.zeros(padding // 2)], axis=0
+        )
 
-        # adding background and annormaly noise
-        wave = wave*original_config.get("weight") \
-                + wave_background[:len(wave)]*background_config.get("weight") \
-                + wave_annormaly*annormaly_config.get("weight")
-        sf.write(f"{original_dir}/{copy_video_name}/{wave_file}", wave, sr)
+        # mix background and anomaly noise into original audio
+        wave = (
+            wave * original_config.get("weight")
+            + wave_background[: len(wave)] * background_config.get("weight")
+            + wave_anomaly * anomaly_config.get("weight")
+        )
+        sf.write(f"{original_dir}/{copy_session_name}/{wave_file}", wave, sr)
+
     print("All done.")
-    return
 
 
 if __name__ == "__main__":

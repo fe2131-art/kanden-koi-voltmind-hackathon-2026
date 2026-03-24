@@ -1,7 +1,7 @@
-# Audio proceccing config
+# Audio processing config
 original:
-  dir: "../../../data/InspecSafe-V1/DATA_PATH/test/Other_modalities"
-  video_names: [
+  dir: "../InspecSafe-V1/DATA_PATH/test/Other_modalities"
+  session_names: [
       "58132919535743_20251118_session_1400_16#refengweiguan-you",
       "58132919535777_20251114_session_1400_K76+681 xiaofangshoubaoxiang2",
       "58132919741958_20251112_session_1200_beiyongguanAyalibiao",
@@ -10,10 +10,10 @@ original:
   ]
   weight: 0.5
 material:
-  dir: "../../../data/audio_materials"
+  dir: "data/audio_materials"
   background:
     file_name: "factory.wav"
     weight: 0.7
-  annormaly:
+  anomaly:
     file_name: "crash.wav"
     weight: 1.0
