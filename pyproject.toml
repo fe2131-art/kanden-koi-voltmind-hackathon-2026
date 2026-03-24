@@ -94,6 +94,18 @@ finetune = [
     "datasets>=2.0",
     "safetensors>=0.3",
 ]
+video_generation = [
+    "torch==2.10.0",
+    "torchaudio==2.10.0",
+    "librosa",
+    "soundfile",
+    "transformers>=4.51.0",
+    "diffusers>=0.33.0",
+    "accelerate>=1.6.0",
+    "imageio>=2.36.0",
+    "imageio-ffmpeg>=0.6.0",
+    "sentencepiece>=0.2.0",
+]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/safety_agent"]

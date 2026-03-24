@@ -1,0 +1,173 @@
+# Video Generation Configuration - LTX-2 via Diffusers
+# Used by: video_generation/generate.py
+
+# ─── Model Settings ───────────────────────────────────────────────
+model:
+  # HuggingFace repo_id OR absolute path to a local snapshot
+  # Set local_path to override repo_id (for offline operation with cached model)
+  repo_id: "Lightricks/LTX-2"
+  local_path: "/home/team-005/data/ltx-2-models/"
+
+  # torch dtype: "bfloat16" | "float16" | "float32"
+  # bfloat16 recommended for H100 (faster, good quality)
+  dtype: "bfloat16"
+
+  # Device: "cuda" | "cpu"
+  device: "cuda"
+
+  # Restrict to specific GPU(s) via CUDA_VISIBLE_DEVICES.
+  # "1"   → use GPU index 1 only
+  # "0,1" → use GPU 0 and 1
+  # null  → use all visible GPUs (default)
+  cuda_visible_devices: "1"
+
+  # Enable model CPU offload to save VRAM (trades speed for memory)
+  enable_model_cpu_offload: false
+
+  # Enable VAE slicing/tiling for reduced memory usage
+  enable_vae_slicing: true
+  enable_vae_tiling: false
+
+# ─── Generation Parameters ─────────────────────────────────────────
+generation:
+  # Image dimensions - must be divisible by 32
+  # Common: 512x384, 768x512, 1024x576, 1280x720
+  width: 768
+  height: 512
+
+  # Number of frames - CRITICAL: must satisfy (num_frames - 1) % 8 == 0
+  # Valid values: 9, 17, 25, 33, 49, 65, 81, 97, 121, 161, 201
+  # Higher = longer video, more VRAM needed
+  num_frames: 241
+
+  # Diffusion inference steps (quality vs speed tradeoff)
+  # 20-30: fast, acceptable quality
+  # 40-50: good quality
+  # 60+: very high quality (slower)
+  num_inference_steps: 60
+
+  # Classifier-free guidance scale (affects text adherence)
+  # 1.0: no guidance (may be incoherent)
+  # 3.0: default (balanced)
+  # 5.0-7.0: strong text adherence (may sacrifice quality)
+  guidance_scale: 3.0
+
+  # Random seed for reproducibility; null = random each run
+  seed: 42
+
+  # Number of videos to generate per prompt (batch size)
+  num_videos_per_prompt: 1
+
+  # Generate audio alongside video (LTX-2 supports audio)
+  # Note: audio generation adds inference time
+  generate_audio: false
+
+# ─── Text Prompts ──────────────────────────────────────────────────
+prompts:
+  # Negative prompt applied to all generations
+  # Helps exclude unwanted artifacts/qualities
+  negative_prompt: >-
+    worst quality, inconsistent motion, blurry, jittery, distorted,
+    watermark, text overlay, logo, low resolution, unrealistic, deformed,
+    user interface, HUD, heads-up display, bounding box, segmentation overlay,
+    AR overlay, annotation, label, subtitle, caption, sci-fi interface,
+    futuristic UI, cinematic title card, graphic overlay, heatmap,
+    telemetry display, first person shooter game, video game style
+
+  # List of generation jobs; each becomes one or more output videos
+  #
+  # シーン設計（危険バリエーション3種）:
+  #   blind_spot_forklift    : 死角からのフォークリフト突然進入
+  #   danger_zone_proximity  : 作業員が回転機械に身を乗り出す
+  #   welding_sparks_hazard  : 溶接火花方向へ無防備な作業員が歩く
+  items:
+    - id: "blind_spot_forklift"
+      # 日本語メモ:
+      #   工場通路を自律移動ロボット一人称視点で前進。前方交差点の死角から
+      #   フォークリフトが無警戒に進入。右壁パネルを向いた作業員は気づいていない。
+      #   左壁沿いに不安定なパレット。車輪由来の微細な揺れ。UIなし・ラベルなし。
+      prompt: >-
+        First-person view from an autonomous factory patrol robot camera mounted at head
+        height approximately 1.2 meters above the ground, slowly moving forward through an
+        industrial factory corridor. Concrete floor with yellow safety line markings, overhead
+        fluorescent tube lighting, metal overhead pipes visible. A forklift enters from around
+        a blind corner intersection ahead without any warning signal, emerging from behind
+        large metal shelving units stacked to the ceiling. A worker in a high-visibility yellow
+        vest and hard hat stands facing away from the approaching forklift, inspecting a control
+        panel on the right wall, unaware of the danger. Unstable-looking pallets are stacked at
+        an angle along the left wall. Subtle camera vibration from robot wheel movement. No
+        overlays, no UI elements, no text annotations, no bounding boxes, no HUD, raw factory
+        patrol footage.
+      overrides:
+        guidance_scale: 4.0
+        seed: 42
+
+    - id: "floor_hazard_clutter"
+      # 日本語メモ:
+      #   工場通路をロボット一人称視点で前進。床に工具・電気ケーブル・ホースが散乱し
+      #   転倒・つまずきの危険がある。通路を横断する作業員が足元を見ておらず
+      #   散乱物に気づいていない。奥でコンベア作業中の別作業員。UIなし・ラベルなし。
+      prompt: >-
+        First-person view from an autonomous factory patrol robot camera at head height slowly
+        moving through an industrial factory corridor. Concrete floor with scattered hand tools,
+        a coiled electrical cable, and a hydraulic hose lying across the patrol path, creating
+        tripping hazards in the walkway. A worker in a hard hat and high-visibility vest is
+        crossing the corridor from left to right, not looking down at the cluttered floor,
+        about to step over the cable without noticing it. In the background another worker is
+        loading boxes onto a conveyor belt. Overhead fluorescent lighting, metal shelving units
+        along the right wall, oil stains on the floor. Raw unprocessed camera footage with
+        slight mechanical camera shake from wheel movement. No annotations, no overlays, no
+        interface elements, no text labels, no HUD.
+      overrides:
+        guidance_scale: 4.0
+        seed: 2026
+
+    - id: "welding_sparks_hazard"
+      # 日本語メモ:
+      #   やや暗い通路を自律移動ロボット一人称視点で溶接エリアへ前進。前方10mに
+      #   オレンジ・黄色の溶接火花が散る。溶接面シールドなしの作業員が火花源へ歩く。
+      #   床に電気ケーブル・金属パイプ横断。天井に露出配管。UIなし・ラベルなし。
+      prompt: >-
+        First-person view from an autonomous factory patrol robot camera mounted at head height
+        slowly advancing down a dimly lit factory corridor toward a welding bay area. Bright
+        orange and yellow welding sparks are clearly visible scattering from an active welding
+        station approximately 10 meters ahead, high contrast illumination against the dark metal
+        walls. A worker without a welding face shield, wearing only a regular hard hat and
+        high-visibility vest, is walking toward the welding spark source from the side without
+        protective eyewear. Electrical cables and a metal pipe lying across the floor of the
+        corridor. Exposed conduits and pipes on the ceiling. Dark industrial atmosphere with
+        dramatic welding spark light. Raw documentary-style patrol robot footage with subtle
+        camera vibration from wheel movement. No text overlays, no interface elements, no
+        visual annotations, no HUD.
+      overrides:
+        guidance_scale: 3.5
+        seed: 123
+
+# ─── Output Settings ───────────────────────────────────────────────
+output:
+  # Directory for generated MP4 files (relative to project root)
+  # Will be created if it doesn't exist
+  dir: "data/videos"
+
+  # Filename template for output videos
+  # Available variables: {id}, {seed}, {timestamp}
+  # Example outputs:
+  #   factory_floor_normal_42_20260320_150000.mp4
+  #   hazard_detection_scenario_rand_20260320_150005.mp4
+  filename_template: "{id}_{seed}_{timestamp}.mp4"
+
+  # Output video frame rate (FPS)
+  fps: 24
+
+  # FFmpeg video codec
+  # "libx264" (default): H.264, good compatibility
+  # "libx265": H.265/HEVC, better compression
+  codec: "libx264"
+
+  # imageio quality parameter (0-10)
+  # Higher = better quality but larger file size
+  quality: 8
+
+  # Also save individual frames as PNG files to data/frames/
+  # Useful for post-processing, but requires disk space
+  save_frames: false

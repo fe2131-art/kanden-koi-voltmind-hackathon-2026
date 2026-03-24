@@ -55,10 +55,22 @@ bash scripts/depth_anything_3/setup_external_deps.sh
 
 ## 4. 依存関係をインストール
 
-コア開発用:
+コア開発用（Safety View Agent 全機能）:
 
 ```bash
 uv sync --extra dev
+```
+
+動画生成のみ（外部 repo 不要）:
+
+```bash
+uv sync --extra video_generation
+```
+
+動画生成 + Safety View Agent 両方:
+
+```bash
+uv sync --extra dev --extra video_generation
 ```
 
 React デモも使う場合:
