@@ -225,11 +225,15 @@ function App() {
   const audioRef = useRef(null)
 
   const params = new URLSearchParams(window.location.search)
-  const [wsUrl, setWsUrl] = useState(params.get('ws') ?? 'ws://127.0.0.1:8001')
+  const [wsUrl, setWsUrl] = useState(params.get('ws') ?? 'ws://127.0.0.1:8010')
   // URLSearchParams は + をスペースに変換する（unquote_plus 相当）ため
   // data パラムはファイルパスの + を保持するため手動パース（decodeURIComponent）する
   const rawDataParam = window.location.search.slice(1).split('&').find(p => p.startsWith('data='))
   const [dataDir, setDataDir] = useState(rawDataParam ? decodeURIComponent(rawDataParam.slice(5)) : '')
+  // dataDir が指定されている場合は静的サーバー (port 8011) 経由でセッション動画を配信
+  const videoSrc = dataDir
+    ? `http://127.0.0.1:8011${dataDir.split('/').map(s => encodeURIComponent(s)).join('/')}/videos/video.mp4`
+    : '/videos/video.mp4'
   const [mode, setMode] = useState(params.get('mode') ?? 'sync')
   const [delay, setDelay] = useState(Number(params.get('delay') ?? 0))
   const [status, setStatus] = useState('initializing...')
@@ -598,7 +602,7 @@ function App() {
             <video
               ref={videoRef}
               controls
-              src="/videos/video.mp4"
+              src={videoSrc}
               style={styles.video}
             ></video>
             <canvas ref={canvasRef} style={styles.canvas}></canvas>
