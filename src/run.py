@@ -819,17 +819,7 @@ def prepare_observations_inspesafe(
     logger.info(f"[inspesafe] 動画: {video_path}")
 
     # 音声ファイル（*_audio_*.wav）を data/audio/ にコピー
-    # まず _audio サフィックス付きの専用ディレクトリを優先参照し、なければ session_dir にフォールバック
-    # 例: Other_modalities/58132919..._audio/
-    audio_alt_dir = session_dir.parent / f"{session_dir.name}_audio"
-    if audio_alt_dir.exists():
-        audio_files = sorted(audio_alt_dir.glob("*_audio_*.wav"))
-        if audio_files:
-            logger.info(f"[inspesafe] 音声ディレクトリ (audio専用): {audio_alt_dir}")
-        else:
-            audio_files = sorted(session_dir.glob("*_audio_*.wav"))
-    else:
-        audio_files = sorted(session_dir.glob("*_audio_*.wav"))
+    audio_files = sorted(session_dir.glob("*_audio_*.wav"))
     audio_dir = Path("data/audio")
     audio_dir.mkdir(parents=True, exist_ok=True)
     audio_output_filename = audio_config.get("output_filename", "audio.wav")
