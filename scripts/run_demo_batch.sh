@@ -153,7 +153,7 @@ run_manual() {
 }
 
 # ==========================================================
-# InspecSafe セッション × 8
+# InspecSafe セッション
 #
 #   1. 波紋管上部右側
 #   2. 予備管A系統 圧力計
@@ -185,16 +185,29 @@ for session in "${INSPESAFE_SESSIONS[@]}"; do
 done
 
 # ==========================================================
-# manual 動画 × 7
+# manual 動画
 # ==========================================================
 MANUAL_VIDEOS=(
     "/home/team-005/data/hazard-detection/dataset/videos/cable.mp4"
     "/home/team-005/data/hazard-detection/dataset/videos/human.mp4"
     "/home/team-005/data/hazard-detection/dataset/videos/cones.mp4"
+    # "/home/team-005/data/gen_video/blind_spot_forklift_42_20260321_125558.mp4"
+    # "/home/team-005/data/gen_video/welding_sparks_hazard_123_20260321_125817.mp4"
+    # "/home/team-005/data/gen_video/gemini.mp4"
+    # "/home/team-005/data/gen_video/sora.mp4"
     "/home/team-005/data/gen_video/blind_spot_forklift_42_20260321_125558.mp4"
-    "/home/team-005/data/gen_video/welding_sparks_hazard_123_20260321_125817.mp4"
-    "/home/team-005/data/gen_video/gemini.mp4"
-    "/home/team-005/data/gen_video/sora.mp4"
+    "/home/team-005/data/gen_video/blind_spot_forklift_s100_100_20260322_150124.mp4"
+    "/home/team-005/data/gen_video/blind_spot_forklift_s200_200_20260322_150400.mp4"
+    "/home/team-005/data/gen_video/blind_spot_forklift_s314_314_20260322_150636.mp4"
+    "/home/team-005/data/gen_video/blind_spot_forklift_s56_56_20260322_145847.mp4"
+    "/home/team-005/data/gen_video/blind_spot_forklift_s999_999_20260322_151424.mp4"
+    "/home/team-005/data/gen_video/floor_hazard_clutter_s1234_1234_20260322_154301.mp4"
+    "/home/team-005/data/gen_video/floor_hazard_clutter_s56_56_20260322_152447.mp4"
+    "/home/team-005/data/gen_video/floor_hazard_clutter_s777_777_20260322_153749.mp4"
+    # "/home/team-005/data/gen_video/welding_sparks_hazard_123_20260322_144622.mp4"
+    # "/home/team-005/data/gen_video/welding_sparks_hazard_s100_100_20260322_155324.mp4"
+    # "/home/team-005/data/gen_video/welding_sparks_hazard_s200_200_20260322_155600.mp4"
+    # "/home/team-005/data/gen_video/welding_sparks_hazard_s999_999_20260322_160622.mp4"
 )
 
 for video in "${MANUAL_VIDEOS[@]}"; do
