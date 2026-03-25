@@ -50,37 +50,27 @@ vision_analysis:
     Rules:
     - Describe only what is clearly confirmed in the image
     - Do not speculate. Use "unknown" when uncertain
-    - critical_points must contain only hazards confirmed in the image
+    - critical_points must contain only clearly confirmed hazards, not merely visible objects
+    - Do not treat the ordinary presence of a person, worker, tool, vehicle, equipment, or cable as a hazard by itself
+    - Add a critical_point only when there is a clearly unsafe condition such as unsafe placement,
+      unsafe proximity, unsafe motion, loss of separation, obstruction, spill, fall risk, or other abnormal danger
+    - If an object is visible but not clearly hazardous, mention it only in scene_description, not in critical_points
     - label_hint should be a short English phrase from the following candidates; if none closely match, feel free to use any relevant short English phrase:
       Examples: person, worker, tool, cable on floor, ladder, wet floor, electrical equipment, vehicle, equipment
     - normalized_bbox is optional. Include only when coordinates are clearly identifiable; use null otherwise
     - Prioritize label_hint accuracy over coordinate precision
     - Use temporary IDs such as critical_point_0 at this stage
     - Use an empty list ([]) when no items apply
+    - If no clearly unsafe condition is visible, set overall_risk="low"
     - Set confidence_score to 0.0 only when judgment is truly impossible. Use 0.2 or higher when there is valid evidence
     - Output JSON only
 
     Output:
     {
-      "scene_description": "brief overall description",
-      "critical_points": [
-        {
-          "region_id": "critical_point_0",
-          "description": "description of the hazard",
-          "severity": "low|medium|high|critical|unknown",
-          "label_hint": "cable on floor",
-          "normalized_bbox": null
-        }
-      ],
-      "blind_spots": [
-        {
-          "region_id": "blind_spot_0",
-          "description": "blind spot or hard-to-see area",
-          "position": "location or direction; use unknown if unclear",
-          "severity": "low|medium|high|critical|unknown"
-        }
-      ],
-      "overall_risk": "low|medium|high|critical|unknown",
+      "scene_description": "brief factual scene summary",
+      "critical_points": [],
+      "blind_spots": [],
+      "overall_risk": "low",
       "confidence_score": 0.6
     }
 
@@ -107,6 +97,8 @@ depth_analysis:
     - Base analysis on both RGB and depth images
     - Do not assert absolute distances
     - Describe only relative depth relationships
+    - Do not treat ordinary perspective, normal occlusion, or nearby objects as hazards by themselves
+    - Set overall_risk="low" unless there is clear evidence of obstruction, contact risk, pinch risk, fall risk, or another safety-relevant spatial hazard
     - Do not speculate. Use "unknown" when uncertain
     - Set confidence_score to 0.0 only when judgment is truly impossible. Use 0.2 or higher when there is valid evidence
     - Output JSON only
@@ -127,7 +119,7 @@ depth_analysis:
           "description": "objects and features in the far zone"
         }
       ],
-      "overall_risk": "low|medium|high|critical|unknown",
+      "overall_risk": "low",
       "confidence_score": 0.6
     }
 
@@ -147,22 +139,19 @@ infrared_analysis:
     - Base analysis on both visible-light and infrared images
     - Do not assert absolute temperatures
     - Rely only on relative temperature patterns, not absolute values
+    - Do not treat uniformly warm equipment, mild heat, sunlight, reflections, or broad normal temperature variation as anomalies by themselves
+    - Add a hot_spot only for a clearly localized abnormal heating pattern or overheating cue
     - If no anomalies, set hot_spots to []
     - Use "infrared_hotspot_<index>" for region_id
+    - If no clearly abnormal heat pattern is present, set overall_risk="low"
     - Set confidence_score to 0.0 only when judgment is truly impossible. Use 0.2 or higher when there is valid evidence
     - Do not speculate. Use "unknown" when uncertain
     - Output JSON only
 
     Output:
     {
-      "hot_spots": [
-        {
-          "region_id": "infrared_hotspot_0",
-          "description": "description of the hot spot",
-          "severity": "low|medium|high|critical|unknown"
-        }
-      ],
-      "overall_risk": "low|medium|high|critical|unknown",
+      "hot_spots": [],
+      "overall_risk": "low",
       "confidence_score": 0.6
     }
 
@@ -176,11 +165,13 @@ temporal_analysis:
     Compare the previous frame and the current frame and detect only real changes in the monitored scene.
 
     Rules:
-    - Report only real changes in people, objects, equipment, or the environment
+    - Report only real scene changes that are safety-relevant or materially affect safety understanding
     - Report only clearly confirmed changes
+    - Do not treat ordinary motion, normal work progress, or routine equipment operation as hazards by themselves
     - Ignore changes in overlays, timestamps, subtitles, UI, and watermarks
     - If only such elements have changed, set change_detected=false and changes=[]
     - Use "temporal_change_<index>" for region_id
+    - If there is no clearly safety-relevant change, set overall_risk="low"
     - Set confidence_score to 0.0 only when judgment is truly impossible. Use 0.2 or higher when there is valid evidence
     - Do not speculate. Use "unknown" when uncertain
     - Output JSON only
@@ -188,14 +179,8 @@ temporal_analysis:
     Output:
     {
       "change_detected": false,
-      "changes": [
-        {
-          "region_id": "temporal_change_0",
-          "description": "specific change observed",
-          "severity": "low|medium|high|critical|unknown"
-        }
-      ],
-      "overall_risk": "low|medium|high|critical|unknown",
+      "changes": [],
+      "overall_risk": "low",
       "confidence_score": 0.6
     }
 
@@ -210,6 +195,7 @@ audio_analysis:
     Rules:
     - Use only what is supported by the audio clip
     - Do not infer from visual context
+    - Do not treat ordinary machinery noise, footsteps, speech, wind, traffic, or ambient sound as abnormal by themselves
     - If there is no clearly relevant event, return {"events": []}
     - If the audio is too short, silent, noisy, clipped, or otherwise insufficient, do not treat that as evidence of safety; return {"events": []}
     - If unclear, use "unknown"
@@ -217,13 +203,7 @@ audio_analysis:
 
     Output:
     {
-      "events": [
-        {
-          "cue": "short event name",
-          "severity": "low|medium|high|critical|unknown",
-          "evidence": "short evidence"
-        }
-      ]
+      "events": []
     }
 
 belief_update:
@@ -258,6 +238,8 @@ belief_update:
       weak one-frame temporal noise, or small confidence fluctuations
     - Weak or missing confirmation: if a previous hazard is not clearly confirmed in the current frame,
       keep the track rather than removing or rewriting it; if evidence is weaker, lower confidence instead
+    - Do not preserve or amplify a weak low-confidence hazard indefinitely; if repeated support is absent
+      and the track is no longer clearly safety-relevant, downgrade severity / overall_risk and remove the track when appropriate
     - Status transitions: use "new" only for a newly confirmed hazard with no matching previous track;
       use "persistent" as the default ongoing status; use "worsening" or "improving" only when there is
       clear material evidence; use "resolved" only when there is clear evidence the hazard has definitively
@@ -265,6 +247,7 @@ belief_update:
       keep "persistent" or "unknown" with a low confidence_score
     - overall_risk: keep it unchanged unless the highest active hazard materially changes
       or a clearly new high-priority hazard appears
+    - Do not keep overall_risk elevated only because of stale, weak, or poorly supported tracks
     - Confidence and evidence: set confidence_score to 0.0 only when judgment is truly impossible.
       Use 0.2 or higher when there is valid evidence. Write evidence as short English phrases
     - recommended_focus_regions: list region_ids in verification priority order (first = highest priority);
@@ -274,20 +257,9 @@ belief_update:
 
     Output:
     {
-      "hazard_tracks": [
-        {
-          "hazard_id": "hazard_0",
-          "hazard_type": "visible_hazard|blind_spot|overheat|abnormal_sound|scene_change|obstacle|equipment_anomaly|unknown",
-          "region_id": "critical_point_0",
-          "status": "new|persistent|worsening|improving|resolved|unknown",
-          "severity": "low|medium|high|critical|unknown",
-          "confidence_score": 0.6,
-          "supporting_modalities": ["vision", "audio", "depth", "infrared", "temporal", "sam3"],
-          "evidence": ["short evidence 1", "short evidence 2"]
-        }
-      ],
-      "overall_risk": "low|medium|high|critical|unknown",
-      "recommended_focus_regions": ["critical_point_0"]
+      "hazard_tracks": [],
+      "overall_risk": "low",
+      "recommended_focus_regions": []
     }
 
 safety_assessment:
@@ -307,10 +279,15 @@ safety_assessment:
     - depth_analysis, infrared_analysis, temporal_analysis, audio_cues, belief_state
 
     判断ルール:
-    1. 現在フレームの明確な証拠を最優先し、vision_analysis と sam3_regions を主根拠にする
-    2. belief_state と temporal_analysis で継続・悪化・改善・解消を判断し、temporal_status に反映する
-    3. depth / infrared / audio_cues は補助根拠として使う
-    4. 推測しない。不明なら unknown / null を使う
+    1. 現在フレームの明確な証拠を最優先し、vision_analysis を主根拠にする
+    2. sam3_regions は位置合わせ用の補助であり、危険そのものの根拠としては使わない
+    3. provisional_points は暫定ヒントであり、単独では危険確定根拠にしない
+    4. belief_state と temporal_analysis で継続・悪化・改善・解消を判断し、temporal_status に反映する
+    5. depth / infrared / audio_cues は補助根拠として使うが、弱い単独シグナルだけで過度に危険判定しない
+    6. 人・車両・工具・設備などの存在そのものは危険ではない。危険なのは異常状態、危険な位置関係、危険な動き、異常な熱、明確な異常音などである
+    7. 明確な危険の証拠が不足している場合、または要素が通常状態の範囲に見える場合は、
+       risk_level="low" と action_type="monitor" を優先する
+    8. 推測しない。不明なら unknown / null を使う
 
     grounded_critical_points:
     - 最終判断に関係する危険だけを入れる
@@ -319,13 +296,14 @@ safety_assessment:
     - description は日本語、label_hint は短い英語で書く
 
     action_type:
-    - monitor: 明確な危険なし
-    - inspect_region: 局所確認が必要
-    - mitigate: 危険はあるが即停止までは不要
+    - monitor: 明確な危険なし、または証拠が弱い / 曖昧で通常状態の可能性が高い
+    - inspect_region: 局所確認が必要だが、まだ危険確定ではない
+    - mitigate: 明確な危険はあるが即停止までは不要
     - emergency_stop: 即停止・退避が必要な明確な危険
     - emergency_stop の場合 risk_level は critical
     - worsening または即時危険が明確な場合に限り emergency_stop を選ぶ
     - persistent high risk だけなら inspect_region か mitigate を優先する
+    - 単一の弱い補助根拠だけなら inspect_region または monitor を優先する
 
     出力制約:
     - detected_hazards には hazard_id ではなく短い日本語ラベルを書く
@@ -347,22 +325,15 @@ safety_assessment:
     出力:
     {
       "assessment": {
-        "risk_level": "low|medium|high|critical",
+        "risk_level": "low",
         "confidence_score": 0.6,
-        "safety_status": "音声通知向けの短い安全状態要約",
-        "action_type": "emergency_stop|inspect_region|mitigate|monitor",
+        "safety_status": "明確な危険は見当たりません。継続監視してください。",
+        "action_type": "monitor",
         "target_region": null,
-        "temporal_status": "new|persistent|worsening|improving|resolved|unknown",
-        "detected_hazards": ["短い日本語ラベル（例：床上のケーブル）"],
-        "reason": "判断理由",
-        "priority": 0.6
+        "temporal_status": "unknown",
+        "detected_hazards": [],
+        "reason": "明確な危険を示す根拠が不足しているため",
+        "priority": 0.2
       },
-      "grounded_critical_points": [
-        {
-          "region_id": "critical_point_0",
-          "description": "ケーブルが床に放置されており躓く危険がある",
-          "severity": "high",
-          "label_hint": "cable on floor"
-        }
-      ]
+      "grounded_critical_points": []
     }
