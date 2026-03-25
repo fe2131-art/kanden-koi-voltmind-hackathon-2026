@@ -8,7 +8,9 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 CONFIG_FILE="$REPO_ROOT/configs/default.yaml"
 CONFIG_BAK="/tmp/safety_agent_config_backup.yaml"
-RESULTS_DIR="/home/team-005/data/output"
+RESULTS_BASE="/home/team-005/data/output"
+BATCH_TS="$(date +%Y%m%d%H%M%S)"
+RESULTS_DIR="$RESULTS_BASE/$BATCH_TS"
 VIDEOS_DIR="$REPO_ROOT/data/videos"
 DATASET_PATH="/home/team-005/data/InspecSafe-V1"
 
@@ -165,12 +167,17 @@ run_manual() {
 INSPESAFE_SESSIONS=(
     "58132919535743_20251118_session_1400_1#bowenguanshang-you"
     "58132919741958_20251112_session_1200_beiyongguanAyalibiao"
+    "58132919741958_20251112_session_1200_beiyongguanAyalibiao_audio"
     "58132919535743_20251118_session_1400_16#refengweiguan-you"
+    "58132919535743_20251118_session_1400_16#refengweiguan-you_audio"
     "58132919535777_20251114_session_1400_K76+681 xiaofangshoubaoxiang2"
+    "58132919535777_20251114_session_1400_K76+681 xiaofangshoubaoxiang2_audio"
     "58132919742054_20251112_session_0200_#16pidaiA-quyu1-xiacenghuichengtuogun（1-2haotuogun）"
     "58132919742054_20251112_session_0200_#16pidaiA-quyu30-shangcengtuogun（58-59haotuogun）"
     "58132919742126_20251114_session_0500_1haozhubianAxiangbileiqi"
+    "58132919742126_20251114_session_0500_1haozhubianBxiangbileiqi_audio"
     "58132919742224_20251111_session_1600_tuogun24"
+    "58132919742224_20251111_session_1600_tuogun24_audio"
 )
 
 for session in "${INSPESAFE_SESSIONS[@]}"; do
