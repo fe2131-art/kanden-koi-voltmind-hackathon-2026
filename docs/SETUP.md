@@ -31,7 +31,7 @@ cd kanden-koi-voltmind-hackathon-2026
 `pyproject.toml` は以下の 3 つを `external/` 配下に置く前提です。
 
 ```bash
-git clone https://github.com/DepthAnything/Depth-Anything-3.git external/Depth-Anything-3
+git clone https://github.com/ByteDance-Seed/Depth-Anything-3.git external/Depth-Anything-3
 git clone https://github.com/facebookresearch/sam3.git external/sam3
 git clone https://github.com/vllm-project/vllm-omni.git external/vllm-omni
 ```
