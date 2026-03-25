@@ -819,7 +819,17 @@ def prepare_observations_inspesafe(
     logger.info(f"[inspesafe] 動画: {video_path}")
 
     # 音声ファイル（*_audio_*.wav）を data/audio/ にコピー
-    audio_files = sorted(session_dir.glob("*_audio_*.wav"))
+    # まず _audio サフィックス付きの専用ディレクトリを優先参照し、なければ session_dir にフォールバック
+    # 例: Other_modalities/58132919..._audio/
+    audio_alt_dir = session_dir.parent / f"{session_dir.name}_audio"
+    if audio_alt_dir.exists():
+        audio_files = sorted(audio_alt_dir.glob("*_audio_*.wav"))
+        if audio_files:
+            logger.info(f"[inspesafe] 音声ディレクトリ (audio専用): {audio_alt_dir}")
+        else:
+            audio_files = sorted(session_dir.glob("*_audio_*.wav"))
+    else:
+        audio_files = sorted(session_dir.glob("*_audio_*.wav"))
     audio_dir = Path("data/audio")
     audio_dir.mkdir(parents=True, exist_ok=True)
     audio_output_filename = audio_config.get("output_filename", "audio.wav")
@@ -828,8 +838,10 @@ def prepare_observations_inspesafe(
     if audio_files:
         shutil.copy2(str(audio_files[0]), str(audio_dest))
         logger.info(f"[inspesafe] 音声コピー: {audio_files[0]} → {audio_dest}")
+        audio_path_for_obs: Optional[str] = str(audio_dest)
     else:
         logger.warning(f"[inspesafe] 音声ファイルなし: {session_dir}")
+        audio_path_for_obs = None
 
     # フロントエンド用に音声付き動画を data/videos/video.mp4 へ出力
     videos_out_dir = Path("data/videos")
@@ -883,7 +895,7 @@ def prepare_observations_inspesafe(
             obs_id=f"img_{i}",
             image_path=str(fp.resolve()),
             prev_image_path=str(frame_paths[i - 1].resolve()) if i > 0 else None,
-            audio_path="data/audio/audio.wav",
+            audio_path=audio_path_for_obs,
             infrared_image_path=infrared_path_map.get(fp.stem),
             camera_pose=CameraPose(pan_deg=0, tilt_deg=0, zoom=1),
             video_timestamp=video_timestamps_map.get(f"img_{i}"),
@@ -972,9 +984,10 @@ def prepare_observations(
     video_timestamps_map = {}
 
     # Process video
+    extracted_audio = None
     video_path = find_video(["data/videos", "data"], video_extensions)
     if video_path:
-        extract_audio(
+        extracted_audio = extract_audio(
             str(video_path),
             "data/audio",
             audio_output_filename=audio_output_filename,
@@ -1009,7 +1022,7 @@ def prepare_observations(
                 obs_id=f"img_{i}",
                 image_path=str(frame_path.absolute()),
                 prev_image_path=str(frame_files[i - 1].absolute()) if i > 0 else None,
-                audio_path="data/audio/audio.wav",
+                audio_path=str(extracted_audio) if extracted_audio else None,
                 infrared_image_path=infrared_path_map.get(frame_path.stem),
                 camera_pose=CameraPose(pan_deg=0, tilt_deg=0, zoom=1),
                 video_timestamp=video_timestamps_map.get(f"img_{i}"),
@@ -1117,8 +1130,7 @@ def main():
         logger.info(f"Archived perception_results/ → {archived_dir}")
 
     # Clean up data directories before processing
-    # Note: data/audio is NOT cleared as it contains source audio files used by multiple runs
-    for data_dir in ["data/frames", "data/depth", "data/voice", "data/infrared_frames", "data/sam3_masks"]:
+    for data_dir in ["data/frames", "data/depth", "data/voice", "data/infrared_frames", "data/sam3_masks", "data/audio"]:
         if os.path.exists(data_dir):
             shutil.rmtree(data_dir)
         os.makedirs(data_dir, exist_ok=True)
