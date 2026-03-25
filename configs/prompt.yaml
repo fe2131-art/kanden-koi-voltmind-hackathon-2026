@@ -237,28 +237,39 @@ belief_update:
     Update ongoing hazard states from current frame analysis results and previous_belief_state.
 
     Priorities:
-    1. Current frame evidence is the top priority
-    2. Use previous_belief_state only to judge continuation, worsening, improvement, or resolution
+    1. Current frame evidence is the top priority, but apply the smallest necessary update to previous_belief_state
+    2. Use previous_belief_state to preserve continuity and stable hazard identity across frames
     3. Do not speculate. Use unknown / null when uncertain
 
     Rules:
-    - Maintain multiple hazard_tracks when multiple hazards exist
-    - Set region_id only when the location can be identified
-    - critical_points: "critical_point_<index>"
-    - blind_spots: "blind_spot_<index>"
-    - hot_spots: "infrared_hotspot_<index>"
-    - temporal changes: "temporal_change_<index>"
-    - Do not include overlay or timestamp-only changes in hazard_tracks
-    - Set confidence_score to 0.0 only when judgment is truly impossible. Use 0.2 or higher when there is valid evidence
-    - Write evidence as short English phrases
-    - If a hazard present in the previous frame is not clearly confirmed in the current frame,
-      do not immediately remove it from hazard_tracks
-    - Use status="resolved" only when there is clear evidence the hazard has definitively disappeared;
-      if poor visibility, blind spots, or temporary non-detection is possible,
-      keep status="persistent" or "unknown" with a low confidence_score
-    - recommended_focus_regions: list region_ids in priority order for verification (first = highest priority)
-    - Order reflects severity, confidence, and urgency of confirmation
-    - If no clear region_id exists, set recommended_focus_regions to []
+    - Continuity: start from previous_belief_state and make the smallest necessary update;
+      if current evidence is essentially unchanged, return an almost identical belief_state
+    - Hazard identity: maintain multiple hazard_tracks when multiple hazards exist;
+      reuse the previous hazard_id for the same underlying hazard, and do not renumber,
+      reorder, or create a new hazard only because a temporary per-frame region_id index changed
+    - Stable fields: for continuing hazards, reuse previous hazard_type, severity, region_id,
+      and evidence wording unless there is strong contradictory evidence
+    - region_id: set region_id only when the location can be identified
+    - region_id conventions: critical_points="critical_point_<index>", blind_spots="blind_spot_<index>",
+      hot_spots="infrared_hotspot_<index>", temporal changes="temporal_change_<index>"
+    - Exclusions: do not include overlay-only or timestamp-only changes in hazard_tracks
+    - Minor fluctuations: do not change status, severity, overall_risk, or focus priority
+      for wording-only differences, slight viewpoint shifts, small localization drift,
+      weak one-frame temporal noise, or small confidence fluctuations
+    - Weak or missing confirmation: if a previous hazard is not clearly confirmed in the current frame,
+      keep the track rather than removing or rewriting it; if evidence is weaker, lower confidence instead
+    - Status transitions: use "new" only for a newly confirmed hazard with no matching previous track;
+      use "persistent" as the default ongoing status; use "worsening" or "improving" only when there is
+      clear material evidence; use "resolved" only when there is clear evidence the hazard has definitively
+      disappeared, otherwise if poor visibility, blind spots, or temporary non-detection is possible,
+      keep "persistent" or "unknown" with a low confidence_score
+    - overall_risk: keep it unchanged unless the highest active hazard materially changes
+      or a clearly new high-priority hazard appears
+    - Confidence and evidence: set confidence_score to 0.0 only when judgment is truly impossible.
+      Use 0.2 or higher when there is valid evidence. Write evidence as short English phrases
+    - recommended_focus_regions: list region_ids in verification priority order (first = highest priority);
+      keep the previous order unless there is clear reason to reprioritize.
+      Order reflects severity, confidence, and urgency of confirmation; if no clear region_id exists, use []
     - Output JSON only
 
     Output:
