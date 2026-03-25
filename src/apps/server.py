@@ -50,12 +50,41 @@ def _start_static_server():
     HTTPServer(("127.0.0.1", STATIC_PORT), _AbsolutePathHandler).serve_forever()
 
 
-def normalize_critical_point(cp: dict) -> dict | None:
+def build_sam3_lookup(sam3_regions: list[dict]) -> dict[str, dict]:
+    """Build label → best-score SAM3 region mapping for bbox fallback.
+
+    Keyed by label (= prompt string). Keeps only the highest-score entry per label.
+    """
+    lookup: dict[str, dict] = {}
+    for region in sam3_regions:
+        label = region.get("label") or region.get("prompt")
+        if not label:
+            continue
+        nb = region.get("normalized_bbox") or {}
+        if not nb or any(k not in nb for k in ("x_min", "y_min", "x_max", "y_max")):
+            continue
+        score = region.get("score", 0.0)
+        if label not in lookup or score > lookup[label].get("score", 0.0):
+            lookup[label] = region
+    return lookup
+
+
+def normalize_critical_point(cp: dict, sam3_lookup: dict | None = None) -> dict | None:
     """Convert vision_analysis.critical_points entry to App.jsx format.
 
-    Returns None if normalized_bbox is missing or incomplete.
+    Falls back to SAM3 bbox via label_hint when normalized_bbox is missing.
+    Returns None if no bbox is available from either source.
     """
     nb = cp.get("normalized_bbox") or {}
+    if not nb or any(k not in nb for k in ("x_min", "y_min", "x_max", "y_max")):
+        # SAM3 フォールバック: label_hint でベストスコア領域を探す
+        label_hint = cp.get("label_hint") or ""
+        if sam3_lookup and label_hint and label_hint in sam3_lookup:
+            nb = sam3_lookup[label_hint].get("normalized_bbox") or {}
+            logger.debug(
+                f"normalize_critical_point: '{cp.get('region_id')}' bbox from SAM3 label='{label_hint}'"
+            )
+
     if not nb or any(k not in nb for k in ("x_min", "y_min", "x_max", "y_max")):
         region_id = cp.get("region_id", "<unknown>")
         logger.debug(
@@ -184,6 +213,22 @@ async def monitor_and_stream(websocket):
 
     last_count = 0  # 前回送信した frames 数をトラッキング
 
+    # 接続直後に動画 URL を init メッセージで通知（ファイル名固定 video.mp4 への依存を排除）
+    videos_dir = output_dir / "videos"
+    video_url: str | None = None
+    if videos_dir.exists():
+        mp4_files = sorted(videos_dir.glob("*.mp4"))
+        if mp4_files:
+            video_file = mp4_files[0]
+            if use_static_server:
+                video_url = f"{static_base}{url_quote(str(video_file))}"
+            else:
+                video_url = f"/videos/{video_file.name}"
+    init_msg: dict = {"type": "init"}
+    if video_url:
+        init_msg["video_url"] = video_url
+    await websocket.send(json.dumps(init_msg, ensure_ascii=False))
+
     try:
         while True:
             if manifest_path.exists():
@@ -233,10 +278,12 @@ async def monitor_and_stream(websocket):
                                 continue
 
                             vision_analysis = result.get("vision_analysis") or {}
+                            sam3_analysis = result.get("sam3_analysis") or {}
+                            sam3_lookup = build_sam3_lookup(sam3_analysis.get("regions", []))
                             critical_points = [
                                 p
                                 for p in (
-                                    normalize_critical_point(cp)
+                                    normalize_critical_point(cp, sam3_lookup)
                                     for cp in vision_analysis.get("critical_points", [])
                                 )
                                 if p is not None
