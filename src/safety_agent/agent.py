@@ -37,6 +37,137 @@ from .schema import (
 logger = logging.getLogger(__name__)
 
 
+def _dedupe_region_ids(region_ids: List[str]) -> List[str]:
+    """region_id を正規化しつつ順序を保って重複除去する。"""
+    seen: set[str] = set()
+    out: List[str] = []
+    for region_id in region_ids:
+        if not isinstance(region_id, str):
+            continue
+        normalized = region_id.strip()
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        out.append(normalized)
+    return out
+
+
+def _collect_candidate_region_ids(
+    ir: Optional[PerceptionIR],
+    belief_state: Optional[BeliefState],
+    raw_grounded_points: Any,
+) -> List[str]:
+    """target_region の補完や検証に使える region_id を集める。"""
+    candidate_ids: List[str] = []
+
+    if belief_state:
+        candidate_ids.extend(belief_state.recommended_focus_regions)
+
+    if ir and ir.vision_analysis:
+        candidate_ids.extend(cp.region_id for cp in ir.vision_analysis.critical_points)
+        candidate_ids.extend(bs.region_id for bs in ir.vision_analysis.blind_spots)
+
+    if ir and ir.infrared_analysis:
+        candidate_ids.extend(hs.region_id for hs in ir.infrared_analysis.hot_spots)
+
+    if ir and ir.temporal_analysis:
+        candidate_ids.extend(ch.region_id for ch in ir.temporal_analysis.changes)
+
+    if isinstance(raw_grounded_points, list):
+        for point in raw_grounded_points:
+            if isinstance(point, dict):
+                region_id = point.get("region_id")
+                if isinstance(region_id, str):
+                    candidate_ids.append(region_id)
+
+    if ir and ir.sam3_analysis:
+        candidate_ids.extend(region.region_id for region in ir.sam3_analysis.regions)
+
+    return _dedupe_region_ids(candidate_ids)
+
+
+def _normalize_grounded_point_region_ids(
+    raw: Dict[str, Any],
+    ir: Optional[PerceptionIR],
+    preferred_target_region: Optional[str],
+) -> None:
+    """可能なら grounded point の仮 ID を共有 region_id に寄せる。"""
+    grounded_points = raw.get("grounded_critical_points")
+    if not isinstance(grounded_points, list):
+        return
+
+    critical_point_by_label_hint: Dict[str, str] = {}
+    if ir and ir.vision_analysis:
+        for point in ir.vision_analysis.critical_points:
+            if point.label_hint:
+                critical_point_by_label_hint.setdefault(
+                    point.label_hint.strip().lower(), point.region_id
+                )
+
+    for idx, point in enumerate(grounded_points):
+        if not isinstance(point, dict):
+            continue
+        region_id = point.get("region_id")
+        if not isinstance(region_id, str):
+            continue
+        normalized_region_id = region_id.strip()
+        if not normalized_region_id.startswith(("sam3_", "unknown_")):
+            continue
+
+        label_hint = point.get("label_hint")
+        if isinstance(label_hint, str):
+            mapped_region_id = critical_point_by_label_hint.get(label_hint.strip().lower())
+            if mapped_region_id:
+                point["region_id"] = mapped_region_id
+                continue
+
+        if idx == 0 and preferred_target_region:
+            point["region_id"] = preferred_target_region
+
+
+def _normalize_action_with_grounding_payload(
+    raw: Dict[str, Any],
+    ir: Optional[PerceptionIR],
+    belief_state: Optional[BeliefState],
+) -> Dict[str, Any]:
+    """LLM 出力の target_region と grounded point の ID を実行時の region_id に揃える。"""
+    assessment = raw.get("assessment")
+    if not isinstance(assessment, dict):
+        return raw
+
+    action_type = assessment.get("action_type")
+    target_region = assessment.get("target_region")
+    if isinstance(target_region, str):
+        target_region = target_region.strip() or None
+
+    candidate_ids = _collect_candidate_region_ids(
+        ir=ir,
+        belief_state=belief_state,
+        raw_grounded_points=raw.get("grounded_critical_points"),
+    )
+
+    if action_type == "inspect_region":
+        if target_region in candidate_ids:
+            assessment["target_region"] = target_region
+        elif candidate_ids:
+            assessment["target_region"] = candidate_ids[0]
+        else:
+            assessment["target_region"] = target_region
+    else:
+        assessment["target_region"] = None
+
+    normalized_target_region = assessment.get("target_region")
+    if not isinstance(normalized_target_region, str):
+        normalized_target_region = None
+    _normalize_grounded_point_region_ids(
+        raw=raw,
+        ir=ir,
+        preferred_target_region=normalized_target_region,
+    )
+
+    return raw
+
+
 # =========================
 # LLM クライアント（OpenAI互換）
 # =========================
@@ -1240,6 +1371,11 @@ def determine_next_action_llm(
             user=json.dumps(context_data, ensure_ascii=False),
             max_tokens=chat_max_tokens,
             schema_type="action_with_grounding",
+        )
+        raw = _normalize_action_with_grounding_payload(
+            raw=raw,
+            ir=ir,
+            belief_state=belief_state,
         )
 
         # ActionWithGrounding から assessment と grounded_critical_points を取得

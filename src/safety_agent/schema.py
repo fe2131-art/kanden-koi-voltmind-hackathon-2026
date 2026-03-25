@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Dict, Iterator, List, Literal, Optional, get_args
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 # =============================================================================
 # Pydantic スキーマ定義
@@ -120,8 +120,6 @@ class AudioAnalysisResult(BaseModel):
     """音声解析ノードの出力スキーマ。prompt.yaml audio_analysis の出力形式に対応。"""
 
     events: List[AudioCue] = Field(default_factory=list)
-    overall_risk: Literal["low", "medium", "high", "critical", "unknown"] = "unknown"
-    confidence_score: float = Field(default=0.0, ge=0.0, le=1.0)
 
 
 # ─── 深度解析結果 ──────────────────────────────────────────────────────────────
@@ -200,10 +198,11 @@ class Sam3AnalysisResult(BaseModel):
 
 
 class GroundedCriticalPoint(BaseModel):
-    """SAM3 region を参照した最終 region-grounded 危険点。
+    """最終判断で参照する region-grounded 危険点。
 
-    region_id は Sam3Region.region_id を参照する。
-    SAM3 無効時は "unknown_0" 等の仮 ID を使う。
+    既存の shared region_id（critical_point_* / blind_spot_* / infrared_hotspot_* /
+    temporal_change_*）がある場合はそれを優先して使う。
+    shared region_id が無い場合は Sam3Region.region_id や "unknown_0" 等の仮 ID を使う。
     """
 
     region_id: str
@@ -350,6 +349,17 @@ class SafetyAssessment(BaseModel):
     ] = "unknown"
     confidence_score: float = Field(default=0.0, ge=0.0, le=1.0)
 
+    @model_validator(mode="after")
+    def validate_target_region(self) -> "SafetyAssessment":
+        """inspect_region のときは target_region を必須にする。"""
+        if isinstance(self.target_region, str):
+            self.target_region = self.target_region.strip() or None
+        if self.action_type == "inspect_region" and self.target_region is None:
+            raise ValueError(
+                "target_region is required when action_type is 'inspect_region'"
+            )
+        return self
+
 
 class ActionWithGrounding(BaseModel):
     """determine_next_action_llm() の structured output スキーマ。
@@ -463,6 +473,26 @@ assert _schema_type_keys == set(_SCHEMA_MAP.keys()), (
 )
 
 
+def _ensure_required_target_region(schema: Any) -> None:
+    """SafetyAssessment 相当の JSON Schema で target_region を required に補正する。"""
+    if isinstance(schema, dict):
+        properties = schema.get("properties")
+        if isinstance(properties, dict) and {
+            "risk_level",
+            "action_type",
+            "target_region",
+        }.issubset(properties.keys()):
+            required = schema.setdefault("required", [])
+            if isinstance(required, list) and "target_region" not in required:
+                required.append("target_region")
+
+        for value in schema.values():
+            _ensure_required_target_region(value)
+    elif isinstance(schema, list):
+        for item in schema:
+            _ensure_required_target_region(item)
+
+
 def get_json_schema(schema_type: SchemaType) -> Dict[str, Any]:
     """指定されたスキーマ型の JSON Schema を返す。
 
@@ -485,10 +515,9 @@ def get_json_schema(schema_type: SchemaType) -> Dict[str, Any]:
         )
     schema = _SCHEMA_MAP[schema_type].model_json_schema()
 
-    # safety_assessment の target_region を required に強制追加
-    # vLLM の guided decoding で target_region キーが必ず出力されるようにする
-    if schema_type == "safety_assessment":
-        if "required" in schema and "target_region" not in schema["required"]:
-            schema["required"].append("target_region")
+    # guided decoding で assessment.target_region キーが必ず出力されるようにする
+    # ActionWithGrounding の入れ子になった SafetyAssessment にも適用する。
+    if schema_type in {"safety_assessment", "action_with_grounding"}:
+        _ensure_required_target_region(schema)
 
     return schema
