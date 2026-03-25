@@ -231,9 +231,11 @@ function App() {
   const rawDataParam = window.location.search.slice(1).split('&').find(p => p.startsWith('data='))
   const [dataDir, setDataDir] = useState(rawDataParam ? decodeURIComponent(rawDataParam.slice(5)) : '')
   // dataDir が指定されている場合は静的サーバー (port 8011) 経由でセッション動画を配信
-  const videoSrc = dataDir
+  // 実際のファイル名は server から type:"init" メッセージで受け取り上書きする
+  const defaultVideoSrc = dataDir
     ? `http://127.0.0.1:8011${dataDir.split('/').map(s => encodeURIComponent(s)).join('/')}/videos/video.mp4`
     : '/videos/video.mp4'
+  const [videoSrc, setVideoSrc] = useState(defaultVideoSrc)
   const [mode, setMode] = useState(params.get('mode') ?? 'sync')
   const [delay, setDelay] = useState(Number(params.get('delay') ?? 0))
   const [status, setStatus] = useState('initializing...')
@@ -393,6 +395,8 @@ function App() {
       setSceneDescOpen(false)
       setStatusOpen(false)
       lastAssessmentFrameRef.current = null
+      // 再接続時は videoSrc を既定値に戻す（server の init メッセージで上書きされる）
+      setVideoSrc(defaultVideoSrc)
 
       const url = wsUrl.trim() + (dataDir.trim() ? `?data=${encodeURIComponent(dataDir.trim())}` : '')
       setConnectionState('connecting')
@@ -424,6 +428,12 @@ function App() {
           msg = JSON.parse(ev.data)
         } catch (e) {
           console.warn('[WS] invalid JSON received:', e)
+          return
+        }
+
+        // 初期化メッセージ: 実際の動画 URL を受け取り videoSrc を更新
+        if (msg.type === 'init') {
+          if (msg.video_url) setVideoSrc(msg.video_url)
           return
         }
 
@@ -602,15 +612,35 @@ function App() {
 
       <div style={styles.layout}>
         <div style={styles.left}>
-          <div style={styles.videoWrap}>
-            <video
-              ref={videoRef}
-              controls
-              src={videoSrc}
-              style={styles.video}
-            ></video>
-            <canvas ref={canvasRef} style={styles.canvas}></canvas>
+          {/* 動画 + 赤外線: 赤外線がある場合は横並び */}
+          <div style={{ display: 'flex', gap: '8px', alignItems: 'flex-start' }}>
+            <div style={{
+              position: 'relative',
+              flex: curInfraredImagePath ? '2 1 0' : '0 0 auto',
+              width: curInfraredImagePath ? undefined : '720px',
+              maxWidth: '100%',
+              minWidth: 0,
+            }}>
+              <video
+                ref={videoRef}
+                controls
+                src={videoSrc}
+                style={styles.video}
+              ></video>
+              <canvas ref={canvasRef} style={styles.canvas}></canvas>
+            </div>
+            {curInfraredImagePath && (
+              <div style={{ flex: '1 1 0', minWidth: 0, background: '#111', borderRadius: '8px', overflow: 'hidden' }}>
+                <div style={{ fontSize: '11px', color: '#888', padding: '4px 8px' }}>Infrared</div>
+                <img
+                  src={curInfraredImagePath}
+                  alt="infrared"
+                  style={{ width: '100%', height: 'auto', display: 'block' }}
+                />
+              </div>
+            )}
           </div>
+
           <audio
             ref={audioRef}
             style={{ display: 'none' }}
@@ -635,34 +665,15 @@ function App() {
             </button>
           )}
 
-          {/* Depth Map + Infrared 横並び（動画直下） */}
-          {(curDepthImagePath || curInfraredImagePath) && (
-            <div style={{ display: 'flex', gap: '8px', marginTop: '8px' }}>
-              {curDepthImagePath && (
-                <div style={{ flex: 1, background: '#111', borderRadius: '8px', overflow: 'hidden' }}>
-                  <div style={{ fontSize: '11px', color: '#888', padding: '4px 8px' }}>Depth Map</div>
-                  <div style={{ aspectRatio: '16/9', overflow: 'hidden' }}>
-                    <img
-                      src={curDepthImagePath}
-                      alt="depth map"
-                      style={{ width: '100%', height: '100%', objectFit: 'cover', objectPosition: 'right center', display: 'block' }}
-                    />
-                  </div>
-                </div>
-              )}
-              {!curDepthImagePath && <div style={{ flex: 1 }} />}
-              {curInfraredImagePath && (
-                <div style={{ flex: 1, background: '#111', borderRadius: '8px', overflow: 'hidden' }}>
-                  <div style={{ fontSize: '11px', color: '#888', padding: '4px 8px' }}>Infrared</div>
-                  <div style={{ aspectRatio: '16/9', overflow: 'hidden' }}>
-                    <img
-                      src={curInfraredImagePath}
-                      alt="infrared"
-                      style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }}
-                    />
-                  </div>
-                </div>
-              )}
+          {/* Depth Map: 動画行の下に全幅表示 */}
+          {curDepthImagePath && (
+            <div style={{ background: '#111', borderRadius: '8px', overflow: 'hidden', marginTop: '8px' }}>
+              <div style={{ fontSize: '11px', color: '#888', padding: '4px 8px' }}>Depth Map</div>
+              <img
+                src={curDepthImagePath}
+                alt="depth map"
+                style={{ width: '100%', height: 'auto', display: 'block' }}
+              />
             </div>
           )}
 
