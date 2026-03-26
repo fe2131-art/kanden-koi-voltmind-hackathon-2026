@@ -6,7 +6,7 @@ build-backend = "hatchling.build"
 name = "safety-agent"
 version = "0.1.0"
 description = "Safety View Agent: LangGraph-based agent for safety assessment"
-readme = "CLAUDE.md"
+readme = "README.md"
 requires-python = ">=3.12,<3.13"
 license = "Apache-2.0"
 license-files = ["LICENSE", "NOTICE"]

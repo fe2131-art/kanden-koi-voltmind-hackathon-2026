@@ -22,7 +22,7 @@
 ## 1. リポジトリを clone
 
 ```bash
-git clone <repository-url>
+git clone https://github.com/fe2131-art/kanden-koi-voltmind-hackathon-2026.git
 cd kanden-koi-voltmind-hackathon-2026
 ```
 

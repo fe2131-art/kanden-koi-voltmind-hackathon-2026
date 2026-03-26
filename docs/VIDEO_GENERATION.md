@@ -63,15 +63,17 @@ model:
 ## 設定
 
 すべての設定は `configs/gen_prompt.yaml` で管理します。
+チェックイン済みの既定値はチーム環境向けなので、実行前に `local_path` や GPU 指定を見直してください。
 
 ### モデル設定
 
 ```yaml
 model:
   repo_id: "Lightricks/LTX-2"        # HuggingFace リポジトリ ID
-  local_path: null                    # ローカルキャッシュパス（優先度高）
+  local_path: "/home/team-005/data/ltx-2-models/"  # ローカルキャッシュパス（優先度高）
   dtype: "bfloat16"                  # torch dtype (H100 推奨)
   device: "cuda"                      # デバイス
+  cuda_visible_devices: "1"           # 使用 GPU を固定（不要なら null）
   enable_model_cpu_offload: false     # CPU オフロード（遅い）
   enable_vae_slicing: true            # VAE スライシング（VRAM削減）
   enable_vae_tiling: false            # VAE タイリング
@@ -83,12 +85,12 @@ model:
 generation:
   width: 768                          # 画像幅（32の倍数）
   height: 512                         # 画像高さ（32の倍数）
-  num_frames: 121                     # フレーム数 (8k+1形式: 9,17,25,33,...)
-  num_inference_steps: 40             # 拡散ステップ (20-50推奨)
+  num_frames: 241                     # フレーム数 (8k+1形式: 9,17,25,33,...)
+  num_inference_steps: 60             # 拡散ステップ (20-50推奨)
   guidance_scale: 3.0                 # 文本ガイダンス強度
   seed: 42                            # 乱数シード (null=ランダム)
   num_videos_per_prompt: 1            # プロンプト当たりの動画数
-  generate_audio: false               # 音声生成（実験的）
+  generate_audio: false               # 予約済み設定（現状スクリプトでは未使用）
 ```
 
 ### プロンプト設定
@@ -97,11 +99,11 @@ generation:
 prompts:
   negative_prompt: "worst quality, ..."  # 負のプロンプト
   items:
-    - id: "factory_floor_normal"
+    - id: "blind_spot_forklift"
       prompt: "..."                      # 生成内容の説明
       overrides:                         # generation設定の上書き
         guidance_scale: 4.0
-        seed: 100
+        seed: 42
 ```
 
 ### 出力設定
@@ -135,9 +137,9 @@ uv run python video_generation/generate.py --dry-run
 出力例:
 ```
 2026-03-20 15:38:47 - video_generation - INFO - Video generation plan: 3 prompt(s)
-2026-03-20 15:38:47 - video_generation - INFO -   - [factory_floor_normal] A factory floor with workers wearing...
-2026-03-20 15:38:47 - video_generation - INFO -   - [hazard_detection_scenario] Industrial plant corridor with...
-2026-03-20 15:38:47 - video_generation - INFO -   - [overhead_crane_operation] Overhead crane moving a heavy...
+2026-03-20 15:38:47 - video_generation - INFO -   - [blind_spot_forklift] First-person view from an autonomous factory patrol...
+2026-03-20 15:38:47 - video_generation - INFO -   - [floor_hazard_clutter] First-person view from an autonomous factory patrol...
+2026-03-20 15:38:47 - video_generation - INFO -   - [welding_sparks_hazard] First-person view from an autonomous factory patrol...
 2026-03-20 15:38:47 - video_generation - INFO - Dry run complete. Exiting without inference.
 ```
 
@@ -145,7 +147,7 @@ uv run python video_generation/generate.py --dry-run
 
 ```bash
 # ID で指定したプロンプトのみ実行
-uv run python video_generation/generate.py --prompt-id factory_floor_normal
+uv run python video_generation/generate.py --prompt-id blind_spot_forklift
 ```
 
 ### カスタム設定ファイル
@@ -163,9 +165,9 @@ uv run python video_generation/generate.py --config configs/gen_prompt_custom.ya
 
 ```
 data/videos/
-├── factory_floor_normal_42_20260320_150000.mp4
-├── hazard_detection_scenario_42_20260320_150005.mp4
-└── overhead_crane_operation_100_20260320_150010.mp4
+├── blind_spot_forklift_42_20260320_150000.mp4
+├── floor_hazard_clutter_2026_20260320_150005.mp4
+└── welding_sparks_hazard_123_20260320_150010.mp4
 ```
 
 ### ファイル仕様
@@ -173,14 +175,15 @@ data/videos/
 - **形式**: MP4 (H.264 コーデック)
 - **フレームレート**: 24 FPS
 - **解像度**: 768×512 px
-- **フレーム数**: 121 フレーム
-- **ファイルサイズ**: 約 300-500 MB (品質設定に依存)
+- **フレーム数**: 241 フレーム（既定値）
+- **ファイルサイズ**: 品質設定とフレーム数に依存
 
 ## パフォーマンス
 
 ### 推奨設定
 
-H100 での実行時間目安 (単一プロンプト):
+H100 での実行時間目安 (単一プロンプト、参考値):
+チェックイン済み既定値の `60 steps / 241 frames` より軽い設定例も含みます。
 
 | パラメータ | 実行時間 | VRAM使用量 |
 |---|---|---|
@@ -218,8 +221,8 @@ model:
 
 原因: `(num_frames - 1) % 8 != 0`
 
-LTX-2 は 8k+1 フレーム形式を要求します。有効な値:
-- 9, 17, 25, 33, 49, 65, 81, 97, 121, 161, 201
+LTX-2 は 8k+1 フレーム形式を要求します。有効な値の例:
+- 9, 17, 25, 33, 49, 65, 81, 97, 121, 161, 201, 241
 
 ### エラー: "HuggingFace model not found"
 
