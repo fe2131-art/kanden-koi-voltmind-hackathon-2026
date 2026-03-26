@@ -168,13 +168,15 @@ ffprobe -version
 - 実行スイッチは `agent.enable_sam3`
 - `sam3.enabled` ではありません
 - `sam3.checkpoint_path` の既定値はチーム環境のローカルパスです
+- `checkpoint_path: null` は公式 `facebook/sam3` の自動取得ですが、Hugging Face のアクセス承認と認証が必要です
 
 解決:
 
 - `external/sam3` を clone
 - patch を適用
-- `sam3.checkpoint_path: null` にして Hugging Face から取得させる
-- もしくは自分の checkpoint パスに変更する
+- `sam3.checkpoint_path: null` にして公式 `facebook/sam3` を Hugging Face から取得させる
+- その場合は事前に Hugging Face でアクセス承認を受け、`hf auth login` などで認証する
+- もしくは自分で取得した公式 checkpoint のローカルパスに変更する
 
 ## Demo UI で結果が出ない
 

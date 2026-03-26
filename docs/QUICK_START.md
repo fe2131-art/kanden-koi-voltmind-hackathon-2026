@@ -132,7 +132,7 @@ python -m vllm.entrypoints.openai.api_server \
 
 - `data.mode`
 - `data.inspesafe.dataset_path`
-- `sam3.checkpoint_path`
+- `sam3.checkpoint_path` (`null` なら公式 `facebook/sam3` を取得。ただし Hugging Face のアクセス承認と認証が必要)
 
 ### 3. 実行
 
@@ -216,7 +216,7 @@ npm run dev
 
 - `uv sync` が失敗する → [SETUP.md](./SETUP.md)
 - `session が見つからない` → `data.mode` を確認
-- `Sam3Analyzer: model load failed` → `sam3.checkpoint_path` と外部依存を確認
+- `Sam3Analyzer: model load failed` → `sam3.checkpoint_path`、Hugging Face 認証、外部依存を確認
 - `Connection refused` → vLLM ポート設定を確認
 
 詳しくは [TROUBLESHOOTING.md](./TROUBLESHOOTING.md) を参照してください。

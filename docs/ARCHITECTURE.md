@@ -215,6 +215,7 @@ UI が使う主なデータは以下です。
 - `agent.enable_sam3` が実行スイッチです
 - `sam3:` セクションは analyzer のしきい値・prompt・mask 保存設定です
 - `sam3.checkpoint_path` の既定値はチーム環境のローカルパスなので、そのままでは他環境で動かないことがあります
+- 他環境では公式 `facebook/sam3` を使う前提で見直してください。`checkpoint_path: null` の自動取得には Hugging Face のアクセス承認と認証が必要です
 - `configs/default.yaml` の既定値は `inspesafe + vllm` 前提です
 
 ## 関連ドキュメント

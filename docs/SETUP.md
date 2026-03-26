@@ -135,8 +135,9 @@ OPENAI_API_KEY=sk-...
 - 実行の ON/OFF は `agent.enable_sam3`
 - `sam3:` セクションは threshold / prompts / mask 保存先などの analyzer 設定
 - `sam3.checkpoint_path` の既定値はチーム環境のローカルパスです
-  - 自分の環境で使う場合は **ローカルの checkpoint パスへ変更** するか
-  - `null` にして Hugging Face から自動取得させてください
+- 他環境では **公式 checkpoint (`facebook/sam3`)** を使う前提で見直してください
+- `checkpoint_path: null` にすると Hugging Face 上の公式 `facebook/sam3` から自動取得します
+- `facebook/sam3` は gated model のため、事前に Hugging Face でアクセス承認を受け、`hf auth login` などで認証が必要です
 
 設定例:
 
