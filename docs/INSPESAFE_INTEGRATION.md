@@ -9,6 +9,14 @@ Safety View Agent は `data.mode: "inspesafe"` で InspecSafe-V1 のセッショ
 - `configs/default.yaml` の `data.inspesafe.dataset_path` が実在パス
 - 対象セッションに `*_visible_*.mp4` がある
 
+## 取得方法
+
+InspecSafe-V1 自体はこのリポジトリには同梱されません。別途取得してローカルへ展開してください。
+
+- 公開先: [Tetrabot2026/InspecSafe-V1](https://huggingface.co/datasets/Tetrabot2026/InspecSafe-V1)
+- `dataset_path` には展開した InspecSafe-V1 ルートディレクトリを指定します
+- チーム内で別のミラーや配置先を使っている場合は、そのローカルパスに読み替えて問題ありません
+
 ## 設定
 
 ```yaml

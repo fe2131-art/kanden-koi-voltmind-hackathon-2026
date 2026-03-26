@@ -32,13 +32,14 @@ Demo UI は以下を参照します。
 - `data/depth/`（存在すれば表示）
 - `data/infrared_frames/`（存在すれば表示）
 - `data/voice/`（存在すれば再生）
-- `data/videos/video.mp4`（ブラウザ動画用）
+- `data/videos/*.mp4`（ブラウザ動画用）
 
-### `data/videos/video.mp4` について
+### 動画ファイルについて
 
 - `inspesafe` モードでは `run.py` が自動生成します
-- `manual` モードでは、ブラウザ側が `/videos/video.mp4` を固定参照します
-- そのため `manual` で Demo UI を使う場合は、入力動画を `data/videos/video.mp4` に置くか、その名前へコピー・リンクしてください
+- `manual` モードでは、`data/videos/` 内の動画が使われます
+- `src/apps/server.py` が接続直後の `init` メッセージで実ファイル名を UI に通知するため、必ずしも `video.mp4` 固定である必要はありません
+- ただし `data/videos/` を空にするとブラウザ側に動画 URL を渡せないため、動画表示を使う場合は少なくとも 1 本の MP4 を置いてください
 
 ## 起動手順
 
@@ -52,7 +53,7 @@ uv run python src/apps/server.py
 
 既定ポート:
 
-- WebSocket: `ws://127.0.0.1:8001`
+- WebSocket: `ws://127.0.0.1:8010`
 
 ### ターミナル 2: Vite
 
@@ -130,6 +131,7 @@ run.py
 
 - `server.py` は `manifest.json` をポーリングしているだけなので、古い出力が残っているとそのまま流れます
 - `run.py` は新規実行時に `data/perception_results/` を `data/results_archive/` に退避します
+- `server.py` は接続時に `data/videos/` から最初に見つかった MP4 を選び、UI へ `video_url` として通知します
 - UI 側は `grounded_critical_points` ではなく、bbox を持つ `critical_points` をオーバーレイに使います
 
 ## 関連ドキュメント

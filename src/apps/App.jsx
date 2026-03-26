@@ -1097,7 +1097,7 @@ function App() {
                       type="text"
                       value={wsUrl}
                       onChange={(e) => setWsUrl(e.target.value)}
-                      placeholder="ws://127.0.0.1:8001"
+                      placeholder="ws://127.0.0.1:8010"
                       style={{ ...styles.input, width: '100%', marginTop: '4px' }}
                     />
                   </label>

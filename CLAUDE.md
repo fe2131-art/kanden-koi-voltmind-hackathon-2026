@@ -1,146 +1,124 @@
-# Safety View Agent - Project Guide
+# Safety View Agent - Coding Agent Guide
+
+This file is for coding agents working in this repository.
+Human-facing project documentation lives in [README.md](./README.md) and [docs/README.md](./docs/README.md).
+Do not treat this file as the main user documentation.
+
 ## License
-The original source code, documentation, and configuration files in this
-repository are licensed under Apache License 2.0. See `LICENSE` and `NOTICE`
-for the exact terms and attribution notes.
 
-Third-party models, checkpoints, datasets, and external repositories are not
-relicensed by this repository. Use them under their original licenses and
-terms.
+The original source code, documentation, and configuration files in this repository
+are licensed under Apache License 2.0. See `LICENSE` and `NOTICE` for the exact terms.
 
-このファイルは、Safety View Agent の現在の実装に合わせた高信号ガイドです。
-詳細な手順は `docs/` に分離し、ここでは構成・前提・重要コマンド・ハマりどころだけをまとめます。
+Third-party models, checkpoints, datasets, and external repositories are not relicensed
+by this repository. Use them under their original licenses and terms.
 
-## プロジェクト概要
+## Repository Summary
 
-Safety View Agent は、LangGraph ベースのマルチモーダル安全監視エージェントです。
+Safety View Agent is a LangGraph-based multimodal safety monitoring pipeline.
+It combines:
 
-- RGB 画像
-- 音声
-- Depth-Anything-3
-- 赤外線フレーム
-- 時系列差分
-- SAM3 セグメンテーション
+- RGB frames
+- audio
+- depth estimation
+- infrared frames
+- temporal change analysis
+- SAM3 segmentation
 
-を統合して、`BeliefState` と `ActionWithGrounding` を生成します。
+to produce:
 
-## 重要な前提
+- per-frame safety assessments
+- grounded critical regions
+- a rolling `BeliefState`
+- serialized results for the Demo UI
 
-### 1. `uv sync` の前に外部 repo が必要
+## What Matters Most Before You Change Anything
 
-`pyproject.toml` は local editable dependency を前提にしています。
+### 1. `uv sync` depends on external local repos
+
+`pyproject.toml` expects these editable local dependencies to exist under `external/`:
 
 - `external/Depth-Anything-3`
 - `external/sam3`
 - `external/vllm-omni`
 
-これらが無いと `uv sync` に失敗します。
+If they are missing, `uv sync --extra dev` will fail.
 
-### 2. 既定の `configs/default.yaml` はチーム環境向け
+### 2. `configs/default.yaml` is team-environment-biased
 
-既定値のままだと、以下を前提にしています。
+The checked-in defaults assume:
 
 - `data.mode: "inspesafe"`
 - `llm.provider / vlm.provider / alm.provider: "vllm"`
 - `agent.enable_sam3: true`
-- `sam3.checkpoint_path` はチーム環境のローカルパス
+- `sam3.checkpoint_path` points to a team-local path
 
-そのため、新しい環境では最初に `configs/default.yaml` を見直す必要があります。
+On a fresh machine, expect config edits before successful execution.
 
-### 3. `agent.enable_sam3` が実行スイッチ
+### 3. `agent.enable_sam3` is the real SAM3 execution switch
 
-`sam3:` セクションは analyzer の設定で、実行 ON/OFF は `agent.enable_sam3` 側です。
+The `sam3:` section holds analyzer configuration.
+Actual enable/disable behavior is controlled by `agent.enable_sam3`.
 
-## よく使うコマンド
+### 4. The Demo UI depends on serialized outputs, not direct inference hooks
 
-### セットアップ
+The browser UI reads streamed frame results derived from:
 
-Safety View Agent 全機能:
+- `data/perception_results/manifest.json`
+- `data/perception_results/frames/*.json`
 
-```bash
-uv sync --extra dev
-```
+`src/apps/server.py` polls those files and serves a WebSocket stream on port `8010`.
 
-動画生成のみ（外部 repo 不要）:
-
-```bash
-uv sync --extra video_generation
-```
-
-Demo UI も使う場合:
-
-```bash
-uv sync --extra dev --extra demo
-cd src/apps
-npm install
-```
-
-### テスト
-
-```bash
-uv run pytest tests/ -v
-```
-
-### 実行
-
-```bash
-uv run python src/run.py
-```
-
-### Demo UI
-
-```bash
-uv run python src/apps/server.py
-```
-
-```bash
-cd src/apps
-npm run build
-npm run preview
-```
-
-## 主なファイル
+## Key Files
 
 - `src/run.py`
-  - 設定読み込み
-  - 入力データ準備
-  - analyzer 初期化
-  - 結果保存
-  - TTS 実行
+  - main entry point
+  - config and prompt loading
+  - input preparation for `manual` and `inspesafe`
+  - analyzer initialization
+  - result persistence
+  - TTS integration
 - `src/safety_agent/agent.py`
-  - LangGraph の本体
+  - LangGraph definition
+  - multimodal fan-out / fan-in
+  - belief update and final action selection
 - `src/safety_agent/modality_nodes.py`
-  - Vision / Audio / Depth / Infrared / Temporal / SAM3
+  - vision, audio, depth, infrared, temporal, and SAM3 analyzers
 - `src/safety_agent/schema.py`
-  - Pydantic スキーマ
+  - Pydantic schemas for IR, belief state, and assessment outputs
 - `configs/default.yaml`
-  - 実行設定
+  - runtime behavior, providers, modalities, data mode
 - `configs/prompt.yaml`
-  - 各モダリティと最終判断 prompt
+  - prompts for modality analysis, belief update, and final safety assessment
 - `src/apps/server.py`
-  - WebSocket ストリーミング
+  - WebSocket bridge for the Demo UI
 - `src/apps/App.jsx`
-  - Demo UI
+  - React frontend for visualization
+- `docs/`
+  - human-facing project documentation
 
-## 入力モード
+## Input Modes
 
-### manual
+### `manual`
 
-- `data/videos/` の動画
-- または `data/frames/` の既存フレーム
+Uses either:
 
-動画がある場合は lazy frame extraction が使われます。
+- video files under `data/videos/`, or
+- existing frames under `data/frames/`
 
-### inspesafe
+If a video exists, `run.py` uses lazy frame extraction to overlap extraction and inference.
+
+### `inspesafe`
+
+Uses:
 
 - `data.inspesafe.dataset_path`
 - `data.inspesafe.session`
 
-をもとに RGB / 赤外線 / 音声を自動展開します。
+to resolve an InspecSafe-V1 session and automatically prepare RGB, infrared, and audio inputs.
 
-## 出力
+## Main Outputs
 
-主な出力先:
+Primary runtime outputs:
 
 ```text
 data/
@@ -156,36 +134,120 @@ data/
 └── flow.md
 ```
 
-補足:
+Notes:
 
-- 新しい実行の前に既存の `data/perception_results/` は `data/results_archive/` に退避されます
-- `assessment.safety_status` は TTS 有効時に `data/voice/*.wav` になります
-- Demo UI は `manifest.json` を監視して新規フレームだけ読み込みます
+- each new run archives the previous `data/perception_results/` into `data/results_archive/`
+- `assessment.safety_status` may be synthesized into `data/voice/*.wav`
+- the Demo UI consumes newly written frame results incrementally
 
-## 実装上のポイント
+## Common Commands
 
-- `determine_next_action_llm()` は `ActionWithGrounding` を返します
-  - `assessment`
-  - `grounded_critical_points`
-- `configs/prompt.yaml` の `safety_assessment` は最終判断だけでなく grounding も担います
-- Demo UI のオーバーレイは `vision_analysis.critical_points` の `normalized_bbox` を使います
-- `assessment.target_region` は UI ハイライトにも影響します
+### Core setup
 
-## よくある詰まりどころ
+```bash
+uv sync --extra dev
+```
 
-- `uv sync` が失敗する
-  - `external/` の repo が足りません
-- `session が見つかりません`
-  - `data.mode: inspesafe` のままです
+### Video generation only
+
+```bash
+uv sync --extra video_generation
+```
+
+### Demo UI dependencies
+
+```bash
+uv sync --extra dev --extra demo
+cd src/apps
+npm install
+```
+
+### Tests
+
+```bash
+uv run pytest tests/ -v
+```
+
+### Main pipeline
+
+```bash
+uv run python src/run.py
+```
+
+### Demo backend
+
+```bash
+uv run python src/apps/server.py
+```
+
+### Demo frontend
+
+```bash
+cd src/apps
+npm run build
+npm run preview
+```
+
+## Implementation Notes For Agents
+
+### Assessments are not just plain summaries
+
+`determine_next_action_llm()` returns `ActionWithGrounding`, not only a flat assessment.
+Keep both of these aligned:
+
+- `assessment`
+- `grounded_critical_points`
+
+### UI overlays use vision critical points
+
+The Demo UI highlights bounding boxes from:
+
+- `vision_analysis.critical_points[*].normalized_bbox`
+
+not from `grounded_critical_points`.
+If you change grounding behavior, verify that UI-visible region IDs still line up with `assessment.target_region`.
+
+### Output schema changes propagate widely
+
+If you change output structure, check at minimum:
+
+- `src/safety_agent/schema.py`
+- `src/safety_agent/agent.py`
+- `src/run.py`
+- `src/apps/server.py`
+- `src/apps/App.jsx`
+- relevant tests under `tests/`
+- human-facing docs in `README.md` and `docs/`
+
+### `run.py` aggressively manages output directories
+
+On a new run, previous perception results are archived and several `data/` subdirectories are cleaned.
+Do not assume old intermediate files remain in place during execution.
+
+## Frequent Failure Modes
+
+- `uv sync` fails
+  - usually missing `external/` repositories
+- session not found
+  - often still using `data.mode: "inspesafe"` with invalid local dataset settings
 - `Connection refused`
-  - vLLM サーバーが起動していません
+  - expected vLLM servers are not running
 - `Sam3Analyzer: model load failed`
-  - patch / checkpoint / 依存が怪しいです
-- `ffprobe not available`
-  - ffmpeg が未導入です
+  - patch, checkpoint path, or dependency issue
+- `ffprobe not available` / `ffmpeg not available`
+  - system package missing
 
-## 関連ドキュメント
+For human-facing troubleshooting details, use [docs/TROUBLESHOOTING.md](./docs/TROUBLESHOOTING.md).
 
+## When Updating Documentation
+
+- Keep human-facing setup and usage details in `README.md` and `docs/`
+- Keep this file concise and agent-oriented
+- If you change core behavior, update the relevant human docs as part of the same change
+
+## Human-Facing Docs
+
+- [README.md](./README.md)
 - [docs/README.md](./docs/README.md)
 - [docs/SETUP.md](./docs/SETUP.md)
 - [docs/QUICK_START.md](./docs/QUICK_START.md)

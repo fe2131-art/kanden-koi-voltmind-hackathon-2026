@@ -119,11 +119,12 @@ uv run python audio_processing/audio_processing.py
 
 ### カスタム設定ファイルを指定
 
-```bash
-uv run python audio_processing/audio_processing.py --config path/to/custom.yaml
-```
+このスクリプトには現状 CLI 引数がないため、`--config` では切り替えできません。
+別の設定ファイルを使う場合は Python から `main(config_path=...)` を呼び出します。
 
-※ `--config` 引数は `main()` の `config_path` パラメータに対応します。
+```bash
+uv run python -c "from audio_processing.audio_processing import main; main(config_path='path/to/custom.yaml')"
+```
 
 ### Python から呼び出す
 

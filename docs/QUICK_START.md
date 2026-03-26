@@ -186,7 +186,8 @@ data/
 
 - 新しい実行を始めると、既存の `data/perception_results/` は `data/results_archive/<timestamp>/` に退避されます
 - `data/videos/video.mp4` は Demo UI 用です
-- `manual` モードで Demo UI を使う場合、ブラウザ側は `/videos/video.mp4` を固定参照するため、入力動画名も `data/videos/video.mp4` に揃えるのが安全です
+- `manual` モードでも `data/videos/` に MP4 が 1 本あれば Demo UI で再生できます
+- `src/apps/server.py` が接続時に実ファイル名を UI へ渡すため、`video.mp4` という名前に揃える必要はありません
 
 ## デモ UI を見る
 
