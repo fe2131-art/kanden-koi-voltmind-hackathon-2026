@@ -258,6 +258,7 @@ function App() {
   const [curErrors, setCurErrors] = useState([])
   const [curTargetInfo, setCurTargetInfo] = useState(null)
   const [modalityOpen, setModalityOpen] = useState(false)
+  const [showBbox, setShowBbox] = useState(false)
 
   const wsRef = useRef(null)
   const logRef = useRef(null)
@@ -269,6 +270,8 @@ function App() {
   const lastVideoTimeRef = useRef(0)
   const lastAssessmentFrameRef = useRef(null)
   const lastDepthImagePathRef = useRef(null)
+  const showBboxRef = useRef(false)
+  showBboxRef.current = showBbox
 
   useEffect(() => {
     let cancelled = false
@@ -527,7 +530,11 @@ function App() {
               setIsVoicePlaying(true)
             }
           }
-          drawOverlay(cur.critical_points, w, h, cur.assessment?.target_region)
+          if (showBboxRef.current) {
+            drawOverlay(cur.critical_points, w, h, cur.assessment?.target_region)
+          } else {
+            ctx.clearRect(0, 0, w, h)
+          }
           const vT = video.currentTime.toFixed(2)
           const off = tOffsetRef.current === null ? 'null' : tOffsetRef.current.toFixed(3)
           setStatus(`ws:${wsRef.current?.readyState ?? -1} recv:${recvCountRef.current} | video:${vT}s tOffset:${off}`)
@@ -628,6 +635,48 @@ function App() {
                 style={styles.video}
               ></video>
               <canvas ref={canvasRef} style={styles.canvas}></canvas>
+              {isVoicePlaying && (
+                <button
+                  onClick={() => {
+                    audioRef.current?.pause()
+                    audioRef.current && (audioRef.current.currentTime = 0)
+                    setIsVoicePlaying(false)
+                  }}
+                  style={{
+                    position: 'absolute',
+                    top: '8px',
+                    left: '8px',
+                    zIndex: 10,
+                    padding: '4px 10px',
+                    fontSize: '12px',
+                    borderRadius: '4px',
+                    background: 'rgba(92,0,0,0.85)',
+                    color: '#ff6b6b',
+                    border: '1px solid #ff4444',
+                    cursor: 'pointer',
+                  }}
+                >
+                  ⏹ 音声停止
+                </button>
+              )}
+              <button
+                onClick={() => setShowBbox(v => !v)}
+                style={{
+                  position: 'absolute',
+                  top: '8px',
+                  right: '8px',
+                  zIndex: 10,
+                  padding: '4px 10px',
+                  fontSize: '12px',
+                  borderRadius: '4px',
+                  border: showBbox ? '1px solid #4af' : '1px solid #555',
+                  background: showBbox ? 'rgba(0,100,200,0.75)' : 'rgba(30,30,30,0.75)',
+                  color: showBbox ? '#cef' : '#aaa',
+                  cursor: 'pointer',
+                }}
+              >
+                BBOX {showBbox ? 'ON' : 'OFF'}
+              </button>
             </div>
             {curInfraredImagePath && (
               <div style={{ flex: '1 1 0', minWidth: 0, background: '#111', borderRadius: '8px', overflow: 'hidden' }}>
@@ -646,24 +695,6 @@ function App() {
             style={{ display: 'none' }}
             onEnded={() => setIsVoicePlaying(false)}
           />
-          {isVoicePlaying && (
-            <button
-              onClick={() => {
-                audioRef.current?.pause()
-                audioRef.current && (audioRef.current.currentTime = 0)
-                setIsVoicePlaying(false)
-              }}
-              style={{
-                ...styles.button,
-                marginTop: '6px',
-                background: '#5c0000',
-                color: '#ff6b6b',
-                border: '1px solid #ff4444',
-              }}
-            >
-              ⏹ 音声停止
-            </button>
-          )}
 
           {/* Depth Map: 動画行の下に全幅表示 */}
           {curDepthImagePath && (
