@@ -5,7 +5,7 @@ on:
     branches: [main]
 
 jobs:
-  dataset-fetch:
+  daily-dataset-fetch:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -13,14 +13,14 @@ jobs:
         run: |
           python3 -m pip install -q playwright
           python3 -m playwright install chromium
-      - name: Inspect public Kaggriculture episodes dataset
+      - name: Inspect latest public daily episode dataset
         run: |
           mkdir -p out/responses
-          cat > /tmp/fetch_dataset.py <<'PY'
+          cat > /tmp/fetch_daily.py <<'PY'
           import asyncio, hashlib, json
           from pathlib import Path
           from playwright.async_api import async_playwright
-          URL='https://www.kaggle.com/datasets/kaggle/kaggriculture-episodes-index'
+          URL='https://www.kaggle.com/datasets/kaggle/kaggriculture-episodes-2026-08-10'
           OUT=Path('out'); RESP=OUT/'responses'; records=[]
           async def main():
             async with async_playwright() as p:
@@ -33,16 +33,16 @@ jobs:
                 h=await r.all_headers(); ct=h.get('content-type','')
                 rec={'url':u,'status':r.status,'content_type':ct}
                 try:
-                  if any(x in u.lower() for x in ['dataset','file','api/i/','download','episode']) or 'json' in ct:
+                  if any(x in u.lower() for x in ['dataset','file','api/i/','download','episode','databundle']) or 'json' in ct:
                     b=await r.body()
-                    if len(b)<=12_000_000:
+                    if len(b)<=20_000_000:
                       n=hashlib.sha256(u.encode()).hexdigest()[:16]+'.body'; (RESP/n).write_bytes(b)
                       rec.update(saved=n,bytes=len(b))
                 except Exception as e: rec['error']=type(e).__name__+': '+str(e)
                 records.append(rec)
               page.on('response',on_response)
               resp=await page.goto(URL,wait_until='domcontentloaded',timeout=90000)
-              await page.wait_for_timeout(25000)
+              await page.wait_for_timeout(30000)
               text=await page.locator('body').inner_text(); html=await page.content()
               (OUT/'body.txt').write_text(text,encoding='utf-8'); (OUT/'rendered.html').write_text(html,encoding='utf-8')
               (OUT/'responses.json').write_text(json.dumps(records,indent=2),encoding='utf-8')
@@ -50,12 +50,12 @@ jobs:
               await browser.close()
           asyncio.run(main())
           PY
-          python3 /tmp/fetch_dataset.py
+          python3 /tmp/fetch_daily.py
           cat out/summary.json
-      - name: Upload dataset diagnostics
+      - name: Upload daily dataset diagnostics
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: kaggriculture-episodes-dataset
+          name: kaggriculture-daily-dataset
           path: out/
           if-no-files-found: warn
