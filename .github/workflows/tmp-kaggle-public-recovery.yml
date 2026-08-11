@@ -5,22 +5,27 @@ on:
     branches: [main]
 
 jobs:
-  single-files:
+  top-replay:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - name: Download manifest only
+      - name: Download one top replay only
         run: |
           set -euxo pipefail
           mkdir -p out
           BASE='https://www.kaggle.com/api/v1/datasets/download/kaggle/kaggriculture-episodes-2026-08-10'
-          curl -L --fail --retry 2 -A 'Mozilla/5.0' "$BASE/manifest.csv?datasetVersionNumber=1" -o out/manifest.csv
-          wc -c out/manifest.csv
-          head -5 out/manifest.csv
-      - name: Upload manifest
-        if: always()
+          curl -L --fail --retry 2 -A 'Mozilla/5.0' "$BASE/91526658.json?datasetVersionNumber=1" -o out/91526658.json
+          wc -c out/91526658.json
+          python3 - <<'PY'
+          import json
+          p='out/91526658.json'
+          d=json.load(open(p))
+          print({k:d.get(k) for k in ['id','rewards','statuses','module_version']})
+          print(d.get('info'))
+          PY
+      - name: Upload top replay
         uses: actions/upload-artifact@v4
         with:
-          name: kaggriculture-daily-manifest
-          path: out/
-          if-no-files-found: warn
+          name: kaggriculture-top-replay
+          path: out/91526658.json
+          if-no-files-found: error
