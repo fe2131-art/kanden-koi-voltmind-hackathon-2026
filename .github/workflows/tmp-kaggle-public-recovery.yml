@@ -9,7 +9,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - name: Fetch Kaggle public surfaces
+      - name: Fetch exact Kaggle notebook version surfaces
         run: |
           set -u
           mkdir -p out
@@ -23,24 +23,42 @@ jobs:
               -w '%{http_code}\n%{url_effective}\n' \
               "$url" > "out/${name}.status.txt" || true
           }
-          fetch notebook 'https://www.kaggle.com/code/tetsutani/adaptive-farming-strategy-for-kaggriculture'
-          fetch notebook_code 'https://www.kaggle.com/code/tetsutani/adaptive-farming-strategy-for-kaggriculture/code'
-          fetch list_user 'https://www.kaggle.com/api/v1/kernels/list?page=1&pageSize=100&search=kaggriculture&group=everyone&user=tetsutani&language=all&kernelType=all&outputType=all&sortBy=dateRun'
-          fetch list_comp 'https://www.kaggle.com/api/v1/kernels/list?page=1&pageSize=100&search=adaptive%20farming&group=everyone&language=all&kernelType=all&outputType=all&sortBy=dateRun&competition=kaggriculture'
-          fetch pull 'https://www.kaggle.com/api/v1/kernels/pull?userName=tetsutani&kernelSlug=adaptive-farming-strategy-for-kaggriculture'
+          BASE='https://www.kaggle.com/code/tetsutani/adaptive-farming-strategy-for-kaggriculture'
+          SID='341576880'
+          fetch version "${BASE}?scriptVersionId=${SID}"
+          fetch code_version "${BASE}/code?scriptVersionId=${SID}"
+          fetch embed_a "${BASE}/embed?scriptVersionId=${SID}"
+          fetch embed_b "https://www.kaggle.com/embed/tetsutani/adaptive-farming-strategy-for-kaggriculture?scriptVersionId=${SID}"
+          fetch oembed 'https://www.kaggle.com/oembed/kernel?url=https%3A%2F%2Fwww.kaggle.com%2Fcode%2Ftetsutani%2Fadaptive-farming-strategy-for-kaggriculture%3FscriptVersionId%3D341576880'
+          fetch appjs 'https://www.kaggle.com/static/assets/app.js?v=1c42a875b01eb54a'
+
           python3 - <<'PY'
           from pathlib import Path
           import json, re
           out = Path('out'); report = {}
+          pats = [
+              r'.{0,180}scriptVersionId.{0,260}',
+              r'.{0,180}KernelsService.{0,260}',
+              r'.{0,180}GetKernel.{0,260}',
+              r'.{0,180}kernelSource.{0,260}',
+              r'.{0,180}/api/i/.{0,260}',
+              r'.{0,180}oembed.{0,260}',
+          ]
           for p in sorted(out.glob('*.body')):
               raw = p.read_bytes(); text = raw.decode('utf-8', 'replace')
+              matches=[]
+              for pat in pats:
+                  for m in re.finditer(pat, text, flags=re.I|re.S):
+                      s=' '.join(m.group(0).split())
+                      if s not in matches: matches.append(s)
+                      if len(matches)>=80: break
+                  if len(matches)>=80: break
               report[p.stem] = {
                   'bytes': len(raw),
-                  'starts_with': text[:4000],
-                  'script_version_ids': sorted(set(re.findall(r'(?:scriptVersionId|scriptVersionID)[^0-9]{0,40}(\d+)', text)))[:50],
-                  'kernel_ids': sorted(set(re.findall(r'(?:kernelId|kernelID)[^0-9]{0,40}(\d+)', text)))[:50],
-                  'contains_title': 'adaptive-farming-strategy-for-kaggriculture' in text.lower() or 'adaptive farming strategy for kaggriculture' in text.lower(),
+                  'content_type_hint': text[:120],
                   'contains_agent_def': 'def agent' in text,
+                  'contains_script_id': '341576880' in text,
+                  'matches': matches,
               }
           (out / 'report.json').write_text(json.dumps(report, indent=2), encoding='utf-8')
           PY
@@ -48,6 +66,6 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: kaggle-public-recovery
+          name: kaggle-public-recovery-v2
           path: out/
           if-no-files-found: warn
