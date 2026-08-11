@@ -5,57 +5,22 @@ on:
     branches: [main]
 
 jobs:
-  daily-dataset-fetch:
+  single-files:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 10
     steps:
-      - name: Install Playwright
+      - name: Download manifest only
         run: |
-          python3 -m pip install -q playwright
-          python3 -m playwright install chromium
-      - name: Inspect latest public daily episode dataset
-        run: |
-          mkdir -p out/responses
-          cat > /tmp/fetch_daily.py <<'PY'
-          import asyncio, hashlib, json
-          from pathlib import Path
-          from playwright.async_api import async_playwright
-          URL='https://www.kaggle.com/datasets/kaggle/kaggriculture-episodes-2026-08-10'
-          OUT=Path('out'); RESP=OUT/'responses'; records=[]
-          async def main():
-            async with async_playwright() as p:
-              browser=await p.chromium.launch(headless=True,args=['--disable-blink-features=AutomationControlled'])
-              ctx=await browser.new_context(viewport={'width':1440,'height':1200},user_agent='Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/140.0.0.0 Safari/537.36',locale='en-US')
-              page=await ctx.new_page()
-              async def on_response(r):
-                u=r.url
-                if not any(d in u for d in ['kaggle.com','kaggleusercontent.com','storage.googleapis.com']): return
-                h=await r.all_headers(); ct=h.get('content-type','')
-                rec={'url':u,'status':r.status,'content_type':ct}
-                try:
-                  if any(x in u.lower() for x in ['dataset','file','api/i/','download','episode','databundle']) or 'json' in ct:
-                    b=await r.body()
-                    if len(b)<=20_000_000:
-                      n=hashlib.sha256(u.encode()).hexdigest()[:16]+'.body'; (RESP/n).write_bytes(b)
-                      rec.update(saved=n,bytes=len(b))
-                except Exception as e: rec['error']=type(e).__name__+': '+str(e)
-                records.append(rec)
-              page.on('response',on_response)
-              resp=await page.goto(URL,wait_until='domcontentloaded',timeout=90000)
-              await page.wait_for_timeout(30000)
-              text=await page.locator('body').inner_text(); html=await page.content()
-              (OUT/'body.txt').write_text(text,encoding='utf-8'); (OUT/'rendered.html').write_text(html,encoding='utf-8')
-              (OUT/'responses.json').write_text(json.dumps(records,indent=2),encoding='utf-8')
-              (OUT/'summary.json').write_text(json.dumps({'status':resp.status if resp else None,'title':await page.title(),'url':page.url,'text_bytes':len(text.encode()),'html_bytes':len(html.encode()),'responses':len(records),'saved':sum('saved' in x for x in records)},indent=2),encoding='utf-8')
-              await browser.close()
-          asyncio.run(main())
-          PY
-          python3 /tmp/fetch_daily.py
-          cat out/summary.json
-      - name: Upload daily dataset diagnostics
+          set -euxo pipefail
+          mkdir -p out
+          BASE='https://www.kaggle.com/api/v1/datasets/download/kaggle/kaggriculture-episodes-2026-08-10'
+          curl -L --fail --retry 2 -A 'Mozilla/5.0' "$BASE/manifest.csv?datasetVersionNumber=1" -o out/manifest.csv
+          wc -c out/manifest.csv
+          head -5 out/manifest.csv
+      - name: Upload manifest
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: kaggriculture-daily-dataset
+          name: kaggriculture-daily-manifest
           path: out/
           if-no-files-found: warn
