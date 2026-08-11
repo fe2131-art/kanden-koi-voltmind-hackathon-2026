@@ -1,0 +1,53 @@
+name: Temporary Kaggle public recovery
+
+on:
+  pull_request:
+    branches: [main]
+
+jobs:
+  fetch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Fetch Kaggle public surfaces
+        run: |
+          set -u
+          mkdir -p out
+          fetch() {
+            name="$1"; url="$2"
+            echo "$url" > "out/${name}.url.txt"
+            curl -L -sS --compressed \
+              -A 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/140 Safari/537.36' \
+              -D "out/${name}.headers.txt" \
+              -o "out/${name}.body" \
+              -w '%{http_code}\n%{url_effective}\n' \
+              "$url" > "out/${name}.status.txt" || true
+          }
+          fetch notebook 'https://www.kaggle.com/code/tetsutani/adaptive-farming-strategy-for-kaggriculture'
+          fetch notebook_code 'https://www.kaggle.com/code/tetsutani/adaptive-farming-strategy-for-kaggriculture/code'
+          fetch list_user 'https://www.kaggle.com/api/v1/kernels/list?page=1&pageSize=100&search=kaggriculture&group=everyone&user=tetsutani&language=all&kernelType=all&outputType=all&sortBy=dateRun'
+          fetch list_comp 'https://www.kaggle.com/api/v1/kernels/list?page=1&pageSize=100&search=adaptive%20farming&group=everyone&language=all&kernelType=all&outputType=all&sortBy=dateRun&competition=kaggriculture'
+          fetch pull 'https://www.kaggle.com/api/v1/kernels/pull?userName=tetsutani&kernelSlug=adaptive-farming-strategy-for-kaggriculture'
+          python3 - <<'PY'
+          from pathlib import Path
+          import json, re
+          out = Path('out'); report = {}
+          for p in sorted(out.glob('*.body')):
+              raw = p.read_bytes(); text = raw.decode('utf-8', 'replace')
+              report[p.stem] = {
+                  'bytes': len(raw),
+                  'starts_with': text[:4000],
+                  'script_version_ids': sorted(set(re.findall(r'(?:scriptVersionId|scriptVersionID)[^0-9]{0,40}(\d+)', text)))[:50],
+                  'kernel_ids': sorted(set(re.findall(r'(?:kernelId|kernelID)[^0-9]{0,40}(\d+)', text)))[:50],
+                  'contains_title': 'adaptive-farming-strategy-for-kaggriculture' in text.lower() or 'adaptive farming strategy for kaggriculture' in text.lower(),
+                  'contains_agent_def': 'def agent' in text,
+              }
+          (out / 'report.json').write_text(json.dumps(report, indent=2), encoding='utf-8')
+          PY
+      - name: Upload diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: kaggle-public-recovery
+          path: out/
+          if-no-files-found: warn
