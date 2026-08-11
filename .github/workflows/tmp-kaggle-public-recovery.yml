@@ -5,67 +5,87 @@ on:
     branches: [main]
 
 jobs:
-  fetch:
+  browser-fetch:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
     steps:
-      - name: Fetch exact Kaggle notebook version surfaces
+      - name: Install Playwright
         run: |
-          set -u
-          mkdir -p out
-          fetch() {
-            name="$1"; url="$2"
-            echo "$url" > "out/${name}.url.txt"
-            curl -L -sS --compressed \
-              -A 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/140 Safari/537.36' \
-              -D "out/${name}.headers.txt" \
-              -o "out/${name}.body" \
-              -w '%{http_code}\n%{url_effective}\n' \
-              "$url" > "out/${name}.status.txt" || true
-          }
-          BASE='https://www.kaggle.com/code/tetsutani/adaptive-farming-strategy-for-kaggriculture'
-          SID='341576880'
-          fetch version "${BASE}?scriptVersionId=${SID}"
-          fetch code_version "${BASE}/code?scriptVersionId=${SID}"
-          fetch embed_a "${BASE}/embed?scriptVersionId=${SID}"
-          fetch embed_b "https://www.kaggle.com/embed/tetsutani/adaptive-farming-strategy-for-kaggriculture?scriptVersionId=${SID}"
-          fetch oembed 'https://www.kaggle.com/oembed/kernel?url=https%3A%2F%2Fwww.kaggle.com%2Fcode%2Ftetsutani%2Fadaptive-farming-strategy-for-kaggriculture%3FscriptVersionId%3D341576880'
-          fetch appjs 'https://www.kaggle.com/static/assets/app.js?v=1c42a875b01eb54a'
-
-          python3 - <<'PY'
+          python3 -m pip install -q playwright
+          python3 -m playwright install chromium
+      - name: Render exact public Kaggle notebook
+        run: |
+          mkdir -p out/responses
+          cat > /tmp/fetch_kaggle.py <<'PY'
+          import asyncio, hashlib, json, re
           from pathlib import Path
-          import json, re
-          out = Path('out'); report = {}
-          pats = [
-              r'.{0,180}scriptVersionId.{0,260}',
-              r'.{0,180}KernelsService.{0,260}',
-              r'.{0,180}GetKernel.{0,260}',
-              r'.{0,180}kernelSource.{0,260}',
-              r'.{0,180}/api/i/.{0,260}',
-              r'.{0,180}oembed.{0,260}',
-          ]
-          for p in sorted(out.glob('*.body')):
-              raw = p.read_bytes(); text = raw.decode('utf-8', 'replace')
-              matches=[]
-              for pat in pats:
-                  for m in re.finditer(pat, text, flags=re.I|re.S):
-                      s=' '.join(m.group(0).split())
-                      if s not in matches: matches.append(s)
-                      if len(matches)>=80: break
-                  if len(matches)>=80: break
-              report[p.stem] = {
-                  'bytes': len(raw),
-                  'content_type_hint': text[:120],
-                  'contains_agent_def': 'def agent' in text,
-                  'contains_script_id': '341576880' in text,
-                  'matches': matches,
-              }
-          (out / 'report.json').write_text(json.dumps(report, indent=2), encoding='utf-8')
+          from playwright.async_api import async_playwright
+
+          URL = 'https://www.kaggle.com/code/tetsutani/adaptive-farming-strategy-for-kaggriculture?scriptVersionId=341576880'
+          OUT = Path('out'); RESP = OUT/'responses'
+          records=[]
+
+          async def main():
+              async with async_playwright() as p:
+                  browser = await p.chromium.launch(headless=True, args=['--disable-blink-features=AutomationControlled'])
+                  ctx = await browser.new_context(
+                      viewport={'width': 1440, 'height': 1200},
+                      user_agent='Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/140.0.0.0 Safari/537.36',
+                      locale='en-US',
+                  )
+                  page = await ctx.new_page()
+                  async def on_response(r):
+                      u=r.url
+                      if 'kaggle.com' not in u and 'kaggleusercontent.com' not in u and 'googleusercontent.com' not in u:
+                          return
+                      ct=(await r.all_headers()).get('content-type','')
+                      rec={'url':u,'status':r.status,'content_type':ct}
+                      try:
+                          if any(x in u.lower() for x in ['kernel','script','version','code','api/i/','content']) or 'json' in ct:
+                              body=await r.body()
+                              if len(body)<=5_000_000:
+                                  name=hashlib.sha256(u.encode()).hexdigest()[:16]+'.body'
+                                  (RESP/name).write_bytes(body)
+                                  rec['saved']=name; rec['bytes']=len(body)
+                                  text=body.decode('utf-8','replace')
+                                  rec['has_agent']='def agent' in text
+                                  rec['has_sid']='341576880' in text
+                      except Exception as e:
+                          rec['error']=type(e).__name__+': '+str(e)
+                      records.append(rec)
+                  page.on('response', on_response)
+                  resp=await page.goto(URL, wait_until='domcontentloaded', timeout=90000)
+                  await page.wait_for_timeout(30000)
+                  # Scroll to trigger lazy notebook cells.
+                  for _ in range(12):
+                      await page.mouse.wheel(0, 1800)
+                      await page.wait_for_timeout(900)
+                  await page.wait_for_timeout(5000)
+                  html=await page.content(); text=await page.locator('body').inner_text()
+                  (OUT/'rendered.html').write_text(html,encoding='utf-8')
+                  (OUT/'body.txt').write_text(text,encoding='utf-8')
+                  (OUT/'responses.json').write_text(json.dumps(records,indent=2),encoding='utf-8')
+                  (OUT/'summary.json').write_text(json.dumps({
+                      'goto_status': resp.status if resp else None,
+                      'title': await page.title(),
+                      'url': page.url,
+                      'html_bytes': len(html.encode()),
+                      'text_bytes': len(text.encode()),
+                      'contains_agent': 'def agent' in html or 'def agent' in text,
+                      'contains_main_py': 'main.py' in html or 'main.py' in text,
+                      'saved_response_count': sum('saved' in x for x in records),
+                      'response_count': len(records),
+                  },indent=2),encoding='utf-8')
+                  await page.screenshot(path=str(OUT/'page.png'), full_page=False)
+                  await browser.close()
+          asyncio.run(main())
           PY
-      - name: Upload diagnostics
+          python3 /tmp/fetch_kaggle.py
+          cat out/summary.json
+      - name: Upload browser diagnostics
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: kaggle-public-recovery-v2
+          name: kaggle-browser-recovery
           path: out/
           if-no-files-found: warn
