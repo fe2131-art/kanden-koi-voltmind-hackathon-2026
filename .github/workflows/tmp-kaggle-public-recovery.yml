@@ -5,7 +5,7 @@ on:
     branches: [main]
 
 jobs:
-  browser-fetch:
+  dataset-fetch:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -13,79 +13,49 @@ jobs:
         run: |
           python3 -m pip install -q playwright
           python3 -m playwright install chromium
-      - name: Render exact public Kaggle notebook
+      - name: Inspect public Kaggriculture episodes dataset
         run: |
           mkdir -p out/responses
-          cat > /tmp/fetch_kaggle.py <<'PY'
-          import asyncio, hashlib, json, re
+          cat > /tmp/fetch_dataset.py <<'PY'
+          import asyncio, hashlib, json
           from pathlib import Path
           from playwright.async_api import async_playwright
-
-          URL = 'https://www.kaggle.com/code/tetsutani/adaptive-farming-strategy-for-kaggriculture?scriptVersionId=341576880'
-          OUT = Path('out'); RESP = OUT/'responses'
-          records=[]
-
+          URL='https://www.kaggle.com/datasets/kaggle/kaggriculture-episodes-index'
+          OUT=Path('out'); RESP=OUT/'responses'; records=[]
           async def main():
-              async with async_playwright() as p:
-                  browser = await p.chromium.launch(headless=True, args=['--disable-blink-features=AutomationControlled'])
-                  ctx = await browser.new_context(
-                      viewport={'width': 1440, 'height': 1200},
-                      user_agent='Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/140.0.0.0 Safari/537.36',
-                      locale='en-US',
-                  )
-                  page = await ctx.new_page()
-                  async def on_response(r):
-                      u=r.url
-                      if 'kaggle.com' not in u and 'kaggleusercontent.com' not in u and 'googleusercontent.com' not in u:
-                          return
-                      ct=(await r.all_headers()).get('content-type','')
-                      rec={'url':u,'status':r.status,'content_type':ct}
-                      try:
-                          if any(x in u.lower() for x in ['kernel','script','version','code','api/i/','content']) or 'json' in ct:
-                              body=await r.body()
-                              if len(body)<=5_000_000:
-                                  name=hashlib.sha256(u.encode()).hexdigest()[:16]+'.body'
-                                  (RESP/name).write_bytes(body)
-                                  rec['saved']=name; rec['bytes']=len(body)
-                                  text=body.decode('utf-8','replace')
-                                  rec['has_agent']='def agent' in text
-                                  rec['has_sid']='341576880' in text
-                      except Exception as e:
-                          rec['error']=type(e).__name__+': '+str(e)
-                      records.append(rec)
-                  page.on('response', on_response)
-                  resp=await page.goto(URL, wait_until='domcontentloaded', timeout=90000)
-                  await page.wait_for_timeout(30000)
-                  # Scroll to trigger lazy notebook cells.
-                  for _ in range(12):
-                      await page.mouse.wheel(0, 1800)
-                      await page.wait_for_timeout(900)
-                  await page.wait_for_timeout(5000)
-                  html=await page.content(); text=await page.locator('body').inner_text()
-                  (OUT/'rendered.html').write_text(html,encoding='utf-8')
-                  (OUT/'body.txt').write_text(text,encoding='utf-8')
-                  (OUT/'responses.json').write_text(json.dumps(records,indent=2),encoding='utf-8')
-                  (OUT/'summary.json').write_text(json.dumps({
-                      'goto_status': resp.status if resp else None,
-                      'title': await page.title(),
-                      'url': page.url,
-                      'html_bytes': len(html.encode()),
-                      'text_bytes': len(text.encode()),
-                      'contains_agent': 'def agent' in html or 'def agent' in text,
-                      'contains_main_py': 'main.py' in html or 'main.py' in text,
-                      'saved_response_count': sum('saved' in x for x in records),
-                      'response_count': len(records),
-                  },indent=2),encoding='utf-8')
-                  await page.screenshot(path=str(OUT/'page.png'), full_page=False)
-                  await browser.close()
+            async with async_playwright() as p:
+              browser=await p.chromium.launch(headless=True,args=['--disable-blink-features=AutomationControlled'])
+              ctx=await browser.new_context(viewport={'width':1440,'height':1200},user_agent='Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/140.0.0.0 Safari/537.36',locale='en-US')
+              page=await ctx.new_page()
+              async def on_response(r):
+                u=r.url
+                if not any(d in u for d in ['kaggle.com','kaggleusercontent.com','storage.googleapis.com']): return
+                h=await r.all_headers(); ct=h.get('content-type','')
+                rec={'url':u,'status':r.status,'content_type':ct}
+                try:
+                  if any(x in u.lower() for x in ['dataset','file','api/i/','download','episode']) or 'json' in ct:
+                    b=await r.body()
+                    if len(b)<=12_000_000:
+                      n=hashlib.sha256(u.encode()).hexdigest()[:16]+'.body'; (RESP/n).write_bytes(b)
+                      rec.update(saved=n,bytes=len(b))
+                except Exception as e: rec['error']=type(e).__name__+': '+str(e)
+                records.append(rec)
+              page.on('response',on_response)
+              resp=await page.goto(URL,wait_until='domcontentloaded',timeout=90000)
+              await page.wait_for_timeout(25000)
+              text=await page.locator('body').inner_text(); html=await page.content()
+              (OUT/'body.txt').write_text(text,encoding='utf-8'); (OUT/'rendered.html').write_text(html,encoding='utf-8')
+              (OUT/'responses.json').write_text(json.dumps(records,indent=2),encoding='utf-8')
+              (OUT/'summary.json').write_text(json.dumps({'status':resp.status if resp else None,'title':await page.title(),'url':page.url,'text_bytes':len(text.encode()),'html_bytes':len(html.encode()),'responses':len(records),'saved':sum('saved' in x for x in records)},indent=2),encoding='utf-8')
+              await browser.close()
           asyncio.run(main())
           PY
-          python3 /tmp/fetch_kaggle.py
+          python3 /tmp/fetch_dataset.py
           cat out/summary.json
-      - name: Upload browser diagnostics
+      - name: Upload dataset diagnostics
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: kaggle-browser-recovery
+          name: kaggriculture-episodes-dataset
           path: out/
           if-no-files-found: warn
